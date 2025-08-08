@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ClassWaves WebSocket Test Client</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+        .panel {
+            flex: 1;
+            border: 1px solid #ccc;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        input, button {
+            width: 100%;
+            margin: 5px 0;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        #messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            padding: 10px;
+            margin-top: 10px;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            background: #f5f5f5;
+            border-radius: 3px;
+        }
+        .system {
+            color: #666;
+            font-style: italic;
+        }
+        .error {
+            color: #d00;
+        }
+        .success {
+            color: #0a0;
+        }
+        #status {
+            padding: 10px;
+            text-align: center;
+            font-weight: bold;
+        }
+        .connected {
+            background: #dfd;
+            color: #0a0;
+        }
+        .disconnected {
+            background: #fdd;
+            color: #d00;
+        }
+    </style>
+</head>
+<body>
+    <h1>ClassWaves WebSocket Test Client</h1>
+    
+    <div id="status" class="disconnected">Disconnected</div>
+    
+    <div class="container">
+        <div class="panel">
+            <h3>Connection</h3>
+            <input type="text" id="token" placeholder="JWT Token" />
+            <input type="text" id="serverUrl" value="http://localhost:3001" placeholder="Server URL" />
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+        </div>
+        
+        <div class="panel">
+            <h3>Session</h3>
+            <input type="text" id="sessionCode" placeholder="Session Code (e.g., ABC123)" />
+            <button onclick="joinSession()">Join Session</button>
+            <button onclick="leaveSession()">Leave Session</button>
+        </div>
+    </div>
+    
+    <div class="panel" style="margin-top: 20px;">
+        <h3>Send Message</h3>
+        <input type="text" id="messageInput" placeholder="Type a message..." />
+        <button onclick="sendMessage()">Send</button>
+    </div>
+    
+    <div class="panel" style="margin-top: 20px;">
+        <h3>Messages</h3>
+        <button onclick="clearMessages()">Clear</button>
+        <div id="messages"></div>
+    </div>
+    
+    <script>
+        let socket = null;
+        let currentSessionCode = null;
+        
+        function log(message, type = '') {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function updateStatus(connected) {
+            const statusDiv = document.getElementById('status');
+            if (connected) {
+                statusDiv.className = 'connected';
+                statusDiv.textContent = 'Connected';
+            } else {
+                statusDiv.className = 'disconnected';
+                statusDiv.textContent = 'Disconnected';
+            }
+        }
+        
+        function connect() {
+            const token = document.getElementById('token').value;
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            if (!token) {
+                log('Please enter a JWT token', 'error');
+                return;
+            }
+            
+            if (socket) {
+                socket.disconnect();
+            }
+            
+            socket = io(serverUrl, {
+                auth: {
+                    token: token
+                },
+                transports: ['websocket', 'polling']
+            });
+            
+            // Connection events
+            socket.on('connect', () => {
+                log('Connected to server', 'success');
+                updateStatus(true);
+            });
+            
+            socket.on('disconnect', () => {
+                log('Disconnected from server', 'error');
+                updateStatus(false);
+            });
+            
+            socket.on('connect_error', (error) => {
+                log(`Connection error: ${error.message}`, 'error');
+                updateStatus(false);
+            });
+            
+            // Session events
+            socket.on('sessionJoined', (data) => {
+                currentSessionCode = data.sessionCode;
+                log(`Joined session ${data.sessionCode} with ${data.participants.length} participants`, 'success');
+            });
+            
+            socket.on('sessionLeft', (data) => {
+                currentSessionCode = null;
+                log(`Left session ${data.sessionCode}`, 'system');
+            });
+            
+            // Message events
+            socket.on('messageReceived', (data) => {
+                log(`[${data.sessionCode}] ${data.userId}: ${data.message}`);
+            });
+            
+            // Presence events
+            socket.on('presenceUpdated', (data) => {
+                log(`[${data.sessionCode}] User ${data.userId} ${data.status}`, 'system');
+            });
+            
+            // Error events
+            socket.on('error', (data) => {
+                log(`Error: ${data.code} - ${data.message}`, 'error');
+            });
+        }
+        
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                currentSessionCode = null;
+            }
+        }
+        
+        function joinSession() {
+            const sessionCode = document.getElementById('sessionCode').value;
+            
+            if (!socket || !socket.connected) {
+                log('Not connected to server', 'error');
+                return;
+            }
+            
+            if (!sessionCode) {
+                log('Please enter a session code', 'error');
+                return;
+            }
+            
+            socket.emit('joinSession', sessionCode);
+        }
+        
+        function leaveSession() {
+            if (!socket || !socket.connected) {
+                log('Not connected to server', 'error');
+                return;
+            }
+            
+            if (!currentSessionCode) {
+                log('Not in a session', 'error');
+                return;
+            }
+            
+            socket.emit('leaveSession', currentSessionCode);
+        }
+        
+        function sendMessage() {
+            const message = document.getElementById('messageInput').value;
+            
+            if (!socket || !socket.connected) {
+                log('Not connected to server', 'error');
+                return;
+            }
+            
+            if (!currentSessionCode) {
+                log('Not in a session', 'error');
+                return;
+            }
+            
+            if (!message) {
+                log('Please enter a message', 'error');
+                return;
+            }
+            
+            socket.emit('sendMessage', {
+                sessionCode: currentSessionCode,
+                message: message
+            });
+            
+            document.getElementById('messageInput').value = '';
+        }
+        
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+        
+        // Allow Enter key to send messages
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
