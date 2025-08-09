@@ -43,9 +43,9 @@ app.use(helmet({
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
+  origin: process.env.NODE_ENV === 'production'
     ? ['https://classwaves.com', 'https://app.classwaves.com']
-    : ['http://localhost:3001'],
+    : ['http://localhost:3001', 'http://127.0.0.1:3001'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
@@ -74,12 +74,24 @@ app.use(csrfTokenGenerator);
 app.use(requireCSRF({
   skipRoutes: [
     '/api/v1/health',
+    '/api/v1/ready',
     '/.well-known',
     '/api/v1/auth/google',
     '/api/v1/auth/generate-test-token',
     '/api/v1/sessions', // allow factory to skip via startsWith; join is unauthenticated
   ]
 }));
+
+// Lightweight readiness endpoint for orchestration/tests
+// Always returns 200 once the HTTP server is up, regardless of downstream service health
+app.get('/api/v1/ready', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.json({
+    status: 'ready',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
 
 // Health check endpoint
 app.get('/api/v1/health', async (_req, res) => {

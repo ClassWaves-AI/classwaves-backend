@@ -12,14 +12,20 @@ async function startServer() {
   try {
     // Initialize all services in proper dependency order
     const servicesInitialized = await serviceManager.initializeServices();
+    const allowDegraded = process.env.NODE_ENV === 'test' || process.env.E2E_ALLOW_DEGRADED === '1';
     
     if (!servicesInitialized) {
       console.error('❌ Critical services failed to initialize');
       if (!serviceManager.isHealthy()) {
-        console.error('❌ Cannot start server without critical services');
-        process.exit(1);
+        if (allowDegraded) {
+          console.warn('⚠️  Starting server with degraded functionality (test mode)');
+        } else {
+          console.error('❌ Cannot start server without critical services');
+          process.exit(1);
+        }
+      } else {
+        console.warn('⚠️  Starting server with partially initialized services');
       }
-      console.warn('⚠️  Starting server with degraded functionality');
     }
     
     // Create HTTP server

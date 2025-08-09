@@ -2,7 +2,7 @@
 # ClassWaves Backend Development Startup Script
 # Automatically starts Redis and applies configuration before starting the backend
 
-set -e
+set -euo pipefail
 
 echo "🚀 Starting ClassWaves Backend Development Environment..."
 
@@ -19,11 +19,16 @@ check_redis() {
 
 # Function to check if Docker is running
 check_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "⚠️  Docker not installed; skipping Docker-based Redis startup"
+        return 1
+    fi
     if ! docker info > /dev/null 2>&1; then
-        echo "❌ Docker is not running. Please start Docker first."
-        exit 1
+        echo "⚠️  Docker not running; skipping Docker-based Redis startup"
+        return 1
     fi
     echo "✅ Docker is running"
+    return 0
 }
 
 # Function to start Redis with Docker Compose
@@ -34,7 +39,11 @@ start_redis() {
     cd "$(dirname "$0")/../.."
     
     # Start Redis container
-    docker-compose up -d redis
+    if command -v docker-compose >/dev/null 2>&1; then
+      docker-compose up -d redis || true
+    else
+      docker compose up -d redis || true
+    fi
     
     echo "⏳ Waiting for Redis to be ready..."
     
@@ -74,7 +83,7 @@ start_backend() {
     cd "$(dirname "$0")/.."
     
     # Start the development server
-    nodemon --exec ts-node src/server.ts
+    nodemon --exitcrash --signal SIGINT --exec ts-node src/server.ts
 }
 
 # Main execution flow
@@ -84,17 +93,18 @@ main() {
     echo "======================================"
     echo
     
-    # Check if Docker is running
-    check_docker
-    
-    # Check if Redis is running, start if not
-    if ! check_redis; then
-        start_redis
-        sleep 2  # Give Redis a moment to fully initialize
-        apply_redis_config
+    # Check if Docker is running and try to ensure Redis if missing
+    if check_docker; then
+      if ! check_redis; then
+          start_redis
+          sleep 2  # Give Redis a moment to fully initialize
+          apply_redis_config || true
+      else
+          echo "ℹ️  Redis configuration may need to be applied manually if not done yet"
+          echo "   Run: ./scripts/apply-redis-config.sh"
+      fi
     else
-        echo "ℹ️  Redis configuration may need to be applied manually if not done yet"
-        echo "   Run: ./scripts/apply-redis-config.sh"
+      echo "ℹ️  Proceeding without Docker; Redis may be unavailable. The server will degrade gracefully."
     fi
     
     echo

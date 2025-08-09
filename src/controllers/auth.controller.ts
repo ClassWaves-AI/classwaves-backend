@@ -473,6 +473,15 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       30 * 24 * 60 * 60 // 30 days
     );
 
+    // Set HTTP-only session cookie so browser contexts are authenticated like real users
+    res.cookie('session_id', sessionId, {
+      httpOnly: true,
+      secure: (process.env.NODE_ENV || '').toString() === 'production',
+      sameSite: 'strict',
+      maxAge: expiresIn * 1000,
+      path: '/',
+    });
+
     console.log(`🧪 Generated test token for E2E testing - Teacher: ${testTeacher.id}, School: ${testSchool.id}`);
 
     return res.json({
