@@ -1,10 +1,11 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { redisService } from '../services/redis.service';
 import Redis from 'ioredis';
-import { whisperService } from '../services/whisper.service';
+import { openAIWhisperService } from '../services/openai-whisper.service';
 import { websocketService } from '../services/websocket.service';
 import { insightService } from '../services/insight.service';
 import fs from 'fs/promises';
+import client from 'prom-client';
 
 // Create BullMQ-compatible Redis connection
 const bullMQConnection = new Redis({
@@ -39,6 +40,12 @@ export const transcriptionQueue = new Queue('transcription', {
   }
 });
 
+// Metrics
+const backpressureDrops = new client.Counter({
+  name: 'ws_backpressure_drops_total',
+  help: 'Total number of audio chunks dropped due to backpressure',
+});
+
 // Create worker
 const transcriptionWorker = new Worker(
   'transcription',
@@ -51,8 +58,9 @@ const transcriptionWorker = new Worker(
       // Update status to processing
       await updateAudioStatus(audio_id, 'processing');
 
-      // Transcribe audio using Whisper service
-      const transcription = await whisperService.transcribe(file_path);
+      // Transcribe audio using OpenAI Whisper service
+      const audioBuffer = await fs.readFile(file_path);
+      const transcription = await openAIWhisperService.transcribeBuffer(audioBuffer, 'audio/wav');
 
       // Save transcription result
       const transcriptionRecord = {
@@ -63,7 +71,7 @@ const transcriptionWorker = new Worker(
         text: transcription.text,
         language: transcription.language,
         confidence: transcription.confidence,
-        segments: transcription.segments,
+        segments: [],
         status: 'completed',
         created_at: new Date().toISOString()
       };

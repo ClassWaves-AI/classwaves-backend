@@ -14,6 +14,7 @@ export const mockDatabricksConnection = {
 export const mockDatabricksService = {
   getConnection: jest.fn().mockResolvedValue(mockDatabricksConnection),
   execute: jest.fn().mockResolvedValue([]),
+  query: jest.fn().mockResolvedValue([]),
   queryOne: jest.fn().mockResolvedValue(null),
   queryMany: jest.fn().mockResolvedValue([]),
   // School methods
@@ -75,6 +76,10 @@ export const mockDatabricksService = {
   getAuditLogs: jest.fn().mockResolvedValue([]),
   recordAuditLog: jest.fn().mockResolvedValue(true),
   // Missing methods referenced in tests
+  insert: jest.fn().mockResolvedValue(undefined),
+  update: jest.fn().mockResolvedValue(undefined),
+  delete: jest.fn().mockResolvedValue(true),
+  generateId: jest.fn().mockReturnValue('mock-generated-id'),
   updateSession: jest.fn().mockResolvedValue(true),
   deleteSession: jest.fn().mockResolvedValue(true),
   updateGroup: jest.fn().mockResolvedValue(true),
@@ -139,4 +144,5 @@ export const createMockTeacher = (overrides?: Partial<any>) => ({
 
 export const mockDBSQLClient = {
   connect: jest.fn().mockResolvedValue(mockDatabricksConnection),
+  close: jest.fn().mockResolvedValue(undefined),
 };

@@ -12,11 +12,17 @@ import { GoogleUser, Teacher, School } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
 import { redisService } from '../services/redis.service';
 
-const googleClient = new OAuth2Client(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
+let cachedGoogleClient: OAuth2Client | null = null;
+function getGoogleClient(): OAuth2Client {
+  if (!cachedGoogleClient) {
+    cachedGoogleClient = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
+  }
+  return cachedGoogleClient;
+}
 
 
 async function storeSession(sessionId: string, teacher: Teacher, school: School, req: Request): Promise<void> {
@@ -45,6 +51,7 @@ export async function googleAuthHandler(req: Request, res: Response): Promise<Re
     let payload;
     
     try {
+      const googleClient = getGoogleClient();
       if (credential) {
         // Handle ID token flow (from Google Sign-In JavaScript library)
         console.log('📱 Verifying Google ID token...');

@@ -43,6 +43,11 @@ interface ClientToServerEvents {
   'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void;
   'audio:stream:start': (data: { groupId: string }) => void;
   'audio:stream:end': (data: { groupId: string }) => void;
+
+  // Teacher dashboard session control (to match frontend client)
+  'session:join': (data: { session_id?: string; sessionId?: string }) => void;
+  'session:leave': (data: { session_id?: string; sessionId?: string }) => void;
+  'session:update_status': (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => void;
 }
 
 interface ServerToClientEvents {
@@ -99,6 +104,25 @@ export class WebSocketService {
       transports: ['websocket', 'polling'],
       pingTimeout: 60000,
       pingInterval: 25000,
+    });
+
+    // Diagnostic: server-level connection state
+    this.io.engine.on('connection_error', (err: any) => {
+      console.warn('⚠️  Engine.io connection error:', {
+        code: (err as any)?.code,
+        message: (err as any)?.message,
+        req: {
+          headers: (err as any)?.req?.headers,
+          url: (err as any)?.req?.url,
+        },
+      });
+    });
+
+    this.io.engine.on('heartbeat', (transport: any) => {
+      // Low-cost heartbeat log to correlate timeouts (opt-in)
+      if (process.env.WS_DEBUG === '1') {
+        console.log('💓 WS heartbeat', transport?.name);
+      }
     });
 
     this.setupRedisAdapter();
@@ -170,6 +194,80 @@ export class WebSocketService {
     this.io.on('connection', (socket) => {
       console.log(`User ${socket.data.userId} connected via WebSocket`);
       this.connectedUsers.set(socket.data.userId, socket);
+
+      // Replace participant-based joinSession with group-based joinGroup
+      // Session-level join for teacher dashboard
+      socket.on('session:join', async (data: { session_id?: string; sessionId?: string }) => {
+        try {
+          const sessionId = (data?.session_id || data?.sessionId || '').trim();
+          if (!sessionId) {
+            socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'session_id is required' });
+            return;
+          }
+
+          // Verify session belongs to authenticated teacher
+          const session = await databricksService.queryOne(
+            `SELECT id, status FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [sessionId, socket.data.userId]
+          );
+          if (!session) {
+            socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
+            return;
+          }
+
+          await socket.join(`session:${sessionId}`);
+          // Optionally echo current status so UI can sync
+          socket.emit('session:status_changed', { sessionId, status: session.status });
+        } catch (err) {
+          socket.emit('error', { code: 'SESSION_JOIN_FAILED', message: 'Failed to join session' });
+        }
+      });
+
+      socket.on('session:leave', async (data: { session_id?: string; sessionId?: string }) => {
+        try {
+          const sessionId = (data?.session_id || data?.sessionId || '').trim();
+          if (!sessionId) return;
+          await socket.leave(`session:${sessionId}`);
+          socket.emit('sessionLeft', { sessionCode: sessionId });
+        } catch (err) {
+          socket.emit('error', { code: 'SESSION_LEAVE_FAILED', message: 'Failed to leave session' });
+        }
+      });
+
+      socket.on('session:update_status', async (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => {
+        try {
+          const sessionId = (data?.session_id || data?.sessionId || '').trim();
+          let status = data?.status;
+          if (!sessionId || !status) {
+            socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'session_id and status are required' });
+            return;
+          }
+
+          // Map client 'waiting' to DB 'created'
+          if (status === 'waiting') status = 'created';
+          const allowed: Record<string, true> = { created: true, active: true, paused: true, ended: true, archived: true } as const;
+          if (!allowed[status]) {
+            socket.emit('error', { code: 'INVALID_STATUS', message: `Unsupported status: ${status}` });
+            return;
+          }
+
+          // Verify ownership
+          const owned = await databricksService.queryOne(
+            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [sessionId, socket.data.userId]
+          );
+          if (!owned) {
+            socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
+            return;
+          }
+
+          await databricksService.updateSessionStatus(sessionId, status as any);
+          // Broadcast to session room
+          this.io.to(`session:${sessionId}`).emit('session:status_changed', { sessionId, status });
+        } catch (err) {
+          socket.emit('error', { code: 'STATUS_UPDATE_FAILED', message: 'Failed to update session status' });
+        }
+      });
 
       // Replace participant-based joinSession with group-based joinGroup
       socket.on('group:join', async (data: { groupId: string; sessionId: string }) => {
@@ -245,6 +343,26 @@ export class WebSocketService {
       // Handle audio chunk processing (windowed)
       socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => {
         try {
+          // Backpressure diagnostics: drop too-large payloads to prevent disconnects
+          const approxSize = (data as any)?.audioData?.length || 0;
+          if (approxSize > 1024 * 1024 * 2) { // >2MB
+            console.warn(`⚠️  Dropping oversized audio chunk (~${approxSize} bytes) for group ${data.groupId}`);
+            socket.emit('audio:error', { groupId: data.groupId, error: 'Payload too large' });
+            return;
+          }
+
+          // Socket-level backpressure: consult processor window state and drop oldest/reject when overloaded
+          const windowInfo = inMemoryAudioProcessor.getGroupWindowInfo(data.groupId);
+          // Heuristics: if queued bytes exceed ~5MB or chunks > 50, reject this chunk
+          if (windowInfo.bytes > 5 * 1024 * 1024 || windowInfo.chunks > 50) {
+            // Increment metric via processor (reusing the drop counter by simulating 1 dropped chunk)
+            // We cannot directly access the private counter; instead, trigger backpressure handling which increments it
+            try { await (inMemoryAudioProcessor as any).handleBackPressure?.(data.groupId); } catch { /* ignore */ }
+            console.warn(`⚠️  Socket backpressure: rejecting audio chunk for group ${data.groupId} (bytes=${windowInfo.bytes}, chunks=${windowInfo.chunks})`);
+            socket.emit('audio:error', { groupId: data.groupId, error: 'Backpressure: please slow down' });
+            return;
+          }
+
           // Coerce payload and validate mime
           const audioBuffer = coerceToBuffer(data.audioData);
           validateMimeType(data.format);
@@ -255,7 +373,8 @@ export class WebSocketService {
             data.groupId,
             audioBuffer,
             data.format,
-            socket.data.sessionId
+            socket.data.sessionId,
+            socket.data.schoolId
           );
           
           if (result) {
@@ -487,5 +606,17 @@ export function getWebSocketService(): WebSocketService | null {
 export const websocketService = {
   get io() {
     return wsService?.getIO() || null;
+  },
+  createSessionRoom(sessionId: string) {
+    if (!wsService) return;
+    wsService.getIO().socketsJoin(`session:${sessionId}`);
+  },
+  notifySessionUpdate(sessionId: string, payload: any) {
+    if (!wsService) return;
+    wsService.emitToSession(sessionId, 'session:status_changed', payload);
+  },
+  endSession(sessionId: string) {
+    if (!wsService) return;
+    wsService.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
   }
 };

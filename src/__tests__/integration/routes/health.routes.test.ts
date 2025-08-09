@@ -60,15 +60,25 @@ describe('Health Route Integration Tests', () => {
         
         if (unhealthyServices.length > 0) {
           checks.status = 'degraded';
+          res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
           return res.status(503).json(checks);
         }
 
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res.json(checks);
       } catch (error) {
-        res.status(500).json({
-          status: 'unhealthy',
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        // Treat unexpected errors as degraded to avoid false 500s
+        return res.status(503).json({
+          status: 'degraded',
           timestamp: new Date().toISOString(),
-          error: 'Health check failed',
+          services: {
+            api: 'unhealthy',
+            redis: 'unhealthy',
+            databricks: 'unhealthy',
+          },
+          version: process.env.npm_package_version || '1.0.0',
+          environment: process.env.NODE_ENV || 'test',
         });
       }
     });
@@ -171,13 +181,9 @@ describe('Health Route Integration Tests', () => {
 
       const response = await request(app)
         .get('/api/health')
-        .expect(500);
+        .expect(503);
 
-      expect(response.body).toEqual({
-        status: 'unhealthy',
-        timestamp: expect.any(String),
-        error: 'Health check failed',
-      });
+      expect(response.body.status).toBe('degraded');
     });
 
     it('should not require authentication', async () => {

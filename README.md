@@ -33,10 +33,19 @@ Create a `.env` file:
 NODE_ENV=development
 PORT=3001
 
-# Databricks
+# Databricks (analytics only)
 DATABRICKS_HOST=https://dbc-d5db37cb-5441.cloud.databricks.com
 DATABRICKS_TOKEN=your-token-here
 DATABRICKS_WAREHOUSE_ID=077a4c2149eade40
+
+# OpenAI Whisper (STT)
+OPENAI_API_KEY=your-openai-key
+OPENAI_WHISPER_TIMEOUT_MS=15000
+OPENAI_WHISPER_CONCURRENCY=20
+STT_WINDOW_SECONDS=15
+STT_PROVIDER=openai # or 'off' to disable STT submission
+STT_BUDGET_MINUTES_PER_DAY=0 # optional: daily per-school budget in minutes (0 to disable)
+STT_BUDGET_ALERT_PCTS=50,75,90,100 # optional: alert thresholds in % of daily budget
 
 # Google OAuth
 GOOGLE_CLIENT_ID=your-client-id
@@ -184,7 +193,7 @@ Located in `src/scripts/`:
 ## Monitoring
 
 - **Health Checks:** `/api/health` endpoint
-- **API Metrics:** Response times tracked in `operational.api_metrics`
+- **Metrics:** `/metrics` Prometheus endpoint including `whisper_latency_ms`, `whisper_status_count`, `whisper_retry_count`, `whisper_429_count`, `stt_window_bytes`, `stt_window_seconds`, and `ws_backpressure_drops_total`
 - **System Events:** Logged to `operational.system_events`
 - **Audit Trail:** All actions in `compliance.audit_log`
 

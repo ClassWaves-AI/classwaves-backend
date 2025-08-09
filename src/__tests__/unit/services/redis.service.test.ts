@@ -200,14 +200,13 @@ describe('RedisService', () => {
       it('should store refresh token data', async () => {
         await redisService.storeRefreshToken('token-123', 'teacher-123', 2592000);
 
-        expect(mockRedisClient.setex).toHaveBeenCalledWith(
-          'refresh:token-123',
-          2592000,
-          JSON.stringify({
-            teacherId: 'teacher-123',
-            createdAt: expect.any(String)
-          })
-        );
+        expect(mockRedisClient.setex).toHaveBeenCalled();
+        const [key, ttl, value] = (mockRedisClient.setex as jest.Mock).mock.calls[0];
+        expect(key).toBe('refresh:token-123');
+        expect(ttl).toBe(2592000);
+        const parsed = JSON.parse(value);
+        expect(parsed.teacherId).toBe('teacher-123');
+        expect(parsed.createdAt).toEqual(expect.any(String));
       });
     });
 
@@ -301,16 +300,16 @@ describe('RedisService', () => {
     });
 
     it('should set up event handlers', async () => {
-      // Clear any previous mock data
+      jest.resetModules();
       jest.clearAllMocks();
       
-      // Import the Redis module to force service initialization
-      const Redis = require('ioredis');
+      // Re-require service in isolated module scope to run constructor
+      jest.isolateModules(() => {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { getRedisService } = require('../../../services/redis.service');
+        getRedisService();
+      });
       
-      // Create a new Redis instance - this will trigger event handler setup
-      new Redis();
-      
-      // Verify event handlers are set up
       expect(mockRedisClient.on).toHaveBeenCalled();
     });
 

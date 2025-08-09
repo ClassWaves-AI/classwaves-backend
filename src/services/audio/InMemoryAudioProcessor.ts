@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { openAIWhisperService } from '../openai-whisper.service';
+import client from 'prom-client';
 
 interface GroupWindowState {
   chunks: Buffer[];
@@ -59,6 +60,7 @@ export class InMemoryAudioProcessor {
   private readonly baseWindowSeconds = Number(process.env.STT_WINDOW_SECONDS || 15);
   private readonly maxWindowSeconds = 20;
   private readonly minWindowSeconds = 10;
+  private readonly windowJitterMs = Number(process.env.STT_WINDOW_JITTER_MS || 0);
   private breakerOpenUntil: number | null = null;
   private readonly breakerFailuresToTrip = 5;
   private readonly breakerCooldownMs = 60_000; // 60s
@@ -70,6 +72,39 @@ export class InMemoryAudioProcessor {
     console.log('✅ InMemoryAudioProcessor initialized with zero-disk guarantee');
   }
 
+  // Metrics
+  private readonly bpDrops = (() => {
+    try {
+      return new client.Counter({
+        name: 'ws_backpressure_drops_total',
+        help: 'Total audio chunks dropped due to backpressure',
+      });
+    } catch {
+      return client.register.getSingleMetric('ws_backpressure_drops_total') as client.Counter<string>;
+    }
+  })();
+  private readonly windowSecondsMetric = (() => {
+    try {
+      return new client.Histogram({
+        name: 'stt_window_seconds',
+        help: 'Window seconds at submit time',
+        buckets: [5,10,12,15,18,20,25],
+      });
+    } catch {
+      return client.register.getSingleMetric('stt_window_seconds') as client.Histogram<string>;
+    }
+  })();
+  private readonly sttDisabledWindows = (() => {
+    try {
+      return new client.Counter({
+        name: 'stt_disabled_windows_total',
+        help: 'Total STT windows skipped due to STT_PROVIDER=off',
+      });
+    } catch {
+      return client.register.getSingleMetric('stt_disabled_windows_total') as client.Counter<string>;
+    }
+  })();
+
   /**
    * Ingest audio chunk into per-group window aggregator. Returns a transcription
    * result only when a window boundary is reached and submitted successfully.
@@ -78,7 +113,8 @@ export class InMemoryAudioProcessor {
     groupId: string,
     audioChunk: Buffer,
     mimeType: string,
-    sessionId: string
+    sessionId: string,
+    schoolId?: string
   ): Promise<GroupTranscriptionResult | null> {
     const processingStart = performance.now();
     const bufferKey = `${groupId}-${Date.now()}`;
@@ -117,7 +153,7 @@ export class InMemoryAudioProcessor {
       }
 
       // 6. Submit window to Whisper
-      const transcription = await this.flushGroupWindow(groupId, state, mimeType);
+      const transcription = await this.flushGroupWindow(groupId, state, mimeType, schoolId);
 
       // 7. Record performance metrics (includes aggregation time)
       const processingTime = performance.now() - processingStart;
@@ -161,6 +197,22 @@ export class InMemoryAudioProcessor {
     await this.handleBackPressure(groupId);
     this.verifyNoDiskWrites();
     const start = performance.now();
+    // STT provider switch: short-circuit when disabled
+    if (process.env.STT_PROVIDER === 'off') {
+      this.sttDisabledWindows.inc();
+      this.secureZeroBuffer(audioChunk);
+      const elapsed = performance.now() - start;
+      this.recordPerformanceMetrics(groupId, elapsed);
+      return {
+        groupId,
+        sessionId,
+        text: '',
+        confidence: 0,
+        timestamp: new Date().toISOString(),
+        language: undefined,
+        duration: undefined,
+      };
+    }
     const transcription = await openAIWhisperService.transcribeBuffer(audioChunk, mimeType);
     // Zero buffer immediately
     this.secureZeroBuffer(audioChunk);
@@ -184,7 +236,7 @@ export class InMemoryAudioProcessor {
         chunks: [],
         bytes: 0,
         mimeType,
-        windowStartedAt: Date.now(),
+        windowStartedAt: Date.now() + this.getRandomJitterMs(),
         windowSeconds: this.baseWindowSeconds,
         consecutiveFailureCount: 0,
       };
@@ -207,7 +259,7 @@ export class InMemoryAudioProcessor {
     }
   }
 
-  private async flushGroupWindow(groupId: string, state: GroupWindowState, fallbackMimeType: string): Promise<WhisperResponse> {
+  private async flushGroupWindow(groupId: string, state: GroupWindowState, fallbackMimeType: string, schoolId?: string): Promise<WhisperResponse> {
     // Circuit breaker check
     const now = Date.now();
     if (this.breakerOpenUntil && now < this.breakerOpenUntil) {
@@ -217,7 +269,23 @@ export class InMemoryAudioProcessor {
       return this.getMockWhisperResponse();
     }
 
+    // STT provider switch: if disabled, skip external submit but zero/drop buffers and advance window
+    if (process.env.STT_PROVIDER === 'off') {
+      this.windowSecondsMetric.observe(state.windowSeconds);
+      const mimeType = state.mimeType || fallbackMimeType;
+      const windowBuffer = Buffer.concat(state.chunks, state.bytes);
+      for (const chunk of state.chunks) this.secureZeroBuffer(chunk);
+      state.chunks = [];
+      state.bytes = 0;
+      this.secureZeroBuffer(windowBuffer);
+      state.windowStartedAt = Date.now();
+      this.sttDisabledWindows.inc();
+      // Return empty transcript to indicate no update; upstream should ignore empty text
+      return { text: '', confidence: 0, language: undefined, duration: undefined } as WhisperResponse;
+    }
+
     const submitStart = performance.now();
+    this.windowSecondsMetric.observe(state.windowSeconds);
     const mimeType = state.mimeType || fallbackMimeType;
     const windowBuffer = Buffer.concat(state.chunks, state.bytes);
     // Ensure immediate zeroing of individual chunks after concat
@@ -226,7 +294,8 @@ export class InMemoryAudioProcessor {
     state.bytes = 0;
 
     try {
-      const result = await openAIWhisperService.transcribeBuffer(windowBuffer, mimeType);
+      // Pass the window duration as a hint for budgeting when Whisper does not return duration
+      const result = await openAIWhisperService.transcribeBuffer(windowBuffer, mimeType, { durationSeconds: state.windowSeconds }, schoolId);
       const latency = performance.now() - submitStart;
       console.log(JSON.stringify({
         event: 'whisper_submit',
@@ -264,7 +333,7 @@ export class InMemoryAudioProcessor {
     } finally {
       // Zero and drop concatenated buffer
       this.secureZeroBuffer(windowBuffer);
-      state.windowStartedAt = Date.now();
+      state.windowStartedAt = Date.now() + this.getRandomJitterMs();
       this.forceGarbageCollection();
     }
   }
@@ -311,6 +380,7 @@ export class InMemoryAudioProcessor {
         const dropCount = Math.ceil(groupState.chunks.length / 2);
         const dropped = groupState.chunks.splice(0, dropCount);
         for (const c of dropped) this.secureZeroBuffer(c);
+        this.bpDrops.inc(dropCount);
         groupState.bytes = groupState.chunks.reduce((acc, b) => acc + b.length, 0);
         // Expand window to slow submit rate
         groupState.windowSeconds = this.clampWindowSeconds(groupState.windowSeconds + 2);
@@ -356,6 +426,20 @@ export class InMemoryAudioProcessor {
    */
   private getBufferSize(groupId: string): number {
     return this.groupWindows.get(groupId)?.bytes ?? 0;
+  }
+
+  /**
+   * Expose current group window info for socket-level backpressure decisions
+   */
+  public getGroupWindowInfo(groupId: string): { bytes: number; chunks: number; windowSeconds: number } {
+    const s = this.groupWindows.get(groupId);
+    return { bytes: s?.bytes ?? 0, chunks: s?.chunks?.length ?? 0, windowSeconds: s?.windowSeconds ?? this.baseWindowSeconds };
+  }
+
+  private getRandomJitterMs(): number {
+    if (!this.windowJitterMs || this.windowJitterMs <= 0) return 0;
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    return Math.floor(Math.random() * this.windowJitterMs) * sign;
   }
 
   /**

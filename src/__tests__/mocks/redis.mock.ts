@@ -40,6 +40,8 @@ export const mockRedisService = {
   isConnected: jest.fn().mockReturnValue(true),
   storeSession: jest.fn().mockResolvedValue(undefined),
   getSession: jest.fn().mockResolvedValue(null),
+  get: jest.fn(),
+  set: jest.fn(),
   deleteSession: jest.fn().mockResolvedValue(undefined),
   extendSession: jest.fn().mockResolvedValue(true),
   getTeacherActiveSessions: jest.fn().mockResolvedValue([]),

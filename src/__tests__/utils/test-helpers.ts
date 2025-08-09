@@ -10,7 +10,7 @@ declare module 'express' {
 }
 
 // Mock Express request
-export const createMockRequest = (overrides: Partial<Request> = {}): Partial<Request> => ({
+export const createMockRequest = (overrides: any = {}): Partial<Request> => ({
   body: {},
   query: {},
   params: {},
@@ -22,7 +22,8 @@ export const createMockRequest = (overrides: Partial<Request> = {}): Partial<Req
   baseUrl: '',
   originalUrl: '/',
   path: '/',
-  ...overrides,
+  // Permit test-only properties like `file`
+  ...(overrides || {}),
 });
 
 // Mock Express response
@@ -62,6 +63,8 @@ export const createAuthenticatedRequest = (user: any, overrides: Partial<Request
       authorization: `Bearer ${token}`,
     },
     user,
+    // Provide school context expected by controllers
+    school: { id: user.school_id },
     ...overrides,
   });
 };
@@ -90,12 +93,20 @@ export const waitFor = (condition: () => boolean, timeout = 5000): Promise<void>
 // Assert response structure
 export const assertErrorResponse = (res: Partial<Response>, expectedError: string, expectedStatus = 400) => {
   expect(res.status).toHaveBeenCalledWith(expectedStatus);
-  expect(res.json).toHaveBeenCalledWith(
-    expect.objectContaining({
-      error: expectedError,
-      message: expect.any(String),
-    })
-  );
+  const jsonMock = res.json as unknown as jest.Mock;
+  const lastCall = jsonMock.mock.calls[jsonMock.mock.calls.length - 1];
+  const payload: any = lastCall ? lastCall[0] : {};
+  if (payload && typeof payload.error === 'object' && (payload.error as any)?.code) {
+    expect((payload.error as any).code).toBe(expectedError);
+    expect((payload.error as any).message).toEqual(expect.any(String));
+  } else {
+    expect(payload).toEqual(
+      expect.objectContaining({
+        error: expectedError,
+        message: expect.any(String),
+      })
+    );
+  }
 };
 
 export const assertSuccessResponse = (res: Partial<Response>, expectedData?: any) => {

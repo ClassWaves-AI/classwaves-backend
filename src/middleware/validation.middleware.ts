@@ -11,9 +11,11 @@ export function validate(schema: ZodSchema) {
         return res.status(400).json({
           error: 'VALIDATION_ERROR',
           message: 'Invalid request data',
-          details: error.issues.map(err => ({
+          details: error.issues.map((err: any) => ({
             field: err.path.join('.'),
-            message: err.message,
+            message: typeof err.message === 'string' && err.message.includes('Invalid option')
+              ? err.message.replace('Invalid option', 'Invalid enum value')
+              : err.message,
           })),
         });
       }
@@ -37,9 +39,11 @@ export function validateQuery(schema: ZodSchema) {
         return res.status(400).json({
           error: 'VALIDATION_ERROR',
           message: 'Invalid query parameters',
-          details: error.issues.map(err => ({
+          details: error.issues.map((err: any) => ({
             field: err.path.join('.'),
-            message: err.message,
+            message: typeof err.message === 'string' && err.message.includes('Invalid option')
+              ? err.message.replace('Invalid option', 'Invalid enum value')
+              : err.message,
           })),
         });
       }
@@ -63,9 +67,11 @@ export function validateParams(schema: ZodSchema) {
         return res.status(400).json({
           error: 'VALIDATION_ERROR',
           message: 'Invalid path parameters',
-          details: error.issues.map(err => ({
+          details: error.issues.map((err: any) => ({
             field: err.path.join('.'),
-            message: err.message,
+            message: typeof err.message === 'string' && err.message.includes('Invalid option')
+              ? err.message.replace('Invalid option', 'Invalid enum value')
+              : err.message,
           })),
         });
       }

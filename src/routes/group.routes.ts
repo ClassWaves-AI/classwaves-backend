@@ -5,6 +5,7 @@ import {
   updateGroup,
   deleteGroup,
   assignGroupLeader,
+  autoGenerateGroups,
 } from '../controllers/group.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -24,6 +25,7 @@ router.get('/', getSessionGroups);
 router.post('/', validate(createGroupSchema), createGroup);
 router.put('/:groupId', validate(updateGroupSchema), updateGroup);
 router.delete('/:groupId', deleteGroup);
+router.post('/auto-generate', autoGenerateGroups);
 
 // Group leader management
 router.post('/:groupId/assign-leader', validate(assignGroupLeaderSchema), assignGroupLeader);

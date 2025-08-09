@@ -126,6 +126,7 @@ interface TranscriptionData {
 
 export class DatabricksService {
   private client: DBSQLClient;
+  private connection: any = null;
   private currentSession: any = null;
   private sessionPromise: Promise<any> | null = null;
   private connectionParams: {
@@ -173,13 +174,20 @@ export class DatabricksService {
         tokenLength: this.connectionParams.token.length,
       });
       
+      // Reset session state per connection
+      this.currentSession = null;
+      this.sessionPromise = null;
+
       const connectionOptions = {
         host: this.connectionParams.hostname,
         path: this.connectionParams.path,
         token: this.connectionParams.token,
       };
       
-      await this.client.connect(connectionOptions);
+      this.connection = await (this.client as any).connect({
+        ...connectionOptions,
+        authType: 'access-token',
+      });
       console.log('✅ Connected to Databricks SQL Warehouse');
     } catch (error) {
       console.error('❌ Failed to connect to Databricks:', error);
@@ -217,8 +225,13 @@ export class DatabricksService {
       return await this.sessionPromise;
     }
 
-    // Create a new session
-    this.sessionPromise = this.client.openSession();
+    // Ensure connection exists
+    if (!this.connection) {
+      await this.connect();
+    }
+
+    // Create a new session via connection
+    this.sessionPromise = (this.connection as any).openSession();
     
     try {
       this.currentSession = await this.sessionPromise;
@@ -293,11 +306,20 @@ export class DatabricksService {
         console.log(`⏱️  Parameter formatting took ${(performance.now() - paramStart).toFixed(2)}ms`);
         
         const executeStart = performance.now();
-        const operation = await session.executeStatement(finalSql);
+        let operation: any;
+        try {
+          operation = await session.executeStatement(finalSql, {});
+        } catch (e) {
+          // Ensure operation is closed if created (defensive)
+          if (operation && operation.close) {
+            try { await operation.close(); } catch {}
+          }
+          throw e;
+        }
         console.log(`⏱️  Statement execution took ${(performance.now() - executeStart).toFixed(2)}ms`);
         
         const fetchStart = performance.now();
-        const result = await operation.fetchAll();
+        const fetchResult: any = await operation.fetchAll();
         console.log(`⏱️  Result fetching took ${(performance.now() - fetchStart).toFixed(2)}ms`);
         
         await operation.close();
@@ -305,7 +327,28 @@ export class DatabricksService {
         const queryTotal = performance.now() - queryStart;
         console.log(`🔍 DB QUERY COMPLETE - Total time: ${queryTotal.toFixed(2)}ms`);
         
-        return (result as any) || [];
+        // Normalize result shape from DBSQLClient
+        // In our environment, fetchAll() returns an array of row objects.
+        // Older versions or different drivers may return { rows: [...] }.
+        let rows: any[] = [];
+        if (Array.isArray(fetchResult)) {
+          rows = fetchResult;
+        } else if (fetchResult && Array.isArray(fetchResult.rows)) {
+          rows = fetchResult.rows;
+        } else if (fetchResult && Array.isArray(fetchResult.data_array)) {
+          // Fallback: convert array of arrays to array of objects using metadata/columns if available
+          const columns = (fetchResult.schema?.columns || []).map((c: any) => c.name);
+          rows = fetchResult.data_array.map((arr: any[]) => {
+            const obj: Record<string, any> = {};
+            arr.forEach((val: any, idx: number) => {
+              const key = columns[idx] || String(idx);
+              obj[key] = val;
+            });
+            return obj;
+          });
+        }
+        
+        return rows;
       } catch (error) {
         console.error(`Query error (attempt ${retries + 1}):`, error);
         
@@ -496,88 +539,49 @@ export class DatabricksService {
    * Create or update teacher - OPTIMIZED two-step process (faster than MERGE)
    */
   async upsertTeacher(teacherData: Partial<Teacher>): Promise<Teacher> {
-    console.log('🔍 UPSERT TEACHER START (OPTIMIZED TWO-STEP)');
-    const upsertStart = performance.now();
-    
-    // Step 1: Quick existence check with optimized query
-    const checkStart = performance.now();
+    // Existence check
     const existingTeacher = await this.queryOne<Teacher>(
-      `SELECT id, login_count FROM ${databricksConfig.catalog}.users.teachers 
+      `SELECT * FROM ${databricksConfig.catalog}.users.teachers 
        WHERE google_id = ? AND status = 'active'`,
       [teacherData.google_id]
     );
-    console.log(`⏱️  Teacher existence check took ${(performance.now() - checkStart).toFixed(2)}ms`);
 
     if (existingTeacher) {
-      // PERFORMANCE OPTIMIZATION: Skip UPDATE for login (async update instead)
-      const now = new Date();
-      
-      console.log(`⏱️  Skipping teacher update for performance (async update scheduled)`);
-      
-      // Schedule async update (don't block login)
-      setImmediate(async () => {
-        const asyncUpdateStart = performance.now();
-        try {
-          await this.query(
-            `UPDATE ${databricksConfig.catalog}.users.teachers 
-             SET 
-               name = ?, 
-               picture = ?, 
-               last_login = CURRENT_TIMESTAMP(), 
-               login_count = login_count + 1, 
-               updated_at = CURRENT_TIMESTAMP()
-             WHERE id = ? AND status = 'active'`,
-            [
-              teacherData.name,
-              teacherData.picture,
-              existingTeacher.id
-            ]
-          );
-          console.log(`⏱️  Async teacher update took ${(performance.now() - asyncUpdateStart).toFixed(2)}ms`);
-        } catch (error) {
-          console.error('⚠️  Async teacher update failed:', error);
-        }
-      });
-      
-      const upsertTotal = performance.now() - upsertStart;
-      console.log(`🔍 UPSERT TEACHER COMPLETE (ASYNC UPDATE) - Total time: ${upsertTotal.toFixed(2)}ms`);
-      
-      return {
-        ...existingTeacher,
-        name: teacherData.name!,
-        picture: teacherData.picture,
-        last_login: now,
-        login_count: existingTeacher.login_count + 1,
-        updated_at: now,
-      } as Teacher;
-    } else {
-      // Step 2: Create new teacher
-      const insertStart = performance.now();
-      const now = new Date();
-      const newTeacher = {
-        id: this.generateId(),
-        ...teacherData,
-        status: 'active' as const,
-        role: 'teacher' as const,
-        access_level: 'basic',
-        max_concurrent_sessions: 3,
-        current_sessions: 0,
-        timezone: 'UTC',
-        login_count: 1,
-        total_sessions_created: 0,
-        last_login: now,
-        created_at: now,
-        updated_at: now,
-      };
-      
-      await this.insert('teachers', newTeacher);
-      console.log(`⏱️  Teacher insert took ${(performance.now() - insertStart).toFixed(2)}ms`);
-      
-      const upsertTotal = performance.now() - upsertStart;
-      console.log(`🔍 UPSERT TEACHER COMPLETE (INSERT) - Total time: ${upsertTotal.toFixed(2)}ms`);
-      
-      return newTeacher as Teacher;
+      await this.query(
+        `UPDATE ${databricksConfig.catalog}.users.teachers 
+         SET name = ?, picture = ?, last_login = CURRENT_TIMESTAMP(), login_count = login_count + 1, updated_at = CURRENT_TIMESTAMP()
+         WHERE id = ? AND status = 'active'`,
+        [teacherData.name, teacherData.picture, existingTeacher.id]
+      );
+      // Return fresh row
+      const updated = await this.getTeacherByGoogleId(teacherData.google_id!);
+      return updated as Teacher;
     }
+
+    const now = new Date();
+    const newTeacherId = this.generateId();
+    const newTeacherData = {
+      id: newTeacherId,
+      google_id: teacherData.google_id,
+      email: teacherData.email,
+      name: teacherData.name,
+      picture: teacherData.picture,
+      school_id: teacherData.school_id,
+      status: 'active' as const,
+      role: 'teacher' as const,
+      access_level: 'basic',
+      max_concurrent_sessions: 3,
+      current_sessions: 0,
+      timezone: 'UTC',
+      login_count: 1,
+      total_sessions_created: 0,
+      last_login: now,
+      created_at: now,
+      updated_at: now,
+    };
+    await this.insert('teachers', newTeacherData);
+    const created = await this.getTeacherByGoogleId(teacherData.google_id!);
+    return created as Teacher;
   }
 
   /**
@@ -683,7 +687,7 @@ export class DatabricksService {
       updated_at: createdAt,
     };
     
-    await this.insert('classroom_sessions', data);
+    await this.insert('sessions', data);
     
     // Return the data we already have instead of querying again
     return {
@@ -738,7 +742,7 @@ export class DatabricksService {
       }
     }
     
-    await this.update('classroom_sessions', sessionId, updateData);
+    await this.update('sessions', sessionId, updateData);
   }
 
   /**

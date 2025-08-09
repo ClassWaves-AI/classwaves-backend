@@ -13,6 +13,8 @@ import { redisService } from './services/redis.service';
 import { databricksService } from './services/databricks.service';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
+import { initializeRateLimiters } from './middleware/rate-limit.middleware';
+import client from 'prom-client';
 
 // Load environment variables
 dotenv.config();
@@ -49,6 +51,11 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 }));
 
+// Initialize rate limiters (non-blocking)
+initializeRateLimiters().catch((err) => {
+  console.warn('Rate limiter initialization failed, continuing without enforced limits:', err);
+});
+
 // Apply rate limiting
 app.use('/api/', rateLimitMiddleware);
 app.use('/api/v1/auth', authRateLimitMiddleware);
@@ -70,23 +77,63 @@ app.use(requireCSRF({
     '/.well-known',
     '/api/v1/auth/google',
     '/api/v1/auth/generate-test-token',
+    '/api/v1/sessions', // allow factory to skip via startsWith; join is unauthenticated
   ]
 }));
 
 // Health check endpoint
 app.get('/api/v1/health', async (_req, res) => {
-  const redisConnected = await redisService.ping().catch(() => false);
-  const databricksConnected = await databricksService.query('SELECT 1 as ping').then(() => true).catch(() => false);
-  const isHealthy = databricksConnected && redisConnected;
-  
-  res.status(isHealthy ? 200 : 503).json({
-    status: isHealthy ? 'healthy' : 'unhealthy',
-    timestamp: new Date().toISOString(),
-    services: {
-      database: { status: databricksConnected ? 'connected' : 'disconnected' },
-      redis: { status: redisConnected ? 'connected' : 'disconnected' },
-    },
-  });
+  try {
+    const checks: any = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      services: {
+        api: 'healthy',
+        redis: 'unknown',
+        databricks: 'unknown',
+      },
+      version: process.env.npm_package_version || '1.0.0',
+      environment: process.env.NODE_ENV || 'development',
+    };
+
+    try {
+      const redisOk = await redisService.ping();
+      checks.services.redis = redisOk ? 'healthy' : 'unhealthy';
+    } catch {
+      checks.services.redis = 'unhealthy';
+    }
+
+    try {
+      await databricksService.query('SELECT 1');
+      checks.services.databricks = 'healthy';
+    } catch {
+      checks.services.databricks = 'unhealthy';
+    }
+
+    const unhealthy = Object.values(checks.services).some((s) => s === 'unhealthy');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    if (unhealthy) {
+      checks.status = 'degraded';
+      res.status(503).json(checks);
+    } else {
+      res.json(checks);
+    }
+  } catch (err) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.status(500).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: 'Health check failed',
+    });
+  }
+});
+
+// Metrics endpoint
+const register = new client.Registry();
+client.collectDefaultMetrics({ register });
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
 });
 
 // JWKS routes

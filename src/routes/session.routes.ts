@@ -7,7 +7,10 @@ import {
   deleteSession,
   startSession,
   pauseSession,
-  endSession 
+  endSession,
+  getSessionAnalytics,
+  joinSession,
+  getSessionParticipants
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -16,20 +19,24 @@ import groupRoutes from './group.routes';
 
 const router = Router();
 
-// All session routes require authentication
-router.use(authenticate);
-
 // Session CRUD
-router.get('/', listSessions);
-router.post('/', validate(createSessionSchema), createSession);
-router.get('/:sessionId', getSession);
-router.put('/:sessionId', updateSession);
-router.delete('/:sessionId', deleteSession);
+router.get('/', authenticate, listSessions);
+router.post('/', authenticate, validate(createSessionSchema), createSession);
+router.get('/:sessionId', authenticate, getSession);
+router.put('/:sessionId', authenticate, updateSession);
+router.delete('/:sessionId', authenticate, deleteSession);
 
 // Session lifecycle
-router.post('/:sessionId/start', startSession);
-router.post('/:sessionId/pause', pauseSession);
-router.post('/:sessionId/end', endSession);
+router.post('/:sessionId/start', authenticate, startSession);
+router.post('/:sessionId/pause', authenticate, pauseSession);
+router.post('/:sessionId/end', authenticate, endSession);
+router.get('/:sessionId/analytics', authenticate, getSessionAnalytics);
+
+// Public student join endpoint (no auth)
+router.post('/:sessionId/join', joinSession);
+
+// Participants (teacher auth)
+router.get('/:sessionId/participants', authenticate, getSessionParticipants);
 
 // Group management (nested routes)
 router.use('/:sessionId/groups', groupRoutes);

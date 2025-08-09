@@ -17,8 +17,8 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
     }
     
     const session = await databricksService.queryOne(
-      `SELECT * FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, authReq.user.id]
+      `SELECT id, teacher_id, status FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
+      [sessionId]
     );
     
     if (!session) {
@@ -26,6 +26,9 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
         error: 'SESSION_NOT_FOUND',
         message: 'Session not found or access denied',
       });
+    }
+    if (session.teacher_id !== authReq.user.id) {
+      return res.status(403).json({ error: 'FORBIDDEN', message: 'Access denied' });
     }
     
     const groups = await databricksService.query(
@@ -254,6 +257,91 @@ export async function deleteGroup(req: Request, res: Response): Promise<Response
   } catch (error) {
     console.error('Delete group error:', error);
     return res.status(500).json({ error: 'GROUP_DELETE_FAILED', message: 'Failed to delete group' });
+  }
+}
+
+/**
+ * Auto-generate groups for a session (balanced/random minimal implementation)
+ */
+export async function autoGenerateGroups(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const { sessionId } = (req.body || {}) as any;
+    const { targetGroupSize = 4 } = (req.body || {}) as any;
+
+    if (!authReq.user) {
+      return res.status(401).json({ error: 'UNAUTHORIZED', message: 'User not authenticated' });
+    }
+
+    const session = await databricksService.queryOne(
+      `SELECT * FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      [sessionId, authReq.user.id]
+    );
+    if (!session) {
+      return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: 'Session not found' });
+    }
+
+    // Accept either param or body sessionId for backward-compat tests
+    const effectiveSessionId = (req.params as any).sessionId || sessionId;
+    const students = await databricksService.query(
+      `SELECT id, display_name FROM classwaves.users.students WHERE session_id = ?`,
+      [effectiveSessionId]
+    );
+    if (!students || students.length < 2) {
+      return res.status(400).json({ error: 'NOT_ENOUGH_STUDENTS', message: 'Not enough students to form groups' });
+    }
+
+    const numGroups = Math.max(1, Math.ceil(students.length / targetGroupSize));
+    const groups: any[] = [];
+
+    for (let i = 0; i < numGroups; i++) {
+      const groupId = databricksService.generateId();
+      const groupData = createStudentGroupData({
+        id: groupId,
+        session_id: effectiveSessionId,
+        name: `Group ${i + 1}`,
+        group_number: i + 1,
+        max_size: targetGroupSize,
+        current_size: 0,
+        student_ids: JSON.stringify([]),
+        auto_managed: true,
+        is_ready: false,
+        leader_id: null,
+      });
+      await databricksService.insert('student_groups', groupData);
+      groups.push({ id: groupId, name: (groupData as any).name, max_size: targetGroupSize, current_size: 0 });
+    }
+
+    // Evenly distribute students round-robin
+    const studentIds = students.map((s: any) => s.id);
+    for (let idx = 0; idx < studentIds.length; idx++) {
+      const groupIndex = idx % groups.length;
+      const group = groups[groupIndex];
+      const updated = await databricksService.queryOne(
+        `SELECT student_ids, current_size FROM classwaves.sessions.student_groups WHERE id = ?`,
+        [group.id]
+      );
+      const arr = JSON.parse(updated?.student_ids || '[]');
+      arr.push(studentIds[idx]);
+      await databricksService.update('student_groups', group.id, {
+        student_ids: JSON.stringify(arr),
+        current_size: (updated?.current_size || 0) + 1,
+        updated_at: new Date(),
+      });
+      group.current_size += 1;
+    }
+
+    return res.status(201).json({
+      groups: groups.map(g => ({ id: g.id, name: g.name, studentCount: g.current_size })),
+      stats: {
+        totalStudents: students.length,
+        groupsCreated: groups.length,
+        averageGroupSize: Math.round((students.length / groups.length) * 100) / 100,
+      },
+    });
+  } catch (error) {
+    console.error('Auto generate groups error:', error);
+    return res.status(500).json({ error: 'AUTO_GROUP_FAILED', message: 'Failed to auto-generate groups' });
   }
 }
 

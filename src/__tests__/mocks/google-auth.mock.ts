@@ -4,7 +4,7 @@ import { jest } from '@jest/globals';
 
 // Mock Google OAuth2Client
 export const mockGoogleOAuth2Client = {
-  getToken: jest.fn().mockResolvedValue({
+  getToken: (jest.fn() as any).mockResolvedValue({
     tokens: {
       access_token: 'mock-access-token',
       refresh_token: 'mock-refresh-token',
@@ -13,7 +13,7 @@ export const mockGoogleOAuth2Client = {
       expiry_date: Date.now() + 3600000,
     },
   }),
-  verifyIdToken: jest.fn().mockResolvedValue({
+  verifyIdToken: (jest.fn() as any).mockResolvedValue({
     getPayload: jest.fn().mockReturnValue({
       iss: 'https://accounts.google.com',
       sub: 'google-user-123',
@@ -27,7 +27,7 @@ export const mockGoogleOAuth2Client = {
       hd: 'school.edu',
     }),
   }),
-  refreshAccessToken: jest.fn().mockResolvedValue({
+  refreshAccessToken: (jest.fn() as any).mockResolvedValue({
     credentials: {
       access_token: 'new-mock-access-token',
       refresh_token: 'mock-refresh-token',
@@ -35,14 +35,14 @@ export const mockGoogleOAuth2Client = {
       expiry_date: Date.now() + 3600000,
     },
   }),
-  setCredentials: jest.fn(),
-  revokeToken: jest.fn().mockResolvedValue({}),
+  setCredentials: (jest.fn() as any),
+  revokeToken: (jest.fn() as any).mockResolvedValue({}),
 };
 
 // Mock Google People API
 export const mockGooglePeopleAPI = {
   people: {
-    get: jest.fn().mockResolvedValue({
+    get: (jest.fn() as any).mockResolvedValue({
       data: {
         resourceName: 'people/123',
         emailAddresses: [{ value: 'teacher@school.edu' }],
@@ -83,13 +83,13 @@ export const resetGoogleMocks = () => {
 
 // Helper to setup Google auth error
 export const setupGoogleAuthError = (error: Error) => {
-  mockGoogleOAuth2Client.getToken.mockRejectedValue(error);
-  mockGoogleOAuth2Client.verifyIdToken.mockRejectedValue(error);
+  (mockGoogleOAuth2Client.getToken as any).mockRejectedValue(error);
+  (mockGoogleOAuth2Client.verifyIdToken as any).mockRejectedValue(error);
 };
 
 // Helper to setup invalid token
 export const setupInvalidGoogleToken = () => {
-  mockGoogleOAuth2Client.verifyIdToken.mockResolvedValue({
+  (mockGoogleOAuth2Client.verifyIdToken as any).mockResolvedValue({
     getPayload: jest.fn().mockReturnValue(null),
   });
 };

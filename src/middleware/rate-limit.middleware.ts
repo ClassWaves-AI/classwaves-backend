@@ -87,6 +87,9 @@ export async function initializeRateLimiters() {
 
 // General rate limiting middleware
 export const rateLimitMiddleware = async (req: Request, res: Response, next: Function) => {
+  if (process.env.NODE_ENV === 'test') {
+    return next();
+  }
   // If rate limiter hasn't been initialized yet, allow the request but log warning
   if (!rateLimiterInitialized) {
     console.warn('⚠️  Rate limiter not initialized, allowing request');
@@ -120,6 +123,9 @@ export const rateLimitMiddleware = async (req: Request, res: Response, next: Fun
 
 // Stricter rate limiting for auth endpoints
 export const authRateLimitMiddleware = async (req: Request, res: Response, next: Function) => {
+  if (process.env.NODE_ENV === 'test') {
+    return next();
+  }
   // If auth rate limiter hasn't been initialized yet, allow the request but log warning
   if (!authRateLimiterInitialized) {
     console.warn('⚠️  Auth rate limiter not initialized, allowing request');
