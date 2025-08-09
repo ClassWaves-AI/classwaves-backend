@@ -7,8 +7,9 @@ Educational platform backend service for real-time classroom collaboration with 
 - **Framework:** Express.js with TypeScript
 - **Database:** Databricks Unity Catalog (Delta Lake)
 - **Authentication:** Google OAuth 2.0 with JWT
-- **Real-time:** WebRTC (planned) for audio/video
-- **AI Integration:** In-memory audio processing (planned)
+- **Real-time:** WebSocket for audio streaming and live transcription
+- **STT Provider:** OpenAI Whisper API with windowed batching
+- **AI Integration:** In-memory audio processing with zero-disk guarantee
 
 ## Unity Catalog Database Structure
 
@@ -16,6 +17,28 @@ Educational platform backend service for real-time classroom collaboration with 
 - **Schemas:** 10 (users, sessions, analytics, compliance, ai_insights, operational, admin, communication, audio, notifications)
 - **Tables:** 27 total with full FERPA/COPPA compliance
 - **Documentation:** See [DATABASE_SCHEMA.md](./docs/DATABASE_SCHEMA.md) for complete details
+
+## Phase 4: OpenAI Whisper STT Integration
+
+**Migration Status**: ✅ **Complete** - Databricks waveWhisperer fully replaced
+
+### Key Features
+- **Zero-disk audio processing**: All audio handled in-memory only
+- **Windowed batching**: Configurable 10-20s windows for cost optimization  
+- **Budget controls**: Per-school daily limits with automatic alerting
+- **Classroom scale**: Tested for 25+ concurrent groups
+- **FERPA compliant**: No persistent audio storage, immediate buffer cleanup
+
+### STT Architecture
+```
+WebSocket Audio Chunks → In-Memory Aggregator → OpenAI Whisper API → Live Transcription
+```
+
+**Benefits over Databricks waveWhisperer**:
+- Lower latency and cost
+- Better reliability and scaling
+- Industry-standard OpenAI integration
+- Comprehensive budget monitoring
 
 ## Quick Start
 
@@ -26,7 +49,7 @@ Educational platform backend service for real-time classroom collaboration with 
 
 ### Environment Setup
 
-Create a `.env` file:
+Create a `.env` file (see [ENVIRONMENT_VARIABLES.md](./docs/ENVIRONMENT_VARIABLES.md) for complete documentation):
 
 ```bash
 # Server
@@ -50,6 +73,7 @@ STT_BUDGET_ALERT_PCTS=50,75,90,100 # optional: alert thresholds in % of daily bu
 # Google OAuth
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
+
 GOOGLE_REDIRECT_URI=http://localhost:3001/api/auth/google/callback
 
 # Security
