@@ -396,7 +396,7 @@ export class DatabricksService {
       
       // Sessions schema
       'classroom_sessions': 'sessions',
-      'sessions': 'sessions', // Alias
+      'sessions': 'sessions', // Alias (deprecated - use classroom_sessions)
       'student_groups': 'sessions',
       'groups': 'sessions', // Alias
       'transcriptions': 'sessions',
@@ -666,7 +666,7 @@ export class DatabricksService {
       description: sessionData.description,
       teacher_id: sessionData.teacherId,
       school_id: sessionData.schoolId,
-      access_code: finalCode,
+      access_code: accessCode,
       max_students: sessionData.maxStudents || 30,
       target_group_size: sessionData.targetGroupSize || 4,
       auto_group_enabled: sessionData.autoGroupEnabled ?? true,
@@ -681,13 +681,13 @@ export class DatabricksService {
       recording_consent_obtained: false,
       total_groups: 0,
       total_students: 0,
-      participation_rate: 0.0,
       engagement_score: 0.0,
       created_at: createdAt,
       updated_at: createdAt,
     };
     
-    await this.insert('sessions', data);
+    console.log('🔍 Attempting to insert session with data:', JSON.stringify(data, null, 2));
+    await this.insert('classroom_sessions', data);
     
     // Return the data we already have instead of querying again
     return {
@@ -711,7 +711,7 @@ export class DatabricksService {
       'planned_duration_minutes', 'actual_duration_minutes', 'max_students', 'target_group_size',
       'auto_group_enabled', 'recording_enabled', 'transcription_enabled', 'ai_analysis_enabled',
       'ferpa_compliant', 'coppa_compliant', 'recording_consent_obtained', 'data_retention_date',
-      'total_groups', 'total_students', 'participation_rate', 'engagement_score'
+      'total_groups', 'total_students', 'engagement_score'
     ];
     
     // Filter additionalData to only include allowed fields
@@ -742,7 +742,7 @@ export class DatabricksService {
       }
     }
     
-    await this.update('sessions', sessionId, updateData);
+    await this.update('classroom_sessions', sessionId, updateData);
   }
 
   /**
