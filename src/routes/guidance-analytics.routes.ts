@@ -167,6 +167,32 @@ router.get('/session/:sessionId',
   analyticsController.getSessionAnalytics as any
 );
 
+/**
+ * GET /analytics/session/:sessionId/overview
+ * 
+ * Phase 5: Returns planned vs actual metrics and readiness timeline
+ * - Teachers can view their own session analytics
+ * - Includes adherence ratios and readiness tracking
+ */
+router.get('/session/:sessionId/overview',
+  analyticsLimiter,
+  validateParams(sessionParamsSchema),
+  analyticsController.getSessionOverview
+);
+
+/**
+ * GET /analytics/session/:sessionId/groups
+ * 
+ * Phase 5: Returns per-group adherence and readiness data
+ * - Detailed breakdown of each group's configuration vs reality
+ * - Leader readiness timestamps and member participation
+ */
+router.get('/session/:sessionId/groups',
+  analyticsLimiter,
+  validateParams(sessionParamsSchema),
+  analyticsController.getSessionGroups
+);
+
 // ============================================================================
 // System Analytics Endpoints (Admin Only)
 // ============================================================================

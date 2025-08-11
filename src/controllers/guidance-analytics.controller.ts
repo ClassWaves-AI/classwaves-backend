@@ -965,3 +965,219 @@ function getTimeframeInterval(timeframe: string): string {
   
   return intervals[timeframe as keyof typeof intervals] || '7 DAY';
 }
+
+// ============================================================================
+// Phase 5: Planned vs Actual Session Analytics Endpoints
+// ============================================================================
+
+/**
+ * GET /api/v1/analytics/session/:sessionId/overview
+ * Returns planned vs actual metrics and readiness timeline
+ */
+export async function getSessionOverview(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    const sessionId = req.params.sessionId;
+
+    // Verify session belongs to teacher
+    const session = await databricksService.queryOne(`
+      SELECT id, teacher_id FROM classwaves.sessions.classroom_sessions 
+      WHERE id = ? AND teacher_id = ?
+    `, [sessionId, teacher.id]);
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: 'Session not found',
+        },
+      });
+    }
+
+    // Get planned vs actual metrics
+    const analytics = await databricksService.queryOne(`
+      SELECT 
+        planned_groups,
+        planned_group_size,
+        planned_duration_minutes,
+        planned_members,
+        planned_leaders,
+        planned_scheduled_start,
+        configured_at,
+        started_at,
+        started_without_ready_groups,
+        ready_groups_at_start,
+        ready_groups_at_5m,
+        ready_groups_at_10m,
+        adherence_members_ratio
+      FROM classwaves.analytics.session_metrics
+      WHERE session_id = ?
+    `, [sessionId]);
+
+    // Get readiness timeline from events
+    const readinessEvents = await databricksService.query(`
+      SELECT event_time, payload
+      FROM classwaves.analytics.session_events
+      WHERE session_id = ? AND event_type = 'leader_ready'
+      ORDER BY event_time
+    `, [sessionId]);
+
+    // Get actual group counts
+    const actualCounts = await databricksService.queryOne(`
+      SELECT 
+        COUNT(*) as actual_groups,
+        AVG(current_size) as actual_avg_group_size,
+        SUM(current_size) as actual_members
+      FROM classwaves.sessions.student_groups
+      WHERE session_id = ?
+    `, [sessionId]);
+
+    const overview = {
+      sessionId,
+      plannedVsActual: {
+        planned: {
+          groups: analytics?.planned_groups || 0,
+          groupSize: analytics?.planned_group_size || 0,
+          durationMinutes: analytics?.planned_duration_minutes || 0,
+          members: analytics?.planned_members || 0,
+          leaders: analytics?.planned_leaders || 0,
+          scheduledStart: analytics?.planned_scheduled_start,
+        },
+        actual: {
+          groups: actualCounts?.actual_groups || 0,
+          avgGroupSize: Math.round(actualCounts?.actual_avg_group_size || 0),
+          members: actualCounts?.actual_members || 0,
+        },
+        adherence: {
+          membersRatio: analytics?.adherence_members_ratio || 0,
+          startedWithoutReadyGroups: Boolean(analytics?.started_without_ready_groups),
+        },
+      },
+      readinessTimeline: {
+        readyGroupsAtStart: analytics?.ready_groups_at_start || 0,
+        readyGroupsAt5m: analytics?.ready_groups_at_5m || 0,
+        readyGroupsAt10m: analytics?.ready_groups_at_10m || 0,
+        leaderReadyEvents: readinessEvents.map((event: any) => {
+          const payload = JSON.parse(event.payload);
+          return {
+            timestamp: event.event_time,
+            groupId: payload.groupId,
+            leaderId: payload.leaderId,
+          };
+        }),
+      },
+      timestamps: {
+        configuredAt: analytics?.configured_at,
+        startedAt: analytics?.started_at,
+      },
+    };
+
+    return res.json({
+      success: true,
+      data: overview,
+    });
+  } catch (error) {
+    console.error('Error getting session overview:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_FETCH_FAILED',
+        message: 'Failed to fetch session analytics',
+      },
+    });
+  }
+}
+
+/**
+ * GET /api/v1/analytics/session/:sessionId/groups
+ * Returns per-group adherence and readiness data
+ */
+export async function getSessionGroups(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    const sessionId = req.params.sessionId;
+
+    // Verify session belongs to teacher
+    const session = await databricksService.queryOne(`
+      SELECT id, teacher_id FROM classwaves.sessions.classroom_sessions 
+      WHERE id = ? AND teacher_id = ?
+    `, [sessionId, teacher.id]);
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: 'Session not found',
+        },
+      });
+    }
+
+    // Get group configuration and adherence data
+    const groups = await databricksService.query(`
+      SELECT 
+        sg.id,
+        sg.name,
+        sg.leader_id,
+        sg.is_ready,
+        sg.max_size as configured_size,
+        sg.current_size as members_present,
+        ga.leader_ready_at,
+        ga.members_configured,
+        ga.configured_name
+      FROM classwaves.sessions.student_groups sg
+      LEFT JOIN classwaves.analytics.group_metrics ga ON sg.id = ga.group_id
+      WHERE sg.session_id = ?
+      ORDER BY sg.group_number
+    `, [sessionId]);
+
+    const groupAnalytics = groups.map((group: any) => ({
+      groupId: group.id,
+      name: group.name || group.configured_name,
+      configuration: {
+        leaderId: group.leader_id,
+        configuredSize: group.configured_size,
+        membersConfigured: group.members_configured || group.configured_size,
+      },
+      adherence: {
+        membersPresent: group.members_present,
+        adherenceRatio: group.configured_size > 0 
+          ? Number((group.members_present / group.configured_size).toFixed(2))
+          : 0,
+        leaderAssigned: Boolean(group.leader_id),
+        leaderReady: Boolean(group.is_ready),
+        leaderReadyAt: group.leader_ready_at,
+      },
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        sessionId,
+        groups: groupAnalytics,
+        summary: {
+          totalGroups: groups.length,
+          groupsWithLeaders: groups.filter((g: any) => g.leader_id).length,
+          readyGroups: groups.filter((g: any) => g.is_ready).length,
+          averageAdherence: groups.length > 0 
+            ? groups.reduce((sum: number, g: any) => 
+                sum + (g.configured_size > 0 ? g.members_present / g.configured_size : 0), 0
+              ) / groups.length
+            : 0,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error getting session groups analytics:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_FETCH_FAILED',
+        message: 'Failed to fetch group analytics',
+      },
+    });
+  }
+}
