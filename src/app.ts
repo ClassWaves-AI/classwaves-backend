@@ -1,8 +1,11 @@
+// Load environment variables FIRST before any other imports
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import dotenv from 'dotenv';
 import authRoutes from './routes/auth.routes';
 import sessionRoutes from './routes/session.routes';
 import rosterRoutes from './routes/roster.routes';
@@ -18,9 +21,6 @@ import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
 import client from 'prom-client';
-
-// Load environment variables
-dotenv.config();
 
 const app = express();
 
@@ -54,10 +54,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 }));
 
-// Initialize rate limiters (non-blocking)
-initializeRateLimiters().catch((err) => {
-  console.warn('Rate limiter initialization failed, continuing without enforced limits:', err);
-});
+// Rate limiters will be initialized by service manager after Redis connection
+// Middleware below will gracefully handle uninitialized state
 
 // Apply rate limiting
 app.use('/api/', rateLimitMiddleware);

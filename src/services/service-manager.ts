@@ -39,7 +39,7 @@ class ServiceManager {
       await this.initializeCache();
       
       // Phase 2: Application Services (depend on infrastructure)
-      await this.initializeRateLimiters();
+      // Rate limiters are now initialized in initializeCache after Redis connection
       
       // Phase 3: Real-time Services (depend on cache and database)
       // WebSocket service will be initialized separately in server.ts
@@ -96,11 +96,22 @@ class ServiceManager {
 
       this.updateServiceStatus(serviceName, 'connected');
       console.log('✅ Redis cache service initialized');
+      
+      // Initialize rate limiters now that Redis is connected
+      await this.initializeRateLimiters();
     } catch (error) {
       this.updateServiceStatus(serviceName, 'failed', error as Error);
       console.error('❌ Redis connection failed - sessions will use in-memory fallback');
       console.error('   Please ensure Redis is running:');
       console.error('   docker-compose up -d redis');
+      
+      // Initialize rate limiters with memory fallback even if Redis failed
+      try {
+        await this.initializeRateLimiters();
+        console.log('✅ Rate limiters initialized with memory fallback');
+      } catch (rateLimiterError) {
+        console.warn('⚠️  Rate limiter fallback initialization failed:', rateLimiterError);
+      }
       
       // Don't throw - allow graceful degradation for development
       // throw new Error(`Cache initialization failed: ${error}`);
