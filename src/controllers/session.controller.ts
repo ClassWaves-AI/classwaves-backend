@@ -12,6 +12,53 @@ import {
 } from '@classwaves/shared';
 
 /**
+ * Store session access code in Redis for student leader joining
+ */
+async function storeSessionAccessCode(sessionId: string, accessCode: string): Promise<void> {
+  try {
+    // Store bidirectional mappings with 24 hour expiration
+    const expiration = 24 * 60 * 60; // 24 hours in seconds
+    
+    // Map session ID to access code
+    await redisService.set(`session:${sessionId}:access_code`, accessCode, expiration);
+    
+    // Map access code to session ID (for student joining)
+    await redisService.set(`access_code:${accessCode}`, sessionId, expiration);
+    
+    console.log(`✅ Stored access code ${accessCode} for session ${sessionId}`);
+  } catch (error) {
+    console.error('❌ Failed to store session access code:', error);
+    throw error;
+  }
+}
+
+/**
+ * Retrieve session ID by access code
+ */
+async function getSessionByAccessCode(accessCode: string): Promise<string | null> {
+  try {
+    const sessionId = await redisService.get(`access_code:${accessCode}`);
+    return sessionId;
+  } catch (error) {
+    console.error('❌ Failed to retrieve session by access code:', error);
+    return null;
+  }
+}
+
+/**
+ * Retrieve access code by session ID
+ */
+async function getAccessCodeBySession(sessionId: string): Promise<string | null> {
+  try {
+    const accessCode = await redisService.get(`session:${sessionId}:access_code`);
+    return accessCode;
+  } catch (error) {
+    console.error('❌ Failed to retrieve access code by session:', error);
+    return null;
+  }
+}
+
+/**
  * List sessions for the authenticated teacher
  */
 export async function listSessions(req: Request, res: Response): Promise<Response> {
@@ -27,33 +74,35 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     
     const rawSessions = await databricksService.getTeacherSessions(teacher.id, limit);
 
-    // Map DB rows to frontend contract
-    const sessions = (rawSessions || []).map((s: any) => ({
-      id: s.id,
-      accessCode: s.access_code, // may be undefined if not selected
-      topic: s.title,
-      goal: s.description,
-      status: s.status as 'created' | 'active' | 'paused' | 'ended' | 'archived',
-      teacherId: s.teacher_id,
-      schoolId: s.school_id,
-      maxStudents: s.max_students,
-      targetGroupSize: s.target_group_size,
-      scheduledStart: s.scheduled_start ? new Date(s.scheduled_start).toISOString() : undefined,
-      actualStart: s.actual_start ? new Date(s.actual_start).toISOString() : undefined,
-      plannedDuration: s.planned_duration_minutes,
-      groups: {
-        total: (s.group_count ?? s.total_groups ?? 0) as number,
-        active: 0,
-      },
-      students: {
-        total: (s.student_count ?? s.total_students ?? 0) as number,
-        active: 0,
-      },
-      analytics: {
-        participationRate: Number(s.participation_rate ?? 0),
-        engagementScore: Number(s.engagement_score ?? 0),
-      },
-      createdAt: new Date(s.created_at).toISOString(),
+    // Map DB rows to frontend contract and fetch access codes from Redis
+    const sessions = await Promise.all((rawSessions || []).map(async (s: any) => {
+      const accessCode = await getAccessCodeBySession(s.id);
+      return {
+        id: s.id,
+        accessCode, // Retrieved from Redis
+        topic: s.title,
+        goal: s.description,
+        status: s.status as 'created' | 'active' | 'paused' | 'ended' | 'archived',
+        teacherId: s.teacher_id,
+        schoolId: s.school_id,
+        targetGroupSize: s.target_group_size,
+        scheduledStart: s.scheduled_start ? new Date(s.scheduled_start).toISOString() : undefined,
+        actualStart: s.actual_start ? new Date(s.actual_start).toISOString() : undefined,
+        plannedDuration: s.planned_duration_minutes,
+        groups: {
+          total: (s.group_count ?? s.total_groups ?? 0) as number,
+          active: 0,
+        },
+        students: {
+          total: (s.student_count ?? s.total_students ?? 0) as number,
+          active: 0,
+        },
+        analytics: {
+          participationRate: Number(s.participation_rate ?? 0),
+          engagementScore: Number(s.engagement_score ?? 0),
+        },
+        createdAt: new Date(s.created_at).toISOString(),
+      };
     }));
 
     const total = sessions.length; // Simple total; can be replaced by COUNT(*) if needed
@@ -291,6 +340,31 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       });
     }
 
+    // Validate each group has required members
+    for (let i = 0; i < groupPlan.groups.length; i++) {
+      const group = groupPlan.groups[i];
+      
+      if (!group.leaderId) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `Group "${group.name}" must have a leader assigned`,
+          },
+        });
+      }
+      
+      if (!group.memberIds || group.memberIds.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `Group "${group.name}" must have at least 1 member assigned`,
+          },
+        });
+      }
+    }
+
     // Generate session ID and access code
     const sessionId = (databricksService as any).generateId?.() ?? `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const accessCode = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -298,23 +372,33 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     // Create session + groups + members sequentially with error handling
     try {
       // 1. Create main session record
+      // Insert session with required columns
       await databricksService.insert('classroom_sessions', {
         id: sessionId,
         title: topic,
         description: description || goal,
+        status: 'created',
+        scheduled_start: scheduledStart ? new Date(scheduledStart) : null,
+        actual_duration_minutes: 0,
+        planned_duration_minutes: plannedDuration, // REQUIRED COLUMN
+        max_students: 999, // TEMPORARY: Until we can make column nullable
+        target_group_size: 4, // TEMPORARY: Until we can make column nullable
+        auto_group_enabled: false, // Groups are pre-configured in declarative mode
         teacher_id: teacher.id,
         school_id: school.id,
-        status: 'created',
-        access_code: accessCode,
-        scheduled_start: scheduledStart ? new Date(scheduledStart) : null,
-        planned_duration_minutes: plannedDuration,
-        max_students: groupPlan.groups.reduce((sum, g) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
-        target_group_size: groupPlan.groupSize,
-        total_groups: groupPlan.numberOfGroups,
-        auto_group_enabled: false, // Disabled for declarative mode
-        recording_enabled: true,
+        recording_enabled: false,
         transcription_enabled: true,
         ai_analysis_enabled: true,
+        ferpa_compliant: true,
+        coppa_compliant: true,
+        recording_consent_obtained: false,
+        data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), // 7 years
+        total_groups: groupPlan.groups.length,
+        total_students: groupPlan.groups.reduce((sum, g) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
+        access_code: accessCode,
+        end_reason: '',
+        teacher_notes: '',
+        engagement_score: 0.0,
         created_at: new Date(),
         updated_at: new Date(),
       });
@@ -329,14 +413,23 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           session_id: sessionId,
           name: group.name,
           group_number: i + 1,
-          leader_id: group.leaderId || null,
-          is_ready: false,
           status: 'created',
           max_size: groupPlan.groupSize,
           current_size: group.memberIds.length + (group.leaderId ? 1 : 0),
           auto_managed: false,
+          start_time: new Date(),
+          end_time: new Date(),
+          total_speaking_time_seconds: 0,
+          collaboration_score: 0.0,
+          topic_focus_score: 0.0,
           created_at: new Date(),
           updated_at: new Date(),
+          leader_id: group.leaderId || null,
+          is_ready: false,
+          topical_cohesion: 0.0,
+          argumentation_quality: 0.0,
+          sentiment_arc: '[]',
+          conceptual_density: 0.0,
         });
 
         // 3. Create member assignments (including leader if specified)
@@ -357,14 +450,35 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         }
       }
     } catch (createError) {
-      console.error('Failed to create session and groups:', createError);
-      throw new Error('Failed to create session: Database operation failed');
+      const errorMessage = createError instanceof Error ? createError.message : String(createError);
+      const errorStack = createError instanceof Error ? createError.stack : undefined;
+      
+      console.error('❌ DETAILED SESSION CREATION ERROR:', {
+        error: createError,
+        message: errorMessage,
+        stack: errorStack,
+        sessionId,
+        teacherId: teacher.id,
+        schoolId: school.id,
+        errorType: typeof createError,
+        errorConstructor: createError?.constructor?.name
+      });
+      
+      // Log the original error without wrapping for debugging
+      console.error('❌ RAW ERROR OBJECT:', createError);
+      
+      throw new Error(`Failed to create session: ${errorMessage}`);
     }
 
-    // 4. Record analytics - session configured event
-    await recordSessionConfigured(sessionId, teacher.id, groupPlan);
+    // 4. Store access code in Redis for student leader joining
+    await storeSessionAccessCode(sessionId, accessCode);
 
-    // 5. Audit logging
+    // 5. Record analytics - session configured event
+    // TEMPORARILY DISABLED - Planning data already stored in classroom_sessions
+    // The session_metrics table is for calculated analytics, not planning data
+    // await recordSessionConfigured(sessionId, teacher.id, groupPlan);
+
+    // 6. Audit logging
     await databricksService.recordAuditLog({
       actorId: teacher.id,
       actorType: 'teacher',
@@ -373,19 +487,20 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} created session "${topic}" with ${groupPlan.numberOfGroups} pre-configured groups`,
+      description: `Teacher ID ${teacher.id} created session with ${groupPlan.numberOfGroups} pre-configured groups`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
     });
 
-    // 6. Fetch complete session with groups for response
+    // 7. Fetch complete session with groups for response
     const session = await getSessionWithGroups(sessionId, teacher.id);
 
     return res.status(201).json({
       success: true,
       data: {
         session,
+        accessCode, // Include access code for student leader joining
       },
     });
   } catch (error) {
@@ -404,35 +519,71 @@ export async function createSession(req: Request, res: Response): Promise<Respon
  * Helper: Record session configured analytics event
  */
 async function recordSessionConfigured(sessionId: string, teacherId: string, groupPlan: any): Promise<void> {
+  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
+  
   try {
     const configuredAt = new Date();
+    const plannedMembers = groupPlan.groups.reduce((sum: number, g: any) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0);
+    const plannedLeaders = groupPlan.groups.filter((g: any) => g.leaderId).length;
     
     // Insert session_analytics record with planned metrics
-    await databricksService.insert('session_analytics', {
-      id: (databricksService as any).generateId?.() ?? `analytics_${sessionId}`,
-      session_id: sessionId,
-      planned_groups: groupPlan.numberOfGroups,
-      planned_group_size: groupPlan.groupSize,
-      planned_members: groupPlan.groups.reduce((sum: number, g: any) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
-      planned_leaders: groupPlan.groups.filter((g: any) => g.leaderId).length,
-      configured_at: configuredAt,
-      calculation_timestamp: configuredAt,
-    });
+    await logAnalyticsOperation(
+      'session_configured_analytics',
+      'session_analytics',
+      () => databricksService.insert('session_metrics', {
+        id: (databricksService as any).generateId?.() ?? `analytics_${sessionId}`,
+        session_id: sessionId,
+        planned_groups: groupPlan.numberOfGroups,
+        planned_group_size: groupPlan.groupSize,
+        planned_members: plannedMembers,
+        planned_leaders: plannedLeaders,
+        configured_at: configuredAt,
+        calculation_timestamp: configuredAt,
+      }),
+      {
+        sessionId,
+        teacherId,
+        recordCount: 1,
+        metadata: {
+          plannedGroups: groupPlan.numberOfGroups,
+          plannedMembers,
+          plannedLeaders,
+          groupPlanSize: groupPlan.groups.length
+        },
+        sampleRate: 1.0, // Always log session configuration
+        forceLog: true
+      }
+    );
 
     // Insert session_events record
-    await databricksService.insert('session_events', {
-      id: (databricksService as any).generateId?.() ?? `event_${sessionId}_configured`,
-      session_id: sessionId,
-      teacher_id: teacherId,
-      event_type: 'configured',
-      event_time: configuredAt,
-      payload: JSON.stringify({
-        numberOfGroups: groupPlan.numberOfGroups,
-        groupSize: groupPlan.groupSize,
-        totalMembers: groupPlan.groups.reduce((sum: number, g: any) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
-        leadersAssigned: groupPlan.groups.filter((g: any) => g.leaderId).length,
+    await logAnalyticsOperation(
+      'session_configured_event',
+      'session_events',
+      () => databricksService.insert('session_events', {
+        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_configured`,
+        session_id: sessionId,
+        teacher_id: teacherId,
+        event_type: 'configured',
+        event_time: configuredAt,
+        payload: JSON.stringify({
+          numberOfGroups: groupPlan.numberOfGroups,
+          groupSize: groupPlan.groupSize,
+          totalMembers: plannedMembers,
+          leadersAssigned: plannedLeaders,
+        }),
       }),
-    });
+      {
+        sessionId,
+        teacherId,
+        recordCount: 1,
+        metadata: {
+          eventType: 'configured',
+          payloadSize: JSON.stringify({ numberOfGroups: groupPlan.numberOfGroups }).length
+        },
+        sampleRate: 1.0, // Always log session events
+        forceLog: true
+      }
+    );
   } catch (error) {
     console.error('Failed to record session configured analytics:', error);
     // Don't throw - analytics failure shouldn't block session creation
@@ -448,29 +599,63 @@ async function recordSessionStarted(
   readyGroupsAtStart: number, 
   startedWithoutReadyGroups: boolean
 ): Promise<void> {
+  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
+  
   try {
     const startedAt = new Date();
     
     // Update session_analytics with start metrics
-    await databricksService.update('session_analytics', `session_id = '${sessionId}'`, {
-      started_at: startedAt,
-      started_without_ready_groups: startedWithoutReadyGroups,
-      ready_groups_at_start: readyGroupsAtStart,
-      calculation_timestamp: startedAt,
-    });
+    await logAnalyticsOperation(
+      'session_started_analytics',
+      'session_analytics',
+      () => databricksService.update('session_analytics', `session_id = '${sessionId}'`, {
+        started_at: startedAt,
+        started_without_ready_groups: startedWithoutReadyGroups,
+        ready_groups_at_start: readyGroupsAtStart,
+        calculation_timestamp: startedAt,
+      }),
+      {
+        sessionId,
+        teacherId,
+        recordCount: 1,
+        metadata: {
+          readyGroupsAtStart,
+          startedWithoutReadyGroups,
+          readinessRatio: readyGroupsAtStart > 0 ? readyGroupsAtStart / (readyGroupsAtStart + (startedWithoutReadyGroups ? 1 : 0)) : 0
+        },
+        sampleRate: 1.0, // Always log session starts
+        forceLog: true
+      }
+    );
 
     // Insert session_events record
-    await databricksService.insert('session_events', {
-      id: (databricksService as any).generateId?.() ?? `event_${sessionId}_started`,
-      session_id: sessionId,
-      teacher_id: teacherId,
-      event_type: 'started',
-      event_time: startedAt,
-      payload: JSON.stringify({
-        readyGroupsAtStart,
-        startedWithoutReadyGroups,
+    await logAnalyticsOperation(
+      'session_started_event',
+      'session_events',
+      () => databricksService.insert('session_events', {
+        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_started`,
+        session_id: sessionId,
+        teacher_id: teacherId,
+        event_type: 'started',
+        event_time: startedAt,
+        payload: JSON.stringify({
+          readyGroupsAtStart,
+          startedWithoutReadyGroups,
+        }),
       }),
-    });
+      {
+        sessionId,
+        teacherId,
+        recordCount: 1,
+        metadata: {
+          eventType: 'started',
+          hasReadyGroups: readyGroupsAtStart > 0,
+          payloadSize: JSON.stringify({ readyGroupsAtStart }).length
+        },
+        sampleRate: 1.0, // Always log session events
+        forceLog: true
+      }
+    );
   } catch (error) {
     console.error('Failed to record session started analytics:', error);
     // Don't throw - analytics failure shouldn't block session start
@@ -543,8 +728,8 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     school_id: session.school_id,
     topic: session.title,
     goal: session.description || undefined,
-    subject: undefined, // TODO: Add subject field to database
-    description: undefined, // TODO: Add separate description field
+    subject: session.title, // Using title as subject for compatibility
+    description: session.description || session.title,
     status: session.status,
     join_code: session.access_code,
     scheduled_start: session.scheduled_start ? new Date(session.scheduled_start) : undefined,
@@ -558,7 +743,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       active: groupsDetailed.filter(g => g.isReady).length,
     },
     settings: {
-      auto_grouping: Boolean(session.auto_group_enabled),
+      auto_grouping: false, // Always disabled in declarative workflow
       students_per_group: session.target_group_size || 4,
       require_group_leader: true,
       enable_audio_recording: Boolean(session.recording_enabled),
@@ -589,7 +774,7 @@ export async function getSession(req: Request, res: Response): Promise<Response>
         resourceType: 'session',
         resourceId: sessionId,
         schoolId: teacher.school_id,
-        description: `Teacher ${teacher.email} accessed session ${sessionId}`,
+        description: `Teacher ID ${teacher.id} accessed session ${sessionId}`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
@@ -703,7 +888,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ${teacher.email} started session "${session.title}" (${readyGroupsAtStart}/${totalGroups} groups ready)`,
+      description: `Teacher ID ${teacher.id} started session (${readyGroupsAtStart}/${totalGroups} groups ready)`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
@@ -780,7 +965,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ${teacher.email} ended session "${session.title}" - Reason: ${reason}${teacherNotes ? ` - Notes: ${teacherNotes}` : ''}`,
+      description: `Teacher ID ${teacher.id} ended session - Reason: ${reason}${teacherNotes ? ` - Notes: ${teacherNotes}` : ''}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
@@ -877,7 +1062,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     }
     
     // Allowed fields to update
-    const allowedFields = ['title', 'description', 'max_students', 'target_group_size', 
+    const allowedFields = ['title', 'description', 'target_group_size', 
                           'auto_group_enabled', 'scheduled_start', 'planned_duration_minutes'];
     
     const fieldsToUpdate: Record<string, any> = {};
@@ -909,7 +1094,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ${teacher.email} updated session "${session.title}"`,
+      description: `Teacher ID ${teacher.id} updated session`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
@@ -987,7 +1172,7 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ${teacher.email} archived session "${session.title}"`,
+      description: `Teacher ID ${teacher.id} archived session`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
@@ -1046,7 +1231,7 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ${teacher.email} paused session "${session.title}"`,
+      description: `Teacher ID ${teacher.id} paused session`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
