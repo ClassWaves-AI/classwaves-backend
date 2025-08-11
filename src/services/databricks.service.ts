@@ -77,7 +77,6 @@ interface Session {
   actual_end?: Date;
   planned_duration_minutes: number;
   actual_duration_minutes?: number;
-  max_students: number;
   target_group_size: number;
   auto_group_enabled: boolean;
   teacher_id: string;
@@ -398,6 +397,8 @@ export class DatabricksService {
       'classroom_sessions': 'sessions',
       'sessions': 'sessions', // Alias (deprecated - use classroom_sessions)
       'student_groups': 'sessions',
+      'student_group_members': 'sessions',
+      'session_events': 'sessions',
       'groups': 'sessions', // Alias
       'transcriptions': 'sessions',
       
@@ -648,7 +649,6 @@ export class DatabricksService {
              s.actual_end,
              s.planned_duration_minutes,
              s.actual_duration_minutes,
-             s.max_students,
              s.target_group_size,
              s.auto_group_enabled,
              s.teacher_id,
@@ -672,7 +672,7 @@ export class DatabricksService {
       LEFT JOIN ${databricksConfig.catalog}.sessions.student_groups g ON s.id = g.session_id
       WHERE s.teacher_id = ?
       GROUP BY s.id, s.title, s.description, s.status, s.scheduled_start, s.actual_start, s.actual_end,
-               s.planned_duration_minutes, s.actual_duration_minutes, s.max_students, s.target_group_size,
+               s.planned_duration_minutes, s.actual_duration_minutes, s.target_group_size,
                s.auto_group_enabled, s.teacher_id, s.school_id, s.recording_enabled, s.transcription_enabled,
                s.ai_analysis_enabled, s.ferpa_compliant, s.coppa_compliant, s.recording_consent_obtained,
                s.data_retention_date, s.total_groups, s.total_students, s.created_at, s.updated_at
@@ -717,7 +717,6 @@ export class DatabricksService {
       teacher_id: sessionData.teacherId,
       school_id: sessionData.schoolId,
       access_code: accessCode,
-      max_students: sessionData.maxStudents || 30,
       target_group_size: sessionData.targetGroupSize || 4,
       auto_group_enabled: sessionData.autoGroupEnabled ?? true,
       scheduled_start: sessionData.scheduledStart,
@@ -758,7 +757,7 @@ export class DatabricksService {
     // Only add fields that exist in the classroom_sessions table schema
     const allowedFields = [
       'title', 'description', 'status', 'scheduled_start', 'actual_start', 'actual_end',
-      'planned_duration_minutes', 'actual_duration_minutes', 'max_students', 'target_group_size',
+      'planned_duration_minutes', 'actual_duration_minutes', 'target_group_size',
       'auto_group_enabled', 'recording_enabled', 'transcription_enabled', 'ai_analysis_enabled',
       'ferpa_compliant', 'coppa_compliant', 'recording_consent_obtained', 'data_retention_date',
       'total_groups', 'total_students', 'engagement_score'

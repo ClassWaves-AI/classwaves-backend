@@ -41,8 +41,8 @@ interface ClientToServerEvents {
   leaveSession: (sessionCode: string) => void;
   sendMessage: (data: { sessionCode: string; message: string }) => void;
   updatePresence: (data: { sessionCode: string; status: string }) => void;
-  'group:join': (data: { groupId: string; sessionId: string }) => void;
-  'group:status_update': (data: { groupId: string; isReady: boolean }) => void;
+
+  // Deprecated: group:status_update replaced by group:leader_ready
   'group:leader_ready': (data: { sessionId: string; groupId: string; ready: boolean }) => void;
   
   // Audio processing events
@@ -321,78 +321,8 @@ export class WebSocketService {
         }
       });
 
-      // Replace participant-based joinSession with group-based joinGroup
-      socket.on('group:join', async (data: { groupId: string; sessionId: string }) => {
-        try {
-          // Verify group exists and session is active
-          const group = await databricksService.queryOne(`
-            SELECT sg.*, cs.status as session_status
-            FROM classwaves.sessions.student_groups sg
-            JOIN classwaves.sessions.classroom_sessions cs ON sg.session_id = cs.id
-            WHERE sg.id = ? AND cs.id = ?
-          `, [data.groupId, data.sessionId]);
-          
-          if (!group || group.session_status !== 'active') {
-            socket.emit('error', {
-              code: 'GROUP_JOIN_FAILED',
-              message: 'Group not found or session not active',
-            });
-            return;
-          }
-          
-          await socket.join(`session:${data.sessionId}`);
-          await socket.join(`group:${data.groupId}`);
-          
-          socket.emit('group:joined', { 
-            groupId: data.groupId, 
-            sessionId: data.sessionId,
-            groupInfo: group 
-          });
-          
-          // Notify teacher dashboard
-          socket.to(`session:${data.sessionId}`).emit('group:status_changed', {
-            groupId: data.groupId,
-            status: 'connected'
-          });
-        } catch (error) {
-          socket.emit('error', {
-            code: 'GROUP_JOIN_FAILED',
-            message: 'Failed to join group session',
-          });
-        }
-      });
-
-      // Handle group status updates from kiosk
-      socket.on('group:status_update', async (data: { groupId: string; isReady: boolean }) => {
-        try {
-          // Update group status in database
-          await databricksService.update('student_groups', data.groupId, {
-            is_ready: data.isReady,
-            updated_at: new Date(),
-          });
-          
-          // Get session ID for this group
-          const group = await databricksService.queryOne(`
-            SELECT session_id FROM classwaves.sessions.student_groups WHERE id = ?
-          `, [data.groupId]);
-          
-          if (group) {
-            // Broadcast to teacher dashboard
-            this.io.to(`session:${group.session_id}`).emit('group:status_changed', {
-              groupId: data.groupId,
-              status: data.isReady ? 'ready' : 'waiting',
-              isReady: data.isReady
-            });
-          }
-        } catch (error) {
-          socket.emit('error', {
-            code: 'STATUS_UPDATE_FAILED',
-            message: 'Failed to update group status',
-          });
-        }
-      });
-
       // Phase 5: Handle group leader ready signal
+      // Groups are pre-configured in declarative workflow
       socket.on('group:leader_ready', async (data: { sessionId: string; groupId: string; ready: boolean }) => {
         try {
           // Validate that student is the designated leader for this group
@@ -410,8 +340,8 @@ export class WebSocketService {
             return;
           }
 
-          // TODO: Validate that current socket user is the group leader
-          // For now, accept any readiness signal for MVP
+          // Note: Group leader validation will be added in future iterations
+          // Currently accepting any readiness signal for MVP flexibility
           
           // Update group readiness status
           await databricksService.update('student_groups', data.groupId, {
@@ -1002,30 +932,62 @@ export function getWebSocketService(): WebSocketService | null {
  * Helper: Record leader ready analytics event
  */
 async function recordLeaderReady(sessionId: string, groupId: string, leaderId: string): Promise<void> {
+  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
+  
   try {
     const readyAt = new Date();
     
     // Update group_analytics with leader ready timestamp
-    await databricksService.upsert('group_analytics', 
-      { group_id: groupId },
+    await logAnalyticsOperation(
+      'leader_ready_analytics',
+      'group_analytics',
+      () => databricksService.upsert('group_analytics', 
+        { group_id: groupId },
+        {
+          leader_ready_at: readyAt,
+          calculation_timestamp: readyAt,
+        }
+      ),
       {
-        leader_ready_at: readyAt,
-        calculation_timestamp: readyAt,
+        sessionId,
+        recordCount: 1,
+        metadata: {
+          groupId,
+          leaderId,
+          readyTimestamp: readyAt.toISOString(),
+          operation: 'upsert'
+        },
+        sampleRate: 0.5, // Sample 50% of leader ready events
       }
     );
 
     // Insert session_events record
-    await databricksService.insert('session_events', {
-      id: (databricksService as any).generateId?.() ?? `event_${sessionId}_leader_ready_${groupId}`,
-      session_id: sessionId,
-      teacher_id: '', // TODO: Get teacher ID from session
-      event_type: 'leader_ready',
-      event_time: readyAt,
-      payload: JSON.stringify({
-        groupId,
-        leaderId,
+    await logAnalyticsOperation(
+      'leader_ready_event',
+      'session_events',
+      () => databricksService.insert('session_events', {
+        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_leader_ready_${groupId}`,
+        session_id: sessionId,
+        teacher_id: 'system', // System-generated event (teacher ID requires additional query)
+        event_type: 'leader_ready',
+        event_time: readyAt,
+        payload: JSON.stringify({
+          groupId,
+          leaderId,
+        }),
       }),
-    });
+      {
+        sessionId,
+        recordCount: 1,
+        metadata: {
+          eventType: 'leader_ready',
+          groupId,
+          leaderId,
+          payloadSize: JSON.stringify({ groupId, leaderId }).length
+        },
+        sampleRate: 0.5, // Sample 50% of leader ready events
+      }
+    );
   } catch (error) {
     console.error('Failed to record leader ready analytics:', error);
     // Don't throw - analytics failure shouldn't block readiness update

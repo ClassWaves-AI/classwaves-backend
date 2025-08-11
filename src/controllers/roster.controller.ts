@@ -77,25 +77,49 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
       resourceType: 'student',
       resourceId: 'roster',
       schoolId: school.id,
-      description: `Teacher ${teacher.email} accessed student roster`,
+      description: `Teacher ID ${teacher.id} accessed student roster`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
     });
 
+    // Transform students to match frontend interface
+    const transformedStudents = students.map(student => {
+      // Split display name into first/last name
+      const nameParts = (student.name || '').split(' ');
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ') || '';
+      
+      // Determine consent status
+      let consentStatus = 'none';
+      if (student.has_parental_consent) {
+        consentStatus = 'granted';
+      } else if (student.parent_email) {
+        consentStatus = 'required';
+      }
+      
+      return {
+        id: student.id,
+        firstName,
+        lastName,
+        gradeLevel: student.grade_level || '',
+        studentId: student.id, // Use ID as studentId for now
+        parentEmail: student.parent_email,
+        status: student.status,
+        consentStatus,
+        consentDate: student.consent_date,
+        isUnderConsentAge: student.parent_email ? true : false, // Infer from parent email presence
+        createdAt: student.created_at,
+        updatedAt: student.updated_at,
+      };
+    });
+
     return res.json({
       success: true,
-      data: {
-        students,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages,
-          hasNext: page < totalPages,
-          hasPrev: page > 1
-        }
-      }
+      data: transformedStudents,
+      total,
+      page,
+      limit
     });
 
   } catch (error) {
@@ -121,52 +145,39 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     const school = authReq.school!;
     
     const {
-      name,
-      email,
+      firstName,
+      lastName, 
       gradeLevel,
       parentEmail,
-      birthDate,
+      isUnderConsentAge = false,
+      hasParentalConsent = false,
       dataConsentGiven = false,
       audioConsentGiven = false
     } = req.body;
-
-    // Calculate age for COPPA compliance
-    let age: number | null = null;
-    let requiresParentalConsent = false;
     
-    if (birthDate) {
-      const birth = new Date(birthDate);
-      const today = new Date();
-      age = today.getFullYear() - birth.getFullYear();
-      const monthDiff = today.getMonth() - birth.getMonth();
-      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
-        age--;
-      }
-      
-      if (age < 13) {
-        requiresParentalConsent = true;
-        if (!parentEmail) {
-          return res.status(400).json({
-            success: false,
-            error: 'COPPA_COMPLIANCE_REQUIRED',
-            message: 'Parent email is required for students under 13',
-            requiresParentalConsent: true
-          });
-        }
-      }
+    const name = `${firstName} ${lastName}`.trim();
+
+    // Simplified COPPA compliance logic
+    if (isUnderConsentAge && !hasParentalConsent) {
+      return res.status(400).json({
+        success: false,
+        error: 'PARENTAL_CONSENT_REQUIRED',
+        message: 'Parental consent is required for students under 13',
+        requiresParentalConsent: true
+      });
     }
 
     // Check if student already exists
     const existingStudent = await databricksService.queryOne(`
       SELECT id FROM classwaves.users.students 
-      WHERE school_id = ? AND (email = ? OR display_name = ?)
-    `, [school.id, email, name]);
+      WHERE school_id = ? AND display_name = ?
+    `, [school.id, name]);
 
     if (existingStudent) {
       return res.status(409).json({
         success: false,
         error: 'STUDENT_EXISTS',
-        message: 'A student with this name or email already exists in the roster'
+        message: 'A student with this name already exists in the roster'
       });
     }
 
@@ -185,11 +196,11 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       studentId,
       name,
       school.id,
-      email || null,
+      null, // email - not captured in simplified flow
       gradeLevel || null,
       'active',
-      requiresParentalConsent ? false : true, // Require consent for under-13
-      requiresParentalConsent ? null : now,
+      hasParentalConsent, // Direct boolean from teacher's confirmation
+      hasParentalConsent ? now : null, // Set consent date if consent given
       parentEmail || null,
       dataConsentGiven,
       audioConsentGiven,
@@ -216,23 +227,39 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} added student: ${name}${requiresParentalConsent ? ' (requires parental consent)' : ''}`,
+      description: `Teacher ID ${teacher.id} added student: ${name}${isUnderConsentAge ? ' (under 13)' : ''}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
       affectedStudentIds: [studentId]
     });
 
+    // Transform created student to match frontend interface  
+    let consentStatus = 'none';
+    if (createdStudent.has_parental_consent) {
+      consentStatus = 'granted';
+    } else if (createdStudent.parent_email) {
+      consentStatus = 'required';
+    }
+    
+    const transformedStudent = {
+      id: createdStudent.id,
+      firstName, // Use the firstName from request body
+      lastName,  // Use the lastName from request body
+      gradeLevel: createdStudent.grade_level || '',
+      studentId: createdStudent.id,
+      parentEmail: createdStudent.parent_email,
+      status: createdStudent.status,
+      consentStatus,
+      consentDate: createdStudent.consent_date,
+      isUnderConsentAge, // Use the value from request body
+      createdAt: createdStudent.created_at,
+      updatedAt: createdStudent.updated_at,
+    };
+
     return res.status(201).json({
       success: true,
-      data: {
-        student: createdStudent,
-        coppaInfo: {
-          requiresParentalConsent,
-          estimatedAge: age,
-          parentalConsentStatus: requiresParentalConsent ? 'required' : 'not_required'
-        }
-      }
+      data: transformedStudent
     });
 
   } catch (error) {
@@ -354,7 +381,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} updated student: ${updatedStudent.display_name}`,
+      description: `Teacher ID ${teacher.id} updated student: ${updatedStudent.display_name}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
@@ -428,7 +455,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         resourceType: 'student',
         resourceId: studentId,
         schoolId: school.id,
-        description: `Teacher ${teacher.email} deactivated student: ${existingStudent.display_name} (has session data - FERPA protected)`,
+        description: `Teacher ID ${teacher.id} deactivated student: ${existingStudent.display_name} (has session data - FERPA protected)`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'ferpa',
@@ -455,7 +482,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         resourceType: 'student',
         resourceId: studentId,
         schoolId: school.id,
-        description: `Teacher ${teacher.email} removed student: ${existingStudent.display_name} (no session data)`,
+        description: `Teacher ID ${teacher.id} removed student: ${existingStudent.display_name} (no session data)`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
@@ -560,7 +587,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} verified age for student: ${existingStudent.display_name} (age: ${age}, COPPA: ${requiresParentalConsent ? 'required' : 'not required'})`,
+      description: `Teacher ID ${teacher.id} verified age for student: ${existingStudent.display_name} (age: ${age}, COPPA: ${requiresParentalConsent ? 'required' : 'not required'})`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'coppa',
@@ -641,7 +668,7 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} updated parental consent for student: ${existingStudent.display_name} (consent: ${consentGiven ? 'granted' : 'denied'})`,
+      description: `Teacher ID ${teacher.id} updated parental consent for student: ${existingStudent.display_name} (consent: ${consentGiven ? 'granted' : 'denied'})`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'coppa',
