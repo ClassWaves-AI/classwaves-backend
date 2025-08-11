@@ -4,6 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { verifyToken } from '../utils/jwt.utils';
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 import { inMemoryAudioProcessor } from './audio/InMemoryAudioProcessor';
 import { aiAnalysisBufferService } from './ai-analysis-buffer.service';
 import { teacherPromptService } from './teacher-prompt.service';
@@ -1040,12 +1041,24 @@ export const websocketService = {
     if (!wsService) return;
     wsService.getIO().socketsJoin(`session:${sessionId}`);
   },
+  emitToSession(sessionId: string, event: string, data: any) {
+    if (!wsService) return;
+    wsService.getIO().to(`session:${sessionId}`).emit(event as any, data);
+  },
+  on(event: string, callback: (...args: any[]) => void) {
+    if (!wsService) return;
+    wsService.getIO().on(event as any, callback);
+  },
+  emit(event: string, data: any) {
+    if (!wsService) return;
+    wsService.getIO().emit(event as any, data);
+  },
   notifySessionUpdate(sessionId: string, payload: any) {
     if (!wsService) return;
-    wsService.emitToSession(sessionId, 'session:status_changed', payload);
+    this.emitToSession(sessionId, 'session:status_changed', payload);
   },
   endSession(sessionId: string) {
     if (!wsService) return;
-    wsService.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
+    this.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
   }
 };

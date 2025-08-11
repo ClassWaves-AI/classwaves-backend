@@ -295,8 +295,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     const sessionId = (databricksService as any).generateId?.() ?? `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const accessCode = Math.random().toString(36).slice(2, 8).toUpperCase();
 
-    // Start transaction for atomic session + groups + members creation
-    await databricksService.executeTransaction(async () => {
+    // Create session + groups + members sequentially with error handling
+    try {
       // 1. Create main session record
       await databricksService.insert('classroom_sessions', {
         id: sessionId,
@@ -356,7 +356,10 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           });
         }
       }
-    });
+    } catch (createError) {
+      console.error('Failed to create session and groups:', createError);
+      throw new Error('Failed to create session: Database operation failed');
+    }
 
     // 4. Record analytics - session configured event
     await recordSessionConfigured(sessionId, teacher.id, groupPlan);
@@ -606,7 +609,7 @@ export async function getSession(req: Request, res: Response): Promise<Response>
       },
     });
   } catch (error) {
-    if (error.message === 'Session not found') {
+    if (error instanceof Error && error.message === 'Session not found') {
       return res.status(404).json({ 
         success: false,
         error: {

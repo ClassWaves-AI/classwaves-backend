@@ -486,6 +486,56 @@ export class DatabricksService {
   }
 
   /**
+   * Upsert a record (insert or update based on condition)
+   */
+  async upsert(table: string, whereCondition: Record<string, any>, data: Record<string, any>): Promise<void> {
+    const schema = this.getSchemaForTable(table);
+    
+    // Build WHERE clause for existence check
+    const whereKeys = Object.keys(whereCondition);
+    const whereValues = Object.values(whereCondition);
+    const whereClause = whereKeys.map(key => `${key} = ?`).join(' AND ');
+    
+    // Check if record exists
+    const existingSql = `
+      SELECT id FROM ${databricksConfig.catalog}.${schema}.${table}
+      WHERE ${whereClause}
+      LIMIT 1
+    `;
+    
+    const existing = await this.queryOne(existingSql, whereValues);
+    
+    if (existing) {
+      // Update existing record
+      const updateColumns = Object.keys(data);
+      const updateValues = Object.values(data);
+      const setClause = updateColumns.map(col => `${col} = ?`).join(', ');
+      
+      const updateSql = `
+        UPDATE ${databricksConfig.catalog}.${schema}.${table}
+        SET ${setClause}, updated_at = CURRENT_TIMESTAMP
+        WHERE ${whereClause}
+      `;
+      
+      await this.query(updateSql, [...updateValues, ...whereValues]);
+    } else {
+      // Insert new record
+      const insertData = { ...whereCondition, ...data };
+      if (!insertData.id) {
+        insertData.id = this.generateId();
+      }
+      if (!insertData.created_at) {
+        insertData.created_at = new Date();
+      }
+      if (!insertData.updated_at) {
+        insertData.updated_at = new Date();
+      }
+      
+      await this.insert(table, insertData);
+    }
+  }
+
+  /**
    * Delete a record
    */
   async delete(table: string, id: string): Promise<void> {
@@ -946,6 +996,7 @@ export const databricksService = {
   generateId: () => getDatabricksService().generateId(),
   insert: (table: string, data: Record<string, any>) => getDatabricksService().insert(table, data),
   update: (table: string, id: string, data: Record<string, any>) => getDatabricksService().update(table, id, data),
+  upsert: (table: string, whereCondition: Record<string, any>, data: Record<string, any>) => getDatabricksService().upsert(table, whereCondition, data),
   delete: (table: string, id: string) => getDatabricksService().delete(table, id),
   getSchoolByDomain: (domain: string) => getDatabricksService().getSchoolByDomain(domain),
   getTeacherByGoogleId: (googleId: string) => getDatabricksService().getTeacherByGoogleId(googleId),
