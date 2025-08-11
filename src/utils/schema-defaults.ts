@@ -30,7 +30,6 @@ export const classroomSessionDefaults = {
   // Analytics (initial values)
   total_groups: 0,
   total_students: 0,
-  participation_rate: 0.0,
   engagement_score: 0.0,
   
   // Audit fields

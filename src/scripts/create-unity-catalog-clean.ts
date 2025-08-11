@@ -181,6 +181,7 @@ class UnityCatalogCreator {
           auto_group_enabled BOOLEAN NOT NULL,
           teacher_id STRING NOT NULL,
           school_id STRING NOT NULL,
+          access_code STRING,
           recording_enabled BOOLEAN NOT NULL,
           transcription_enabled BOOLEAN NOT NULL,
           ai_analysis_enabled BOOLEAN NOT NULL,
@@ -190,8 +191,7 @@ class UnityCatalogCreator {
           data_retention_date TIMESTAMP,
           total_groups INT NOT NULL,
           total_students INT NOT NULL,
-          participation_rate DECIMAL(5,2) NOT NULL,
-          engagement_score DECIMAL(5,2) NOT NULL,
+          engagement_score DECIMAL(5,2) DEFAULT 0.0,
           created_at TIMESTAMP NOT NULL,
           updated_at TIMESTAMP NOT NULL
         ) USING DELTA`

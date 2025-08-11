@@ -86,12 +86,11 @@ async function setupTestEnvironment() {
     // Create new test session
     await databricksService.query(
       `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-       (id, title, description, status, teacher_id, school_id,
+       (id, title, description, status, teacher_id, school_id, access_code,
         max_students, target_group_size, auto_group_enabled, 
         recording_enabled, transcription_enabled, ai_analysis_enabled,
         ferpa_compliant, coppa_compliant, recording_consent_obtained,
-        planned_duration_minutes, total_groups, total_students, 
-        participation_rate, engagement_score, created_at, updated_at)
+        planned_duration_minutes, total_groups, total_students, engagement_score, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
         sessionId,
@@ -100,6 +99,7 @@ async function setupTestEnvironment() {
         'active', // Set as active so students can join immediately
         teacherId,
         schoolId,
+        accessCode, // access_code
         30, // max_students
         4,  // target_group_size
         true, // auto_group_enabled
@@ -112,7 +112,6 @@ async function setupTestEnvironment() {
         45,   // planned_duration_minutes
         0,    // total_groups
         0,    // total_students
-        0.0,  // participation_rate
         0.0   // engagement_score
       ]
     );

@@ -353,7 +353,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       },
     });
   } catch (error) {
-    console.error('Error creating session:', error);
+    console.error('❌ Error creating session:', error);
+    console.error('❌ Full error details:', JSON.stringify(error, null, 2));
     return res.status(500).json({
       success: false,
       error: {
