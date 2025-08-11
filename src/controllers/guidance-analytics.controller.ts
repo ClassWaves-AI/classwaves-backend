@@ -170,7 +170,7 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
 
     // Include comparison data if requested
     if (query.includeComparisons && teacher.role === 'admin') {
-      analytics.benchmarks = await getTeacherComparisons(targetTeacherId, school.id, query.timeframe);
+      (analytics as any).benchmarks = await getTeacherComparisons(targetTeacherId, school.id, query.timeframe);
     }
 
     const processingTime = Date.now() - startTime;
@@ -313,7 +313,7 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
 
     // Include group-level breakdown if requested
     if (query.includeGroupBreakdown && groupBreakdown) {
-      analytics.groupBreakdown = groupBreakdown.map(group => ({
+      (analytics as any).groupBreakdown = groupBreakdown.map(group => ({
         groupId: group.groupId,
         groupName: group.groupName,
         studentCount: group.studentCount,
@@ -590,7 +590,7 @@ export const getRealtimeDashboardData = async (req: AuthRequest, res: Response):
         count: activeSessionsData.count,
         totalStudents: activeSessionsData.totalStudents,
         averageEngagement: activeSessionsData.averageEngagement,
-        sessions: activeSessionsData.sessions.map(session => ({
+        sessions: activeSessionsData.sessions.map((session: any) => ({
           sessionId: session.sessionId,
           name: session.name,
           startTime: session.startTime,
@@ -963,5 +963,5 @@ function getTimeframeInterval(timeframe: string): string {
     all_time: '365 DAY'
   };
   
-  return intervals[timeframe] || '7 DAY';
+  return intervals[timeframe as keyof typeof intervals] || '7 DAY';
 }

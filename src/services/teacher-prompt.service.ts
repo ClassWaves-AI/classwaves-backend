@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { databricksService } from './databricks.service';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
+import type { TeacherPrompt, PromptCategory, PromptPriority, PromptTiming, SessionPhase, SubjectArea } from '../types/teacher-guidance.types';
 
 // ============================================================================
 // Input Validation Schemas
@@ -35,30 +36,15 @@ const promptGenerationOptionsSchema = z.object({
 }).optional();
 
 // ============================================================================
-// Teacher Prompt Types
+// Teacher Prompt Service Types
 // ============================================================================
-
-export interface TeacherPrompt {
-  id: string;
-  category: 'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity';
-  priority: 'high' | 'medium' | 'low';
-  message: string;
-  context: string;
-  suggestedTiming: 'immediate' | 'next_break' | 'session_end';
-  effectiveness_score?: number;
-  generatedAt: Date;
-  expiresAt: Date;
-  sessionPhase: string;
-  subject: string;
-  targetMetric?: string; // Which AI insight triggered this prompt
-}
 
 interface PromptGenerationContext {
   sessionId: string;
   groupId: string;
   teacherId: string;
-  sessionPhase: 'opening' | 'development' | 'synthesis' | 'closure';
-  subject: 'math' | 'science' | 'literature' | 'history' | 'general';
+  sessionPhase: SessionPhase;
+  subject: SubjectArea;
   learningObjectives: string[];
   groupSize: number;
   sessionDuration: number;
@@ -272,7 +258,10 @@ export class TeacherPromptService {
         suggestedTiming: insights.topicalCohesion < 0.4 ? 'immediate' : 'next_break',
         targetMetric: 'topicalCohesion',
         sessionPhase: context.sessionPhase,
-        subject: context.subject
+        subject: context.subject,
+        sessionId: context.sessionId,
+        teacherId: context.teacherId,
+        groupId: context.groupId
       }));
     }
 
@@ -286,7 +275,10 @@ export class TeacherPromptService {
         suggestedTiming: 'next_break',
         targetMetric: 'conceptualDensity',
         sessionPhase: context.sessionPhase,
-        subject: context.subject
+        subject: context.subject,
+        sessionId: context.sessionId,
+        teacherId: context.teacherId,
+        groupId: context.groupId
       }));
     }
 
@@ -321,7 +313,10 @@ export class TeacherPromptService {
         suggestedTiming: 'immediate',
         targetMetric: 'argumentationQuality',
         sessionPhase: context.sessionPhase,
-        subject: context.subject
+        subject: context.subject,
+        sessionId: context.sessionId,
+        teacherId: context.teacherId,
+        groupId: context.groupId
       }));
     }
 
@@ -335,7 +330,10 @@ export class TeacherPromptService {
         suggestedTiming: 'immediate',
         targetMetric: 'collaborationPatterns.inclusivity',
         sessionPhase: context.sessionPhase,
-        subject: context.subject
+        subject: context.subject,
+        sessionId: context.sessionId,
+        teacherId: context.teacherId,
+        groupId: context.groupId
       }));
     }
 
@@ -349,7 +347,10 @@ export class TeacherPromptService {
         suggestedTiming: 'immediate',
         targetMetric: 'collectiveEmotionalArc.trajectory',
         sessionPhase: context.sessionPhase,
-        subject: context.subject
+        subject: context.subject,
+        sessionId: context.sessionId,
+        teacherId: context.teacherId,
+        groupId: context.groupId
       }));
     }
 
@@ -368,29 +369,37 @@ export class TeacherPromptService {
   // ============================================================================
 
   private createPrompt(data: {
-    category: TeacherPrompt['category'];
-    priority: TeacherPrompt['priority'];
+    category: PromptCategory;
+    priority: PromptPriority;
     message: string;
     context: string;
-    suggestedTiming: TeacherPrompt['suggestedTiming'];
+    suggestedTiming: PromptTiming;
     targetMetric?: string;
-    sessionPhase: string;
-    subject: string;
+    sessionPhase: SessionPhase;
+    subject: SubjectArea;
+    sessionId: string;
+    teacherId: string;
+    groupId?: string;
   }): TeacherPrompt {
     const now = new Date();
     return {
       id: this.generatePromptId(),
+      sessionId: data.sessionId,
+      teacherId: data.teacherId,
+      groupId: data.groupId,
       category: data.category,
       priority: data.priority,
       message: data.message,
       context: data.context,
       suggestedTiming: data.suggestedTiming,
-      effectiveness_score: this.calculateEffectivenessScore(data.category, data.priority),
       generatedAt: now,
       expiresAt: new Date(now.getTime() + this.config.promptExpirationMinutes * 60000),
       sessionPhase: data.sessionPhase,
       subject: data.subject,
-      targetMetric: data.targetMetric
+      targetMetric: data.targetMetric,
+      effectivenessScore: this.calculateEffectivenessScore(data.category, data.priority),
+      createdAt: now,
+      updatedAt: now
     };
   }
 
@@ -402,12 +411,15 @@ export class TeacherPromptService {
       context: insight.message,
       suggestedTiming: 'next_break',
       sessionPhase: context.sessionPhase,
-      subject: context.subject
+      subject: context.subject,
+      sessionId: context.sessionId,
+      teacherId: context.teacherId,
+      groupId: context.groupId
     });
   }
 
   private createPromptFromRecommendation(recommendation: any, context: PromptGenerationContext): TeacherPrompt {
-    const categoryMap: Record<string, TeacherPrompt['category']> = {
+    const categoryMap: Record<string, PromptCategory> = {
       'intervention': 'redirection',
       'praise': 'energy',
       'redirect': 'redirection',
@@ -421,7 +433,10 @@ export class TeacherPromptService {
       context: recommendation.message,
       suggestedTiming: recommendation.priority === 'high' ? 'immediate' : 'next_break',
       sessionPhase: context.sessionPhase,
-      subject: context.subject
+      subject: context.subject,
+      sessionId: context.sessionId,
+      teacherId: context.teacherId,
+      groupId: context.groupId
     });
   }
 
@@ -515,7 +530,7 @@ export class TeacherPromptService {
       
       if (priorityDiff !== 0) return priorityDiff;
       
-      return (b.effectiveness_score || 0) - (a.effectiveness_score || 0);
+      return (b.effectivenessScore || 0) - (a.effectivenessScore || 0);
     });
   }
 
@@ -562,7 +577,7 @@ export class TeacherPromptService {
 
     // Recalculate effectiveness average
     const allPrompts = this.promptCache.get(sessionId) || [];
-    const scores = allPrompts.map(p => p.effectiveness_score || 0).filter(s => s > 0);
+    const scores = allPrompts.map(p => p.effectivenessScore || 0).filter(s => s > 0);
     metrics.effectivenessAverage = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
 
     this.sessionMetrics.set(sessionId, metrics);
@@ -630,7 +645,7 @@ export class TeacherPromptService {
           group_id: context.groupId,
           generated_at: prompt.generatedAt,
           expires_at: prompt.expiresAt,
-          effectiveness_score: prompt.effectiveness_score,
+          effectiveness_score: prompt.effectivenessScore,
           educational_purpose: 'AI-generated teacher guidance to improve educational outcomes',
           compliance_basis: 'legitimate_educational_interest',
           data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), // 7 years

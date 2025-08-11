@@ -5,6 +5,10 @@ import { verifyToken } from '../utils/jwt.utils';
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
 import { inMemoryAudioProcessor } from './audio/InMemoryAudioProcessor';
+import { aiAnalysisBufferService } from './ai-analysis-buffer.service';
+import { teacherPromptService } from './teacher-prompt.service';
+import { alertPrioritizationService } from './alert-prioritization.service';
+import { guidanceSystemHealthService } from './guidance-system-health.service';
 import { AuthRequest } from '../types/auth.types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -48,6 +52,11 @@ interface ClientToServerEvents {
   'session:join': (data: { session_id?: string; sessionId?: string }) => void;
   'session:leave': (data: { session_id?: string; sessionId?: string }) => void;
   'session:update_status': (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => void;
+
+  // Delivery confirmation events
+  'teacher:alert:delivery:confirm': (data: { alertId: string; deliveryId: string; sessionId: string }) => void;
+  'teacher:batch:delivery:confirm': (data: { batchId: string; deliveryId: string; sessionId: string }) => void;
+  'teacher:insight:delivery:confirm': (data: { insightId: string; insightType: 'tier1' | 'tier2'; sessionId: string }) => void;
 }
 
 interface ServerToClientEvents {
@@ -75,6 +84,47 @@ interface ServerToClientEvents {
     severity: 'info' | 'warning' | 'success';
     timestamp: string;
   }) => void;
+
+  // AI Analysis Insights - New events for Phase B
+  'group:tier1:insight': (data: {
+    groupId: string;
+    sessionId: string;
+    insights: any;
+    timestamp: string;
+  }) => void;
+
+  'group:tier2:insight': (data: {
+    sessionId: string;
+    insights: any;
+    timestamp: string;
+  }) => void;
+
+  // Teacher Guidance System - Alert and Prompt Events
+  'teacher:alert:immediate': (data: {
+    alert: {
+      id: string;
+      prompt: any;
+      priority: number;
+      deliveryTime: string;
+    };
+  }) => void;
+
+  'teacher:alert:batch': (data: {
+    batchId: string;
+    batchType: 'urgent' | 'regular' | 'low_priority';
+    alerts: Array<{
+      id: string;
+      prompt: any;
+      priority: number;
+      contextFactors: any;
+    }>;
+    totalAlerts: number;
+    deliveryTime: string;
+  }) => void;
+
+  'teacher:prompt:acknowledged': (data: { promptId: string; timestamp: string }) => void;
+  'teacher:prompt:used': (data: { promptId: string; timestamp: string }) => void;
+  'teacher:prompt:dismissed': (data: { promptId: string; timestamp: string }) => void;
 
   // Audio streaming events  
   'audio:stream:start': (data: { groupId: string }) => void;
@@ -406,6 +456,21 @@ export class WebSocketService {
               timestamp: new Date(result.timestamp)
             });
             
+            // ✅ AI ANALYSIS INTEGRATION: Buffer transcription for AI analysis
+            try {
+              await aiAnalysisBufferService.bufferTranscription(
+                data.groupId,
+                socket.data.sessionId,
+                result.text
+              );
+              
+              // Check if we should trigger analysis
+              await this.checkAndTriggerAIAnalysis(data.groupId, socket.data.sessionId, socket.data.userId);
+            } catch (error) {
+              console.error(`⚠️ AI buffering failed for group ${data.groupId}:`, error);
+              // Don't fail the main transcription flow
+            }
+            
             console.log(`✅ Window submitted for group ${data.groupId}: "${result.text.substring(0, 50)}..."`);
           }
           
@@ -521,6 +586,80 @@ export class WebSocketService {
         });
       });
 
+      // ============================================================================
+      // Delivery Confirmation Handlers
+      // ============================================================================
+
+      // Handle alert delivery confirmation
+      socket.on('teacher:alert:delivery:confirm', async (data: { alertId: string; deliveryId: string; sessionId: string }) => {
+        try {
+          // Verify session ownership
+          const session = await databricksService.queryOne(
+            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [data.sessionId, socket.data.userId]
+          );
+
+          if (session) {
+            await alertPrioritizationService.confirmAlertDelivery(data.alertId, data.deliveryId, data.sessionId);
+            console.log(`✅ Alert delivery confirmed by teacher: ${data.alertId}`);
+          }
+        } catch (error) {
+          console.error(`❌ Failed to confirm alert delivery:`, error);
+          socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm alert delivery' });
+        }
+      });
+
+      // Handle batch delivery confirmation
+      socket.on('teacher:batch:delivery:confirm', async (data: { batchId: string; deliveryId: string; sessionId: string }) => {
+        try {
+          // Verify session ownership
+          const session = await databricksService.queryOne(
+            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [data.sessionId, socket.data.userId]
+          );
+
+          if (session) {
+            await alertPrioritizationService.confirmBatchDelivery(data.batchId, data.deliveryId, data.sessionId);
+            console.log(`✅ Batch delivery confirmed by teacher: ${data.batchId}`);
+          }
+        } catch (error) {
+          console.error(`❌ Failed to confirm batch delivery:`, error);
+          socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm batch delivery' });
+        }
+      });
+
+      // Handle AI insight delivery confirmation
+      socket.on('teacher:insight:delivery:confirm', async (data: { insightId: string; insightType: 'tier1' | 'tier2'; sessionId: string }) => {
+        try {
+          // Verify session ownership
+          const session = await databricksService.queryOne(
+            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [data.sessionId, socket.data.userId]
+          );
+
+          if (session) {
+            // Log insight delivery confirmation
+            await databricksService.recordAuditLog({
+              actorId: socket.data.userId,
+              actorType: 'teacher',
+              eventType: 'ai_insight_delivery_confirmed',
+              eventCategory: 'system_interaction',
+              resourceType: 'ai_insight',
+              resourceId: data.insightId,
+              schoolId: socket.data.schoolId,
+              description: `Teacher confirmed receipt of ${data.insightType} AI insight`,
+              complianceBasis: 'system_monitoring',
+              dataAccessed: `${data.insightType}_insight_delivery_confirmation`
+            });
+
+            console.log(`✅ AI insight delivery confirmed by teacher: ${data.insightId} (${data.insightType})`);
+          }
+        } catch (error) {
+          console.error(`❌ Failed to confirm insight delivery:`, error);
+          socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm insight delivery' });
+        }
+      });
+
       // Handle disconnect
       socket.on('disconnect', () => {
         console.log(`User ${socket.data.userId} disconnected`);
@@ -581,6 +720,212 @@ export class WebSocketService {
   // Add this method to emit events to specific groups
   public emitToGroup(groupId: string, event: keyof ServerToClientEvents, data: any): void {
     this.io.to(`group:${groupId}`).emit(event, data);
+  }
+
+  // ============================================================================
+  // AI Analysis Integration Methods
+  // ============================================================================
+
+  /**
+   * Check if AI analysis should be triggered and execute if ready
+   */
+  private async checkAndTriggerAIAnalysis(groupId: string, sessionId: string, teacherId: string): Promise<void> {
+    try {
+      // Get buffered transcripts for analysis
+      const tier1Transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
+      const tier2Transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier2', groupId, sessionId);
+
+      // Check Tier 1 analysis (30s window)
+      if (tier1Transcripts.length >= 3 && this.shouldTriggerTier1Analysis(tier1Transcripts)) {
+        await this.triggerTier1Analysis(groupId, sessionId, teacherId, tier1Transcripts);
+      }
+
+      // Check Tier 2 analysis (3min window)  
+      if (tier2Transcripts.length >= 8 && this.shouldTriggerTier2Analysis(tier2Transcripts)) {
+        await this.triggerTier2Analysis(sessionId, teacherId, tier2Transcripts);
+      }
+
+    } catch (error) {
+      console.error(`❌ AI analysis check failed for group ${groupId}:`, error);
+    }
+  }
+
+  /**
+   * Determine if Tier 1 analysis should be triggered
+   */
+  private shouldTriggerTier1Analysis(transcripts: string[]): boolean {
+    // Simple heuristic: trigger every 30 seconds with minimum content
+    const combinedLength = transcripts.join(' ').length;
+    return combinedLength > 100; // Minimum content threshold
+  }
+
+  /**
+   * Determine if Tier 2 analysis should be triggered
+   */
+  private shouldTriggerTier2Analysis(transcripts: string[]): boolean {
+    // Simple heuristic: trigger every 3 minutes with substantial content
+    const combinedLength = transcripts.join(' ').length;
+    return combinedLength > 500; // Substantial content threshold
+  }
+
+  /**
+   * Trigger Tier 1 AI analysis and broadcast insights
+   */
+  private async triggerTier1Analysis(groupId: string, sessionId: string, teacherId: string, transcripts: string[]): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`🧠 Triggering Tier 1 analysis for group ${groupId}`);
+
+      // Import AI analysis controller dynamically to avoid circular dependencies
+      const { databricksAIService } = await import('./databricks-ai.service');
+
+      // Perform Tier 1 analysis
+      const insights = await databricksAIService.analyzeTier1(transcripts, {
+        groupId,
+        sessionId,
+        focusAreas: ['topical_cohesion', 'conceptual_density'],
+        windowSize: 30,
+        includeMetadata: true
+      });
+
+      // Broadcast insights to teacher dashboard
+      this.emitToSession(sessionId, 'group:tier1:insight', {
+        groupId,
+        sessionId,
+        insights,
+        timestamp: insights.analysisTimestamp
+      });
+
+      // Generate teacher prompts from insights
+      await this.generateTeacherPromptsFromInsights(insights, sessionId, groupId, teacherId);
+
+      // Mark buffer as analyzed
+      await aiAnalysisBufferService.markBufferAnalyzed('tier1', groupId, sessionId);
+
+      // ✅ HEALTH MONITORING: Record successful AI analysis
+      const duration = Date.now() - startTime;
+      guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier1_analysis', duration);
+
+      console.log(`✅ Tier 1 analysis completed and broadcasted for group ${groupId}`);
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`❌ Tier 1 analysis failed for group ${groupId}:`, error);
+      
+      // ✅ HEALTH MONITORING: Record failed AI analysis
+      guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier1_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+
+  /**
+   * Trigger Tier 2 AI analysis and broadcast insights  
+   */
+  private async triggerTier2Analysis(sessionId: string, teacherId: string, transcripts: string[]): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      console.log(`🧠 Triggering Tier 2 analysis for session ${sessionId}`);
+
+      // Import AI analysis controller dynamically
+      const { databricksAIService } = await import('./databricks-ai.service');
+
+      // Perform Tier 2 analysis
+      const insights = await databricksAIService.analyzeTier2(transcripts, {
+        sessionId,
+        groupIds: [], // Will be populated by the analysis
+        analysisDepth: 'standard',
+        includeComparative: true,
+        includeMetadata: true
+      });
+
+      // Broadcast insights to teacher dashboard
+      this.emitToSession(sessionId, 'group:tier2:insight', {
+        sessionId,
+        insights,
+        timestamp: insights.analysisTimestamp
+      });
+
+      // Generate teacher prompts from deeper insights
+      await this.generateTeacherPromptsFromInsights(insights, sessionId, undefined, teacherId);
+
+      // ✅ HEALTH MONITORING: Record successful AI analysis
+      const duration = Date.now() - startTime;
+      guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier2_analysis', duration);
+
+      console.log(`✅ Tier 2 analysis completed and broadcasted for session ${sessionId}`);
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`❌ Tier 2 analysis failed for session ${sessionId}:`, error);
+      
+      // ✅ HEALTH MONITORING: Record failed AI analysis
+      guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier2_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+
+  /**
+   * Generate teacher prompts from AI insights and deliver via alert system
+   */
+  private async generateTeacherPromptsFromInsights(
+    insights: any, 
+    sessionId: string, 
+    groupId: string | undefined, 
+    teacherId: string
+  ): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      // Generate contextual teacher prompts
+      const prompts = await teacherPromptService.generatePrompts(insights, {
+        sessionId,
+        groupId: groupId || 'session-level',
+        teacherId,
+        sessionPhase: 'development', // TODO: Get actual phase from session state
+        subject: 'general', // TODO: Get from session data
+        learningObjectives: [], // TODO: Get from session data
+        groupSize: 4, // TODO: Get from actual group data
+        sessionDuration: 60 // TODO: Get from session data
+      });
+
+      // Prioritize and deliver prompts via alert system
+      let successfulDeliveries = 0;
+      for (const prompt of prompts) {
+        try {
+          await alertPrioritizationService.prioritizeAlert(prompt, {
+            sessionId,
+            teacherId,
+            sessionPhase: 'development',
+            currentAlertCount: 0, // TODO: Track actual count
+            teacherEngagementScore: 0.7 // TODO: Calculate from user activity
+          });
+          successfulDeliveries++;
+        } catch (deliveryError) {
+          console.error(`❌ Failed to deliver prompt ${prompt.id}:`, deliveryError);
+          
+          // ✅ HEALTH MONITORING: Record alert delivery failure
+          guidanceSystemHealthService.recordFailure('alertDelivery', 'prompt_delivery', Date.now() - startTime, deliveryError instanceof Error ? deliveryError.message : 'Unknown delivery error');
+        }
+      }
+
+      // ✅ HEALTH MONITORING: Record successful prompt generation
+      const duration = Date.now() - startTime;
+      guidanceSystemHealthService.recordSuccess('promptGeneration', 'prompt_generation', duration);
+      
+      // ✅ HEALTH MONITORING: Record alert delivery success rate
+      if (successfulDeliveries > 0) {
+        guidanceSystemHealthService.recordSuccess('alertDelivery', 'prompt_delivery', duration);
+      }
+
+      console.log(`📝 Generated ${prompts.length} teacher prompts from AI insights (${successfulDeliveries} delivered)`);
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`❌ Teacher prompt generation failed:`, error);
+      
+      // ✅ HEALTH MONITORING: Record prompt generation failure
+      guidanceSystemHealthService.recordFailure('promptGeneration', 'prompt_generation', duration, error instanceof Error ? error.message : 'Unknown error');
+    }
   }
 
   // Get IO instance for advanced usage

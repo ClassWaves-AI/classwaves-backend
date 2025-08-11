@@ -153,7 +153,7 @@ export class AIAnalysisBufferService {
         educationalPurpose: 'Log transcription buffering error for system monitoring',
         complianceBasis: 'system_administration',
         sessionId,
-        error: error.message
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
 
       throw error;
@@ -302,7 +302,7 @@ export class AIAnalysisBufferService {
     buffer.lastUpdate = validated.timestamp;
 
     // Enforce buffer size limits
-    const maxSize = options.maxBufferSize || this.config.maxBufferSize;
+    const maxSize = options?.maxBufferSize || this.config.maxBufferSize;
     if (buffer.transcripts.length > maxSize) {
       buffer.transcripts = buffer.transcripts.slice(-maxSize);
     }

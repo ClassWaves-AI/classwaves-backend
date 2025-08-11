@@ -40,7 +40,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
   const startTime = Date.now();
   
   try {
-    const { groupId, transcripts, options = {} }: AnalyzeGroupDiscussionRequest = req.body;
+    const { groupId, transcripts, options }: AnalyzeGroupDiscussionRequest = req.body;
     const { sessionId } = req.params;
     const teacher = req.user;
 
@@ -63,7 +63,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
     const session = await databricksService.queryOne(`
       SELECT id, teacher_id, status 
       FROM classwaves.sessions.classroom_sessions 
-      WHERE id = '${sessionId}' AND teacher_id = '${teacher.id}'
+      WHERE id = '${sessionId}' AND teacher_id = '${teacher?.id}'
     `);
 
     if (!session) {
@@ -100,9 +100,9 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
     const tier1Options: Tier1Options = {
       groupId,
       sessionId,
-      focusAreas: options.focusAreas || ['topical_cohesion', 'conceptual_density'],
-      windowSize: options.windowSize || 30,
-      includeMetadata: options.includeMetadata !== false
+      focusAreas: options?.focusAreas || ['topical_cohesion', 'conceptual_density'],
+      windowSize: options?.windowSize || 30,
+      includeMetadata: options?.includeMetadata !== false
     };
 
     // Perform AI analysis
@@ -114,7 +114,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
       id: insightId,
       session_id: sessionId,
       group_id: groupId,
-      teacher_id: teacher.id,
+      teacher_id: teacher?.id || '',
       analysis_type: 'tier1_realtime',
       insights: JSON.stringify(insights),
       transcript_count: transcripts.length,
@@ -142,7 +142,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
 
     // Record audit log
     await databricksService.recordAuditLog({
-      user_id: teacher.id,
+      user_id: teacher?.id || '',
       user_type: 'teacher',
       action: 'ai_analysis_tier1',
       resource_type: 'group_discussion',
@@ -155,7 +155,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
       },
       ip_address: req.ip,
       user_agent: req.get('User-Agent'),
-      school_id: teacher.school_id
+      school_id: teacher?.school_id || ''
     });
 
     const response: AnalyzeGroupDiscussionResponse = {
@@ -204,7 +204,7 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
   const startTime = Date.now();
   
   try {
-    const { groupTranscripts, options = {} }: GenerateDeepInsightsRequest = req.body;
+    const { groupTranscripts, options }: GenerateDeepInsightsRequest = req.body;
     const { sessionId } = req.params;
     const teacher = req.user;
 
@@ -227,7 +227,7 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
     const session = await databricksService.queryOne(`
       SELECT id, teacher_id, status, title 
       FROM classwaves.sessions.classroom_sessions 
-      WHERE id = '${sessionId}' AND teacher_id = '${teacher.id}'
+      WHERE id = '${sessionId}' AND teacher_id = '${teacher?.id}'
     `);
 
     if (!session) {
@@ -243,9 +243,9 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
     const tier2Options: Tier2Options = {
       sessionId,
       groupIds: groupTranscripts.map(gt => gt.groupId),
-      analysisDepth: options.analysisDepth || 'standard',
-      includeComparative: options.includeComparative !== false,
-      includeMetadata: options.includeMetadata !== false
+      analysisDepth: options?.analysisDepth || 'standard',
+      includeComparative: options?.includeComparative !== false,
+      includeMetadata: options?.includeMetadata !== false
     };
 
     // Combine all transcripts for deep analysis
@@ -259,7 +259,7 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
     await databricksService.insert('ai_insights.tier2_analysis', {
       id: insightId,
       session_id: sessionId,
-      teacher_id: teacher.id,
+      teacher_id: teacher?.id || '',
       analysis_type: 'tier2_deep',
       insights: JSON.stringify(insights),
       groups_analyzed: JSON.stringify(tier2Options.groupIds),
@@ -300,7 +300,7 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
 
     // Record audit log
     await databricksService.recordAuditLog({
-      user_id: teacher.id,
+      user_id: teacher?.id || '',
       user_type: 'teacher',
       action: 'ai_analysis_tier2',
       resource_type: 'session_discussion',
@@ -314,7 +314,7 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
       },
       ip_address: req.ip,
       user_agent: req.get('User-Agent'),
-      school_id: teacher.school_id
+      school_id: teacher?.school_id || ''
     });
 
     const response: GenerateDeepInsightsResponse = {
@@ -361,14 +361,14 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
 export const getSessionInsights = async (req: AuthRequest, res: Response): Promise<Response> => {
   try {
     const { sessionId } = req.params;
-    const { includeHistory = false, groupIds } = req.query as GetSessionInsightsRequest;
+    const { includeHistory = false, groupIds } = req.query as Partial<GetSessionInsightsRequest>;
     const teacher = req.user;
 
     // Verify teacher owns this session
     const session = await databricksService.queryOne(`
       SELECT id, teacher_id, title 
       FROM classwaves.sessions.classroom_sessions 
-      WHERE id = '${sessionId}' AND teacher_id = '${teacher.id}'
+      WHERE id = '${sessionId}' AND teacher_id = '${teacher?.id}'
     `);
 
     if (!session) {

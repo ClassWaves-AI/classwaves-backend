@@ -262,7 +262,7 @@ export class RecommendationEngineService {
         educationalPurpose: 'Log recommendation generation error for system monitoring',
         complianceBasis: 'system_administration',
         sessionId: context.sessionId,
-        error: error.message
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
 
       throw error;
@@ -323,7 +323,14 @@ export class RecommendationEngineService {
     const allRecommendations = await this.generateRecommendations(
       {} as any, // Placeholder insights
       context,
-      { maxRecommendations: limit * 2, recommendationTypes: [type] }
+      { 
+        maxRecommendations: limit * 2, 
+        confidenceThreshold: 0.7,
+        includeReasoning: true,
+        personalizeToTeacher: true,
+        includeResources: false,
+        recommendationTypes: [type] 
+      }
     );
     
     return allRecommendations.filter(r => r.type === type).slice(0, limit);
@@ -739,7 +746,7 @@ export class RecommendationEngineService {
       ]
     };
 
-    return strategies[subject] || strategies.general;
+    return strategies[subject as keyof typeof strategies] || strategies.general;
   }
 
   private getTargetMetrics(type: string): string[] {
@@ -751,7 +758,7 @@ export class RecommendationEngineService {
       assessment: ['understanding_check', 'misconception_identification', 'progress_monitoring']
     };
 
-    return metricMap[type] || ['general_improvement'];
+    return metricMap[type as keyof typeof metricMap] || ['general_improvement'];
   }
 
   private calculateConfidenceScore(data: any): number {
@@ -773,7 +780,7 @@ export class RecommendationEngineService {
       long_term: 0.9
     };
 
-    return impactMap[data.category] || 0.7;
+    return impactMap[data.category as keyof typeof impactMap] || 0.7;
   }
 
   private calculateFeasibilityScore(data: any): number {

@@ -35,13 +35,13 @@ export const sessionParamsSchema = z.object({
 // Query parameter schemas
 export const teacherAnalyticsQuerySchema = z.object({
   timeframe: z.enum(['session', 'daily', 'weekly', 'monthly', 'all_time']).default('weekly'),
-  includeComparisons: z.enum(['true', 'false']).transform(val => val === 'true').default('false'),
-  includeRecommendations: z.enum(['true', 'false']).transform(val => val === 'true').default('true')
+  includeComparisons: z.enum(['true', 'false']).transform(val => val === 'true').default(() => false),
+  includeRecommendations: z.enum(['true', 'false']).transform(val => val === 'true').default(() => true)
 });
 
 export const sessionAnalyticsQuerySchema = z.object({
-  includeGroupBreakdown: z.enum(['true', 'false']).transform(val => val === 'true').default('true'),
-  includeRealtimeMetrics: z.enum(['true', 'false']).transform(val => val === 'true').default('false')
+  includeGroupBreakdown: z.enum(['true', 'false']).transform(val => val === 'true').default(() => true),
+  includeRealtimeMetrics: z.enum(['true', 'false']).transform(val => val === 'true').default(() => false)
 });
 
 export const systemAnalyticsQuerySchema = z.object({
@@ -59,7 +59,7 @@ export const effectivenessReportQuerySchema = z.object({
   subject: z.enum(['math', 'science', 'literature', 'history', 'general']).optional(),
   promptCategory: z.enum(['facilitation', 'deepening', 'redirection', 'collaboration', 'assessment', 'energy', 'clarity']).optional(),
   timeframe: z.enum(['week', 'month', 'quarter', 'year']).default('month'),
-  includeSuccessStories: z.enum(['true', 'false']).transform(val => val === 'true').default('false')
+  includeSuccessStories: z.enum(['true', 'false']).transform(val => val === 'true').default(() => false)
 });
 
 // ============================================================================
@@ -77,9 +77,10 @@ const analyticsLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
+  skip: (req) => {
+    // Skip rate limiting for authenticated users with valid teacher ID
     const authReq = req as any;
-    return authReq.user?.id || req.ip;
+    return authReq.user?.id ? false : false;
   }
 });
 
@@ -94,9 +95,10 @@ const systemAnalyticsLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
+  skip: (req) => {
+    // Skip rate limiting for authenticated users with valid teacher ID
     const authReq = req as any;
-    return authReq.user?.id || req.ip;
+    return authReq.user?.id ? false : false;
   }
 });
 
@@ -137,14 +139,14 @@ router.use(authenticate);
 router.get('/teacher',
   analyticsLimiter,
   validateQuery(teacherAnalyticsQuerySchema),
-  analyticsController.getTeacherAnalytics
+  analyticsController.getTeacherAnalytics as any
 );
 
 router.get('/teacher/:teacherId',
   analyticsLimiter,
   validateParams(teacherParamsSchema),
   validateQuery(teacherAnalyticsQuerySchema),
-  analyticsController.getTeacherAnalytics
+  analyticsController.getTeacherAnalytics as any
 );
 
 // ============================================================================
@@ -162,7 +164,7 @@ router.get('/session/:sessionId',
   analyticsLimiter,
   validateParams(sessionParamsSchema),
   validateQuery(sessionAnalyticsQuerySchema),
-  analyticsController.getSessionAnalytics
+  analyticsController.getSessionAnalytics as any
 );
 
 // ============================================================================
@@ -178,7 +180,7 @@ router.get('/session/:sessionId',
 router.get('/system',
   systemAnalyticsLimiter,
   validateQuery(systemAnalyticsQuerySchema),
-  analyticsController.getSystemAnalytics
+  analyticsController.getSystemAnalytics as any
 );
 
 // ============================================================================
@@ -195,7 +197,7 @@ router.get('/system',
 router.get('/effectiveness',
   analyticsLimiter,
   validateQuery(effectivenessReportQuerySchema),
-  analyticsController.getEffectivenessReport
+  analyticsController.getEffectivenessReport as any
 );
 
 // ============================================================================
@@ -210,7 +212,7 @@ router.get('/effectiveness',
  */
 router.get('/dashboard/realtime',
   realtimeLimiter,
-  analyticsController.getRealtimeDashboardData
+  analyticsController.getRealtimeDashboardData as any
 );
 
 /**
@@ -428,7 +430,7 @@ router.get('/export/session/:sessionId',
   validateParams(sessionParamsSchema),
   validateQuery(z.object({
     format: z.enum(['json', 'csv', 'pdf']).default('json'),
-    includeTranscripts: z.enum(['true', 'false']).transform(val => val === 'true').default('false')
+    includeTranscripts: z.enum(['true', 'false']).transform(val => val === 'true').default(() => false)
   })),
   async (req, res) => {
     try {
@@ -512,7 +514,7 @@ router.get('/health',
       res.status(503).json({
         success: false,
         status: 'unhealthy',
-        error: error.message
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   }

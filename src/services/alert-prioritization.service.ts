@@ -182,7 +182,7 @@ export class AlertPrioritizationService {
         educationalPurpose: 'Log alert prioritization error for system monitoring',
         complianceBasis: 'system_administration',
         sessionId: context.sessionId,
-        error: error.message
+        error: error instanceof Error ? error.message : 'Unknown error'
       });
 
       throw error;
@@ -378,8 +378,8 @@ export class AlertPrioritizationService {
     }
     
     // Effectiveness score from prompt
-    if (prompt.effectiveness_score) {
-      score += prompt.effectiveness_score * 0.2;
+    if (prompt.effectivenessScore) {
+      score += prompt.effectivenessScore * 0.2;
     }
     
     return Math.min(1, score);
@@ -558,23 +558,38 @@ export class AlertPrioritizationService {
       const wsService = getWebSocketService();
       
       if (wsService) {
+        const deliveryId = `delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
         wsService.emitToSession(alert.prompt.sessionId, 'teacher:alert:immediate', {
           alert: {
             id: alert.id,
             prompt: alert.prompt,
             priority: alert.priorityScore,
-            deliveryTime: new Date().toISOString()
+            deliveryTime: new Date().toISOString(),
+            deliveryId,
+            requiresConfirmation: true
           }
         });
         
-        // Record delivery
+        // Record delivery attempt
         this.recordDelivery(alert.prompt.sessionId);
+        alert.deliveryMetadata.lastAttempt = new Date();
         
-        console.log(`🚨 Immediate alert delivered: ${alert.id}`);
+        // Set up delivery confirmation timeout
+        this.setupDeliveryConfirmation(alert, deliveryId);
+        
+        console.log(`🚨 Immediate alert delivered: ${alert.id} (delivery: ${deliveryId})`);
       }
     } catch (error) {
       console.error(`❌ Failed to deliver immediate alert ${alert.id}:`, error);
       alert.deliveryMetadata.currentRetries++;
+      
+      // Retry if under limit
+      if (alert.deliveryMetadata.currentRetries < alert.deliveryMetadata.maxRetries) {
+        setTimeout(() => {
+          this.deliverAlertImmediately(alert);
+        }, 5000); // Retry after 5 seconds
+      }
     }
   }
 
@@ -645,6 +660,8 @@ export class AlertPrioritizationService {
       const wsService = getWebSocketService();
       
       if (wsService) {
+        const deliveryId = `batch_delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
         wsService.emitToSession(batch.sessionId, 'teacher:alert:batch', {
           batchId: batch.id,
           batchType: batch.batchType,
@@ -655,16 +672,174 @@ export class AlertPrioritizationService {
             contextFactors: a.contextFactors
           })),
           totalAlerts: batch.alerts.length,
-          deliveryTime: new Date().toISOString()
+          deliveryTime: new Date().toISOString(),
+          deliveryId,
+          requiresConfirmation: batch.batchType === 'urgent'
         });
         
         // Record delivery
         this.recordDelivery(batch.sessionId);
         
-        console.log(`📦 Alert batch delivered: ${batch.id} (${batch.alerts.length} alerts)`);
+        // Set up delivery confirmation for urgent batches
+        if (batch.batchType === 'urgent') {
+          this.setupBatchDeliveryConfirmation(batch, deliveryId);
+        }
+        
+        console.log(`📦 Alert batch delivered: ${batch.id} (${batch.alerts.length} alerts, delivery: ${deliveryId})`);
       }
     } catch (error) {
       console.error(`❌ Failed to deliver alert batch ${batch.id}:`, error);
+    }
+  }
+
+  // ============================================================================
+  // Private Methods - Delivery Confirmation
+  // ============================================================================
+
+  /**
+   * Set up delivery confirmation timeout for individual alerts
+   */
+  private setupDeliveryConfirmation(alert: PrioritizedAlert, deliveryId: string): void {
+    const confirmationTimeout = setTimeout(async () => {
+      console.warn(`⚠️ Delivery confirmation timeout for alert ${alert.id} (delivery: ${deliveryId})`);
+      
+      // Record delivery failure
+      await this.recordDeliveryTimeout(alert, deliveryId);
+      
+      // Retry if possible
+      if (alert.deliveryMetadata.currentRetries < alert.deliveryMetadata.maxRetries) {
+        console.log(`🔄 Retrying delivery for alert ${alert.id}`);
+        await this.deliverAlertImmediately(alert);
+      }
+    }, 30000); // 30 second timeout
+    
+    // Store timeout for potential cleanup
+    (alert as any).confirmationTimeoutId = confirmationTimeout;
+  }
+
+  /**
+   * Set up delivery confirmation timeout for alert batches
+   */
+  private setupBatchDeliveryConfirmation(batch: AlertBatch, deliveryId: string): void {
+    const confirmationTimeout = setTimeout(async () => {
+      console.warn(`⚠️ Batch delivery confirmation timeout for batch ${batch.id} (delivery: ${deliveryId})`);
+      
+      // Record batch delivery failure
+      await this.recordBatchDeliveryTimeout(batch, deliveryId);
+      
+    }, 45000); // 45 second timeout for batches
+    
+    // Store timeout reference
+    (batch as any).confirmationTimeoutId = confirmationTimeout;
+  }
+
+  /**
+   * Confirm delivery of an individual alert
+   */
+  async confirmAlertDelivery(alertId: string, deliveryId: string, sessionId: string): Promise<void> {
+    try {
+      // Find the alert and clear its timeout
+      const alerts = this.alertQueues.get(sessionId) || [];
+      const alert = alerts.find(a => a.id === alertId);
+      
+      if (alert && (alert as any).confirmationTimeoutId) {
+        clearTimeout((alert as any).confirmationTimeoutId);
+        delete (alert as any).confirmationTimeoutId;
+      }
+      
+      // Record successful delivery
+      await this.recordSuccessfulDelivery(alertId, deliveryId, sessionId);
+      
+      console.log(`✅ Alert delivery confirmed: ${alertId} (delivery: ${deliveryId})`);
+      
+    } catch (error) {
+      console.error(`❌ Failed to confirm alert delivery:`, error);
+    }
+  }
+
+  /**
+   * Confirm delivery of an alert batch
+   */
+  async confirmBatchDelivery(batchId: string, deliveryId: string, sessionId: string): Promise<void> {
+    try {
+      // Record successful batch delivery
+      await this.recordSuccessfulBatchDelivery(batchId, deliveryId, sessionId);
+      
+      console.log(`✅ Batch delivery confirmed: ${batchId} (delivery: ${deliveryId})`);
+      
+    } catch (error) {
+      console.error(`❌ Failed to confirm batch delivery:`, error);
+    }
+  }
+
+  private async recordDeliveryTimeout(alert: PrioritizedAlert, deliveryId: string): Promise<void> {
+    try {
+      await this.auditLog({
+        eventType: 'alert_delivery_timeout',
+        actorId: 'system',
+        targetType: 'alert_delivery',
+        targetId: alert.id,
+        educationalPurpose: 'Track delivery failures for system reliability monitoring',
+        complianceBasis: 'system_administration',
+        sessionId: alert.prompt.sessionId,
+        deliveryId,
+        currentRetries: alert.deliveryMetadata.currentRetries,
+        maxRetries: alert.deliveryMetadata.maxRetries
+      });
+    } catch (error) {
+      console.warn('Failed to log delivery timeout:', error);
+    }
+  }
+
+  private async recordBatchDeliveryTimeout(batch: AlertBatch, deliveryId: string): Promise<void> {
+    try {
+      await this.auditLog({
+        eventType: 'batch_delivery_timeout',
+        actorId: 'system',
+        targetType: 'batch_delivery',
+        targetId: batch.id,
+        educationalPurpose: 'Track batch delivery failures for system reliability monitoring',
+        complianceBasis: 'system_administration',
+        sessionId: batch.sessionId,
+        deliveryId,
+        batchSize: batch.alerts.length
+      });
+    } catch (error) {
+      console.warn('Failed to log batch delivery timeout:', error);
+    }
+  }
+
+  private async recordSuccessfulDelivery(alertId: string, deliveryId: string, sessionId: string): Promise<void> {
+    try {
+      await this.auditLog({
+        eventType: 'alert_delivery_confirmed',
+        actorId: 'system',
+        targetType: 'alert_delivery',
+        targetId: alertId,
+        educationalPurpose: 'Track successful alert deliveries for system reliability monitoring',
+        complianceBasis: 'system_administration',
+        sessionId,
+        deliveryId
+      });
+    } catch (error) {
+      console.warn('Failed to log successful delivery:', error);
+    }
+  }
+
+  private async recordSuccessfulBatchDelivery(batchId: string, deliveryId: string, sessionId: string): Promise<void> {
+    try {
+      await this.auditLog({
+        eventType: 'batch_delivery_confirmed',
+        actorId: 'system',
+        targetType: 'batch_delivery',
+        targetId: batchId,
+        educationalPurpose: 'Track successful batch deliveries for system reliability monitoring',
+        complianceBasis: 'system_administration',
+        sessionId,
+        deliveryId
+      });
+    } catch (error) {
+      console.warn('Failed to log successful batch delivery:', error);
     }
   }
 
@@ -788,6 +963,10 @@ export class AlertPrioritizationService {
     responseTimeMs?: number;
     feedbackRating?: number;
     error?: string;
+    deliveryId?: string;
+    currentRetries?: number;
+    maxRetries?: number;
+    batchSize?: number;
   }): Promise<void> {
     try {
       await databricksService.recordAuditLog({

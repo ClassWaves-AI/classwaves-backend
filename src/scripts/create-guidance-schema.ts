@@ -80,7 +80,7 @@ export async function createGuidanceSchema(): Promise<void> {
       targetId: 'teacher_guidance_metrics',
       educationalPurpose: 'Log schema creation error for system monitoring',
       complianceBasis: 'system_administration',
-      error: error.message
+      error: error instanceof Error ? error.message : 'Unknown error'
     });
     
     throw error;

@@ -96,7 +96,7 @@ export class DatabricksAIService {
       
       throw this.createAIError(
         'ANALYSIS_FAILED',
-        `Tier 1 analysis failed: ${error.message}`,
+        `Tier 1 analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'tier1',
         options.groupId,
         options.sessionId,
@@ -208,7 +208,7 @@ Return only valid JSON with no additional text.`;
       
       throw this.createAIError(
         'ANALYSIS_FAILED',
-        `Tier 2 analysis failed: ${error.message}`,
+        `Tier 2 analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'tier2',
         undefined,
         options.sessionId,
@@ -343,7 +343,7 @@ Return only valid JSON with no additional text.`;
       temperature: config.temperature
     };
 
-    let lastError: Error;
+    let lastError: Error = new Error('No attempts made');
     
     for (let attempt = 1; attempt <= this.config.retries.maxAttempts; attempt++) {
       try {
@@ -362,7 +362,7 @@ Return only valid JSON with no additional text.`;
         
       } catch (error) {
         lastError = error as Error;
-        console.warn(`⚠️  ${tier.toUpperCase()} API call failed on attempt ${attempt}:`, error.message);
+        console.warn(`⚠️  ${tier.toUpperCase()} API call failed on attempt ${attempt}:`, error instanceof Error ? error.message : 'Unknown error');
         
         // Check for specific error types
         if (axios.isAxiosError(error)) {
@@ -391,7 +391,7 @@ Return only valid JSON with no additional text.`;
 
     throw this.createAIError(
       'DATABRICKS_TIMEOUT',
-      `Failed after ${this.config.retries.maxAttempts} attempts: ${lastError.message}`,
+      `Failed after ${this.config.retries.maxAttempts} attempts: ${lastError instanceof Error ? lastError.message : 'Unknown error'}`,
       tier
     );
   }
@@ -442,7 +442,7 @@ Return only valid JSON with no additional text.`;
       console.error('Failed to parse Tier 1 response:', error);
       throw this.createAIError(
         'ANALYSIS_FAILED',
-        `Failed to parse Tier 1 response: ${error.message}`,
+        `Failed to parse Tier 1 response: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'tier1',
         options.groupId,
         options.sessionId
@@ -493,7 +493,7 @@ Return only valid JSON with no additional text.`;
       console.error('Failed to parse Tier 2 response:', error);
       throw this.createAIError(
         'ANALYSIS_FAILED',
-        `Failed to parse Tier 2 response: ${error.message}`,
+        `Failed to parse Tier 2 response: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'tier2',
         undefined,
         options.sessionId

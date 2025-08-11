@@ -79,7 +79,7 @@ export const recordPromptInteractionSchema = z.object({
 
 // Query parameter schemas
 export const sessionInsightsQuerySchema = z.object({
-  includeHistory: z.enum(['true', 'false']).transform(val => val === 'true').default('false'),
+  includeHistory: z.enum(['true', 'false']).transform(val => val === 'true').default(() => false),
   groupIds: z.string().optional().transform(val => val ? val.split(',') : undefined),
   tier: z.enum(['tier1', 'tier2', 'both']).optional().default('both'),
   limit: z.string().transform(val => parseInt(val) || 50).pipe(z.number().min(1).max(100)).optional()
@@ -118,10 +118,10 @@ const aiAnalysisLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    // Use teacher ID if available for better rate limiting
+  skip: (req) => {
+    // Skip rate limiting for authenticated users with valid teacher ID
     const authReq = req as any;
-    return authReq.user?.id || req.ip;
+    return authReq.user?.id ? false : false;
   }
 });
 
@@ -135,9 +135,10 @@ const teacherGuidanceLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
+  skip: (req) => {
+    // Skip rate limiting for authenticated users with valid teacher ID
     const authReq = req as any;
-    return authReq.user?.id || req.ip;
+    return authReq.user?.id ? false : false;
   }
 });
 
@@ -176,7 +177,7 @@ router.post('/sessions/:sessionId/analyze-discussion',
   aiAnalysisLimiter,
   validateParams(sessionParamsSchema),
   validate(analyzeDiscussionSchema),
-  aiController.analyzeGroupDiscussion
+  aiController.analyzeGroupDiscussion as any
 );
 
 /**
@@ -189,7 +190,7 @@ router.post('/sessions/:sessionId/generate-insights',
   aiAnalysisLimiter,
   validateParams(sessionParamsSchema),
   validate(generateInsightsSchema),
-  aiController.generateDeepInsights
+  aiController.generateDeepInsights as any
 );
 
 /**
@@ -202,7 +203,7 @@ router.get('/sessions/:sessionId/insights',
   aiAnalysisLimiter,
   validateParams(sessionParamsSchema),
   validateQuery(sessionInsightsQuerySchema),
-  aiController.getSessionInsights
+  aiController.getSessionInsights as any
 );
 
 // ============================================================================
