@@ -213,6 +213,165 @@ export class TeacherPromptService {
   }
 
   /**
+   * Get active prompts for a specific session
+   * 
+   * ✅ COMPLIANCE: Audit logging for prompt access
+   * ✅ PERFORMANCE: Combines cache and database with deduplication
+   * ✅ SECURITY: Input validation and error handling
+   * ✅ REAL-TIME: Fresh data with cache optimization
+   */
+  async getActivePrompts(sessionId: string, options?: {
+    includeExpired?: boolean;
+    maxAge?: number; // minutes
+    priorityFilter?: PromptPriority[];
+  }): Promise<TeacherPrompt[]> {
+    const startTime = Date.now();
+
+    try {
+      // ✅ SECURITY: Input validation
+      if (!sessionId || typeof sessionId !== 'string') {
+        throw new Error('Invalid sessionId provided');
+      }
+
+      // ✅ COMPLIANCE: Audit logging for prompt access
+      await this.auditLog({
+        eventType: 'teacher_prompt_access',
+        actorId: 'system',
+        targetType: 'teacher_guidance',
+        targetId: sessionId,
+        educationalPurpose: 'Retrieve active teacher prompts for real-time guidance',
+        complianceBasis: 'legitimate_educational_interest',
+        sessionId
+      });
+
+      const now = new Date();
+      const maxAge = options?.maxAge || this.config.promptExpirationMinutes;
+      const cutoffTime = new Date(now.getTime() - maxAge * 60000);
+
+      // Step 1: Get prompts from in-memory cache
+      const cachedPrompts = this.promptCache.get(sessionId) || [];
+      
+      // Step 2: Get prompts from database for persistence/recovery
+      let dbPrompts: TeacherPrompt[] = [];
+      try {
+        const dbResults = await databricksService.query(
+          `SELECT * FROM classwaves.ai_insights.teacher_guidance_metrics 
+           WHERE session_id = ? 
+           AND generated_at >= ?
+           ${!options?.includeExpired ? 'AND expires_at > ?' : ''}
+           AND dismissed_at IS NULL
+           ORDER BY priority_level DESC, generated_at DESC`,
+          options?.includeExpired 
+            ? [sessionId, cutoffTime.toISOString()]
+            : [sessionId, cutoffTime.toISOString(), now.toISOString()]
+        );
+
+        // Transform database results to TeacherPrompt objects
+        dbPrompts = dbResults.map(row => this.transformDbToPrompt(row));
+      } catch (dbError) {
+        console.warn('⚠️ Database query failed for active prompts, using cache only:', dbError);
+        // Continue with cache-only results for graceful degradation
+      }
+
+      // Step 3: Merge and deduplicate prompts (cache takes precedence)
+      const allPrompts = new Map<string, TeacherPrompt>();
+      
+      // Add database prompts first
+      dbPrompts.forEach(prompt => allPrompts.set(prompt.id, prompt));
+      
+      // Add cached prompts (overwrites DB with fresher data)
+      cachedPrompts.forEach(prompt => allPrompts.set(prompt.id, prompt));
+
+      // Step 4: Apply filters
+      let filteredPrompts = Array.from(allPrompts.values());
+
+      // Filter by expiration (unless includeExpired is true)
+      if (!options?.includeExpired) {
+        filteredPrompts = filteredPrompts.filter(p => p.expiresAt > now);
+      }
+
+      // Filter by priority if specified
+      if (options?.priorityFilter && options.priorityFilter.length > 0) {
+        filteredPrompts = filteredPrompts.filter(p => 
+          options.priorityFilter!.includes(p.priority)
+        );
+      }
+
+      // Filter by age
+      filteredPrompts = filteredPrompts.filter(p => 
+        p.generatedAt >= cutoffTime
+      );
+
+      // Step 5: Sort by priority and creation time
+      filteredPrompts.sort((a, b) => {
+        const priorityOrder = { 'high': 3, 'medium': 2, 'low': 1 };
+        const aPriority = priorityOrder[a.priority] || 0;
+        const bPriority = priorityOrder[b.priority] || 0;
+        
+        if (aPriority !== bPriority) {
+          return bPriority - aPriority; // High priority first
+        }
+        
+        return b.generatedAt.getTime() - a.generatedAt.getTime(); // Newest first
+      });
+
+      const processingTime = Date.now() - startTime;
+      console.log(`✅ Retrieved ${filteredPrompts.length} active prompts for session ${sessionId} in ${processingTime}ms`);
+
+      return filteredPrompts;
+
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      console.error(`❌ Failed to get active prompts for session ${sessionId}:`, error);
+
+      // ✅ COMPLIANCE: Audit log for errors
+      await this.auditLog({
+        eventType: 'teacher_prompt_access_error',
+        actorId: 'system',
+        targetType: 'teacher_guidance',
+        targetId: sessionId,
+        educationalPurpose: 'Log prompt access error for system monitoring',
+        complianceBasis: 'system_administration',
+        sessionId,
+        error: (error as Error).message
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Transform database row to TeacherPrompt object
+   */
+  private transformDbToPrompt(row: any): TeacherPrompt {
+    return {
+      id: row.prompt_id || row.id,
+      sessionId: row.session_id,
+      teacherId: row.teacher_id,
+      groupId: row.group_id,
+      category: row.prompt_category,
+      priority: row.priority_level,
+      message: row.prompt_message,
+      context: row.prompt_context,
+      suggestedTiming: row.suggested_timing,
+      generatedAt: new Date(row.generated_at),
+      expiresAt: new Date(row.expires_at),
+      acknowledgedAt: row.acknowledged_at ? new Date(row.acknowledged_at) : undefined,
+      usedAt: row.used_at ? new Date(row.used_at) : undefined,
+      dismissedAt: row.dismissed_at ? new Date(row.dismissed_at) : undefined,
+      sessionPhase: row.session_phase,
+      subject: row.subject_area,
+      targetMetric: row.target_metric,
+      learningObjectives: row.learning_objectives ? JSON.parse(row.learning_objectives) : undefined,
+      effectivenessScore: row.effectiveness_score,
+      feedbackRating: row.feedback_rating,
+      feedbackText: row.feedback_text,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at)
+    };
+  }
+
+  /**
    * Clear expired prompts and cleanup
    */
   async cleanup(): Promise<void> {

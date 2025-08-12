@@ -20,7 +20,7 @@ import { teacherPromptService } from './teacher-prompt.service';
 import { alertPrioritizationService } from './alert-prioritization.service';
 import { recommendationEngineService } from './recommendation-engine.service';
 import { databricksService } from './databricks.service';
-import type { WebSocketService } from './websocket.service';
+import { websocketService } from './websocket.service';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 
 // ============================================================================
@@ -81,7 +81,7 @@ interface SystemHealthEvent {
 // ============================================================================
 
 export class AIWebSocketIntegrationService extends EventEmitter {
-  private websocketService: WebSocketService | null = null;
+  private websocketService = websocketService;
   private isInitialized = false;
   private processingQueues = new Map<string, TranscriptionEvent[]>(); // sessionId -> events
   private tier1ProcessingInterval: NodeJS.Timeout | null = null;
@@ -125,14 +125,13 @@ export class AIWebSocketIntegrationService extends EventEmitter {
   /**
    * Initialize the integration service with WebSocket service
    */
-  async initialize(websocketService: WebSocketService): Promise<void> {
+  async initialize(): Promise<void> {
     if (this.isInitialized) {
       console.warn('⚠️ AI WebSocket Integration already initialized');
       return;
     }
 
     try {
-      this.websocketService = websocketService;
       
       // Set up event listeners for transcription events
       await this.setupTranscriptionListeners();
@@ -189,7 +188,6 @@ export class AIWebSocketIntegrationService extends EventEmitter {
     await this.processRemainingQueues();
     
     this.isInitialized = false;
-    this.websocketService = null;
     
     console.log('✅ AI WebSocket Integration Service shutdown completed');
   }
@@ -216,14 +214,18 @@ export class AIWebSocketIntegrationService extends EventEmitter {
   }
 
   // ============================================================================
+  // Private Methods - Type Guards
+  // ============================================================================
+
+  private isTier2Insights(insights: Tier1Insights | Tier2Insights): insights is Tier2Insights {
+    return (insights as Tier2Insights).argumentationQuality !== undefined;
+  }
+
+  // ============================================================================
   // Private Methods - Event Listeners Setup
   // ============================================================================
 
   private async setupTranscriptionListeners(): Promise<void> {
-    if (!this.websocketService) {
-      throw new Error('WebSocket service not available');
-    }
-
     console.log('📡 Setting up transcription event listeners...');
 
     // Listen for new group transcriptions
@@ -592,7 +594,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
       await this.generateTeacherPrompts(sessionId, groupId, insights);
       
       // Generate recommendations (for Tier 2)
-      if (tier === 'tier2') {
+      if (tier === 'tier2' && this.isTier2Insights(insights)) {
         await this.generateRecommendations(sessionId, insights);
       }
       
@@ -607,10 +609,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
     groupId: string | undefined,
     insights: Tier1Insights | Tier2Insights
   ): Promise<void> {
-    if (!this.websocketService) {
-      console.warn('WebSocket service not available for insights emission');
-      return;
-    }
+    // Emit insights via WebSocket proxy (handles initialization internally)
     
     const eventData: AIInsightEvent = {
       type: tier,
@@ -645,7 +644,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
       // Generate prompts
       const prompts = await teacherPromptService.generatePrompts(insights, {
         sessionId,
-        groupId,
+        groupId: groupId || 'session-level',
         teacherId: context.teacherId,
         sessionPhase: context.sessionPhase,
         subject: context.subject,
@@ -693,7 +692,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
       );
       
       // Emit recommendations via WebSocket
-      if (this.websocketService && recommendations.length > 0) {
+      if (recommendations.length > 0) {
         this.websocketService.emitToSession(sessionId, 'teacher:recommendations', {
           sessionId,
           recommendations: recommendations.slice(0, 5), // Top 5 recommendations
@@ -722,7 +721,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
       });
       
       // Deliver via WebSocket if immediate
-      if (this.websocketService && alertResult.batchGroup === 'immediate') {
+      if (alertResult.batchGroup === 'immediate') {
         const alertEvent: TeacherAlertEvent = {
           sessionId,
           teacherId,
@@ -808,13 +807,11 @@ export class AIWebSocketIntegrationService extends EventEmitter {
     console.warn(`⚠️ Graceful degradation for event ${event.id}:`, error);
     
     // Emit basic insight without AI analysis
-    if (this.websocketService) {
-      this.websocketService.emitToSession(event.sessionId, 'system:notice', {
-        type: 'processing_degraded',
-        message: 'AI analysis temporarily unavailable, basic processing continues',
-        timestamp: new Date().toISOString()
-      });
-    }
+    this.websocketService.emitToSession(event.sessionId, 'system:notice', {
+      type: 'processing_degraded',
+      message: 'AI analysis temporarily unavailable, basic processing continues',
+      timestamp: new Date().toISOString()
+    });
   }
 
   private startHealthMonitoring(): void {
@@ -848,9 +845,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
     this.emit('health_check', healthEvent);
     
     // Emit via WebSocket for monitoring
-    if (this.websocketService) {
-      this.websocketService.emit('system:health', healthEvent);
-    }
+    this.websocketService.emit('system:health', healthEvent);
   }
 
   private async auditLog(data: {
@@ -889,7 +884,7 @@ export class AIWebSocketIntegrationService extends EventEmitter {
 export const aiWebSocketIntegrationService = new AIWebSocketIntegrationService();
 
 // Integration function for easy setup
-export async function integrateAIWithTranscription(websocketService: WebSocketService): Promise<void> {
-  await aiWebSocketIntegrationService.initialize(websocketService);
+export async function integrateAIWithTranscription(): Promise<void> {
+  await aiWebSocketIntegrationService.initialize();
   console.log('🚀 AI-Transcription integration completed');
 }

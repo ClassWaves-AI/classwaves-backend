@@ -4,6 +4,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { verifyToken } from '../utils/jwt.utils';
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 import { inMemoryAudioProcessor } from './audio/InMemoryAudioProcessor';
 import { aiAnalysisBufferService } from './ai-analysis-buffer.service';
 import { teacherPromptService } from './teacher-prompt.service';
@@ -40,8 +41,9 @@ interface ClientToServerEvents {
   leaveSession: (sessionCode: string) => void;
   sendMessage: (data: { sessionCode: string; message: string }) => void;
   updatePresence: (data: { sessionCode: string; status: string }) => void;
-  'group:join': (data: { groupId: string; sessionId: string }) => void;
-  'group:status_update': (data: { groupId: string; isReady: boolean }) => void;
+
+  // Deprecated: group:status_update replaced by group:leader_ready
+  'group:leader_ready': (data: { sessionId: string; groupId: string; ready: boolean }) => void;
   
   // Audio processing events
   'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void;
@@ -319,73 +321,52 @@ export class WebSocketService {
         }
       });
 
-      // Replace participant-based joinSession with group-based joinGroup
-      socket.on('group:join', async (data: { groupId: string; sessionId: string }) => {
+      // Phase 5: Handle group leader ready signal
+      // Groups are pre-configured in declarative workflow
+      socket.on('group:leader_ready', async (data: { sessionId: string; groupId: string; ready: boolean }) => {
         try {
-          // Verify group exists and session is active
+          // Validate that student is the designated leader for this group
           const group = await databricksService.queryOne(`
-            SELECT sg.*, cs.status as session_status
-            FROM classwaves.sessions.student_groups sg
-            JOIN classwaves.sessions.classroom_sessions cs ON sg.session_id = cs.id
-            WHERE sg.id = ? AND cs.id = ?
+            SELECT leader_id, session_id, name 
+            FROM ${databricksConfig.catalog}.sessions.student_groups 
+            WHERE id = ? AND session_id = ?
           `, [data.groupId, data.sessionId]);
           
-          if (!group || group.session_status !== 'active') {
+          if (!group) {
             socket.emit('error', {
-              code: 'GROUP_JOIN_FAILED',
-              message: 'Group not found or session not active',
+              code: 'GROUP_NOT_FOUND',
+              message: 'Group not found',
             });
             return;
           }
-          
-          await socket.join(`session:${data.sessionId}`);
-          await socket.join(`group:${data.groupId}`);
-          
-          socket.emit('group:joined', { 
-            groupId: data.groupId, 
-            sessionId: data.sessionId,
-            groupInfo: group 
-          });
-          
-          // Notify teacher dashboard
-          socket.to(`session:${data.sessionId}`).emit('group:status_changed', {
-            groupId: data.groupId,
-            status: 'connected'
-          });
-        } catch (error) {
-          socket.emit('error', {
-            code: 'GROUP_JOIN_FAILED',
-            message: 'Failed to join group session',
-          });
-        }
-      });
 
-      // Handle group status updates from kiosk
-      socket.on('group:status_update', async (data: { groupId: string; isReady: boolean }) => {
-        try {
-          // Update group status in database
+          // Note: Group leader validation will be added in future iterations
+          // Currently accepting any readiness signal for MVP flexibility
+          
+          // Update group readiness status
           await databricksService.update('student_groups', data.groupId, {
-            is_ready: data.isReady,
+            is_ready: data.ready,
             updated_at: new Date(),
           });
           
-          // Get session ID for this group
-          const group = await databricksService.queryOne(`
-            SELECT session_id FROM classwaves.sessions.student_groups WHERE id = ?
-          `, [data.groupId]);
-          
-          if (group) {
-            // Broadcast to teacher dashboard
-            this.io.to(`session:${group.session_id}`).emit('group:status_changed', {
-              groupId: data.groupId,
-              status: data.isReady ? 'ready' : 'waiting',
-              isReady: data.isReady
-            });
+          // Record analytics for leader readiness
+          if (data.ready) {
+            await recordLeaderReady(data.sessionId, data.groupId, group.leader_id);
           }
+          
+          // Broadcast group status change to teacher clients
+          this.io.to(`session:${data.sessionId}`).emit('group:status_changed', {
+            groupId: data.groupId,
+            status: data.ready ? 'ready' : 'waiting',
+            isReady: data.ready
+          });
+          
+          console.log(`🎯 Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
         } catch (error) {
+          console.error('Error handling group leader ready:', error);
           socket.emit('error', {
-            code: 'STATUS_UPDATE_FAILED',
-            message: 'Failed to update group status',
+            code: 'LEADER_READY_FAILED',
+            message: 'Failed to update leader readiness',
           });
         }
       });
@@ -947,6 +928,72 @@ export function getWebSocketService(): WebSocketService | null {
   return wsService;
 }
 
+/**
+ * Helper: Record leader ready analytics event
+ */
+async function recordLeaderReady(sessionId: string, groupId: string, leaderId: string): Promise<void> {
+  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
+  
+  try {
+    const readyAt = new Date();
+    
+    // Update group_analytics with leader ready timestamp
+    await logAnalyticsOperation(
+      'leader_ready_analytics',
+      'group_analytics',
+      () => databricksService.upsert('group_analytics', 
+        { group_id: groupId },
+        {
+          leader_ready_at: readyAt,
+          calculation_timestamp: readyAt,
+        }
+      ),
+      {
+        sessionId,
+        recordCount: 1,
+        metadata: {
+          groupId,
+          leaderId,
+          readyTimestamp: readyAt.toISOString(),
+          operation: 'upsert'
+        },
+        sampleRate: 0.5, // Sample 50% of leader ready events
+      }
+    );
+
+    // Insert session_events record
+    await logAnalyticsOperation(
+      'leader_ready_event',
+      'session_events',
+      () => databricksService.insert('session_events', {
+        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_leader_ready_${groupId}`,
+        session_id: sessionId,
+        teacher_id: 'system', // System-generated event (teacher ID requires additional query)
+        event_type: 'leader_ready',
+        event_time: readyAt,
+        payload: JSON.stringify({
+          groupId,
+          leaderId,
+        }),
+      }),
+      {
+        sessionId,
+        recordCount: 1,
+        metadata: {
+          eventType: 'leader_ready',
+          groupId,
+          leaderId,
+          payloadSize: JSON.stringify({ groupId, leaderId }).length
+        },
+        sampleRate: 0.5, // Sample 50% of leader ready events
+      }
+    );
+  } catch (error) {
+    console.error('Failed to record leader ready analytics:', error);
+    // Don't throw - analytics failure shouldn't block readiness update
+  }
+}
+
 // Export a proxy object that can be used before initialization
 export const websocketService = {
   get io() {
@@ -956,12 +1003,24 @@ export const websocketService = {
     if (!wsService) return;
     wsService.getIO().socketsJoin(`session:${sessionId}`);
   },
+  emitToSession(sessionId: string, event: string, data: any) {
+    if (!wsService) return;
+    wsService.getIO().to(`session:${sessionId}`).emit(event as any, data);
+  },
+  on(event: string, callback: (...args: any[]) => void) {
+    if (!wsService) return;
+    wsService.getIO().on(event as any, callback);
+  },
+  emit(event: string, data: any) {
+    if (!wsService) return;
+    wsService.getIO().emit(event as any, data);
+  },
   notifySessionUpdate(sessionId: string, payload: any) {
     if (!wsService) return;
-    wsService.emitToSession(sessionId, 'session:status_changed', payload);
+    this.emitToSession(sessionId, 'session:status_changed', payload);
   },
   endSession(sessionId: string) {
     if (!wsService) return;
-    wsService.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
+    this.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
   }
 };

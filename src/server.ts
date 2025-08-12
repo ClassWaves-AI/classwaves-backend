@@ -1,7 +1,7 @@
 import { createServer } from 'http';
 import app from './app';
 import { serviceManager } from './services/service-manager';
-import { initializeWebSocket } from './services/websocket.service';
+import { initializeNamespacedWebSocket } from './services/websocket';
 
 // Robust port parsing to guard against malformed env (e.g., '3000DATABRICKS_...')
 const envPort = process.env.PORT;
@@ -31,9 +31,9 @@ async function startServer() {
     // Create HTTP server
     const httpServer = createServer(app);
     
-    // Initialize WebSocket server (after Redis is ready)
-    const wsService = initializeWebSocket(httpServer);
-    console.log('✅ WebSocket server initialized');
+    // Initialize Namespaced WebSocket server (after Redis is ready)
+    const wsService = initializeNamespacedWebSocket(httpServer);
+    console.log('✅ Namespaced WebSocket server initialized');
     
     // Start HTTP server
     httpServer.listen(PORT, () => {

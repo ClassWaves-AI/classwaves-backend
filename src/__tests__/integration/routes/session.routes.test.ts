@@ -111,24 +111,56 @@ describe('Session Routes Integration Tests', () => {
   describe('POST /api/sessions', () => {
     const validSessionData = testData.requests.createSession;
 
-    it('should create new session successfully', async () => {
-      const newSession = {
-        ...testData.sessions.created,
-        code: 'ABC123',
+    it('should create new session successfully with group membership tracking', async () => {
+      const sessionData = {
+        topic: 'Integration Test Session',
+        goal: 'Test session creation',
+        subject: 'Science',
+        plannedDuration: 45,
+        groupPlan: {
+          numberOfGroups: 2,
+          groupSize: 4,
+          groups: [
+            {
+              name: 'Research Team',
+              leaderId: 'leader-1',
+              memberIds: ['student-1', 'student-2', 'student-3']
+            },
+            {
+              name: 'Analysis Team',
+              leaderId: 'leader-2',
+              memberIds: ['student-4', 'student-5']
+            }
+          ]
+        }
       };
-      mockDatabricksService.createSession.mockResolvedValue(newSession);
+
+      // Mock successful database operations
+      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+      (databricksService.generateId as jest.Mock)
+        .mockReturnValueOnce('session-123')
+        .mockReturnValueOnce('group-1')
+        .mockReturnValueOnce('group-2');
 
       const response = await request(app)
         .post('/api/sessions')
         .set('Authorization', `Bearer ${authToken}`)
-        .send({ topic: 'New session topic' })
+        .send(sessionData)
         .expect(201);
 
-      // Align to new controller envelope
       expect(response.body.success).toBe(true);
-      // In fallback branch, payload contains structured session without accessCode
-      expect(response.body.data?.session || response.body.session).toBeDefined();
-      // createSession may be bypassed in fallback branch
+      expect(response.body.data.session).toBeDefined();
+      expect(response.body.data.accessCode).toBeDefined();
+      expect(response.body.data.session.groupsDetailed).toHaveLength(2);
+      
+      // Verify group membership tracking was called
+      expect(databricksService.insert).toHaveBeenCalledWith(
+        'student_group_members',
+        expect.objectContaining({
+          session_id: 'session-123',
+          student_id: 'leader-1'
+        })
+      );
     });
 
     it('should validate required fields', async () => {
@@ -144,10 +176,19 @@ describe('Session Routes Integration Tests', () => {
         .expect(400);
     });
 
-    it('should validate max students is positive', async () => {
+    it('should validate group plan has required fields', async () => {
       const invalidData = {
-        ...validSessionData,
-        maxStudents: -1,
+        topic: 'Test Session',
+        subject: 'Math',
+        plannedDuration: 45,
+        groupPlan: {
+          numberOfGroups: 2,
+          groupSize: 4,
+          groups: [
+            { name: 'Group A', leaderId: '', memberIds: [] }, // Missing leader
+            { name: 'Group B', leaderId: 'student-1', memberIds: [] } // Missing members
+          ]
+        }
       };
 
       const response = await request(app)
@@ -156,7 +197,32 @@ describe('Session Routes Integration Tests', () => {
         .send(invalidData)
         .expect(400);
 
-      expect(response.body.error).toBe('VALIDATION_ERROR');
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toContain('must have a leader');
+    });
+
+    it('should validate group members are required', async () => {
+      const invalidData = {
+        topic: 'Test Session',
+        subject: 'Math',
+        plannedDuration: 45,
+        groupPlan: {
+          numberOfGroups: 1,
+          groupSize: 4,
+          groups: [
+            { name: 'Group A', leaderId: 'student-1', memberIds: [] } // No members
+          ]
+        }
+      };
+
+      const response = await request(app)
+        .post('/api/sessions')
+        .set('Authorization', `Bearer ${authToken}`)
+        .send(invalidData)
+        .expect(400);
+
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(response.body.error.message).toContain('must have at least 1 member');
     });
 
     it('should handle teacher at session limit', async () => {

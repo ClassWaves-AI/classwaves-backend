@@ -14,7 +14,9 @@ import jwksRoutes from './routes/jwks.routes';
 import adminRoutes from './routes/admin.routes';
 import aiAnalysisRoutes from './routes/ai-analysis.routes';
 import guidanceAnalyticsRoutes from './routes/guidance-analytics.routes';
+import analyticsMonitoringRoutes from './routes/analytics-monitoring.routes';
 import healthRoutes from './routes/health.routes';
+import debugRoutes from './routes/debug.routes';
 import { redisService } from './services/redis.service';
 import { databricksService } from './services/databricks.service';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
@@ -160,7 +162,9 @@ app.use('/api/v1/kiosk', kioskRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/ai', aiAnalysisRoutes);
 app.use('/api/v1/analytics', guidanceAnalyticsRoutes);
+app.use('/api/v1/analytics/monitoring', analyticsMonitoringRoutes);
 app.use('/api/v1/health', healthRoutes);
+app.use('/api/v1/debug', debugRoutes);
 
 // 404 handler
 app.use((_req, res) => {

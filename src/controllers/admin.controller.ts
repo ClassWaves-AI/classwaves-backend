@@ -605,7 +605,7 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
       resourceType: 'teacher',
       resourceId: teacherId,
       schoolId: authReq.school!.id,
-      description: `Updated teacher: ${updatedTeacher.name} (${updatedTeacher.email})`,
+      description: `Updated teacher ID: ${updatedTeacher.id}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'

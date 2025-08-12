@@ -21,6 +21,12 @@ jest.mock('../../../services/redis.service', () => {
 
 jest.mock('../../../middleware/auth.middleware');
 
+/**
+ * COPPA Compliance Tests for Session Joining (Anonymous Participation)
+ * 
+ * Note: These tests focus on anonymous session joining where no PII is collected.
+ * Roster management (student identity/consent) is tested separately in roster.routes.test.ts
+ */
 describe('COPPA Compliance Tests', () => {
   let app: express.Application;
   let authToken: string;
@@ -179,9 +185,9 @@ describe('COPPA Compliance Tests', () => {
     });
   });
 
-  describe('Age Verification', () => {
-    it('should not require age verification for students', async () => {
-      // COPPA applies to children under 13, but ClassWaves doesn't collect age
+  describe('Session Joining - No Age Verification Required', () => {
+    it('should not require age verification for anonymous session joining', async () => {
+      // Session joining is anonymous - no age collection, no verification needed
       const joinData = testData.requests.joinSession;
       
       mockDatabricksService.queryOne.mockResolvedValue(activeSession);
@@ -290,9 +296,10 @@ describe('COPPA Compliance Tests', () => {
     });
   });
 
-  describe('Parental Consent', () => {
-    it('should not require parental consent for anonymous participation', async () => {
-      // Since no PII is collected, parental consent is not required
+  describe('Session Joining - No Parental Consent Required', () => {
+    it('should not require parental consent for anonymous session participation', async () => {
+      // Session joining is anonymous (no PII), so parental consent is not required
+      // Note: Roster management (student identity) does require consent handling
       const joinData = testData.requests.joinSession;
       
       mockDatabricksService.queryOne.mockResolvedValue(activeSession);

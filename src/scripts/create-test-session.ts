@@ -46,7 +46,7 @@ async function createTestSession() {
     await databricksService.query(
       `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
        (id, title, description, status, teacher_id, school_id, access_code, 
-        max_students, target_group_size, auto_group_enabled, 
+        target_group_size, auto_group_enabled, 
         recording_enabled, transcription_enabled, ai_analysis_enabled,
         ferpa_compliant, coppa_compliant, recording_consent_obtained,
         created_at, updated_at)
@@ -59,7 +59,6 @@ async function createTestSession() {
         teacher.id,
         school.id,
         accessCode,
-        30, // max_students
         4,  // target_group_size
         true, // auto_group_enabled
         true, // recording_enabled
