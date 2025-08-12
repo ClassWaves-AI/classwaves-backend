@@ -882,17 +882,13 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       // Broadcast to general session room
       websocketService.emitToSession(sessionId, 'session:status_changed', { 
         sessionId, 
-        status: 'active',
-        updatedBy: teacher.id,
-        timestamp: startedAt
+        status: 'active'
       });
       
       // Also broadcast to legacy namespace if needed
       websocketService.io.to(`session:${sessionId}`).emit('session:status_changed', {
         sessionId,
-        status: 'active',
-        updatedBy: teacher.id,
-        timestamp: startedAt
+        status: 'active'
       });
     }
     
