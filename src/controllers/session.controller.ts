@@ -628,32 +628,18 @@ async function recordSessionStarted(
       }
     );
 
-    // Insert session_events record
-    await logAnalyticsOperation(
-      'session_started_event',
-      'session_events',
-      () => databricksService.insert('session_events', {
-        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_started`,
-        session_id: sessionId,
-        teacher_id: teacherId,
-        event_type: 'started',
-        event_time: startedAt,
-        payload: JSON.stringify({
-          readyGroupsAtStart,
-          startedWithoutReadyGroups,
-        }),
-      }),
+    // NEW: Enhanced session_events logging using analytics query router
+    const { analyticsQueryRouterService } = await import('../services/analytics-query-router.service');
+    await analyticsQueryRouterService.logSessionEvent(
+      sessionId,
+      teacherId,
+      'started',
       {
-        sessionId,
-        teacherId,
-        recordCount: 1,
-        metadata: {
-          eventType: 'started',
-          hasReadyGroups: readyGroupsAtStart > 0,
-          payloadSize: JSON.stringify({ readyGroupsAtStart }).length
-        },
-        sampleRate: 1.0, // Always log session events
-        forceLog: true
+        readyGroupsAtStart,
+        startedWithoutReadyGroups,
+        timestamp: startedAt.toISOString(),
+        source: 'session_controller',
+        readinessRatio: readyGroupsAtStart > 0 ? readyGroupsAtStart / (readyGroupsAtStart + (startedWithoutReadyGroups ? 1 : 0)) : 0
       }
     );
   } catch (error) {
@@ -971,6 +957,26 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       complianceBasis: 'legitimate_interest',
     });
     
+    // NEW: Log session ended event
+    try {
+      const { analyticsQueryRouterService } = await import('../services/analytics-query-router.service');
+      await analyticsQueryRouterService.logSessionEvent(
+        sessionId,
+        teacher.id,
+        'ended',
+        {
+          reason,
+          teacherNotes,
+          duration_seconds: Math.round((new Date().getTime() - new Date(session.actual_start || session.created_at).getTime()) / 1000),
+          timestamp: new Date().toISOString(),
+          source: 'session_controller'
+        }
+      );
+    } catch (error) {
+      console.error('Failed to log session ended event:', error);
+      // Don't block session ending
+    }
+
     // Notify via WebSocket
     try {
       websocketService.endSession(sessionId);

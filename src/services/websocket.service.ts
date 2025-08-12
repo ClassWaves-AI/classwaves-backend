@@ -961,33 +961,29 @@ async function recordLeaderReady(sessionId: string, groupId: string, leaderId: s
       }
     );
 
-    // Insert session_events record
-    await logAnalyticsOperation(
-      'leader_ready_event',
-      'session_events',
-      () => databricksService.insert('session_events', {
-        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_leader_ready_${groupId}`,
-        session_id: sessionId,
-        teacher_id: 'system', // System-generated event (teacher ID requires additional query)
-        event_type: 'leader_ready',
-        event_time: readyAt,
-        payload: JSON.stringify({
-          groupId,
-          leaderId,
-        }),
-      }),
-      {
+    // NEW: Enhanced session events logging using analytics query router
+    try {
+      // Get teacher ID for proper event attribution
+      const session = await databricksService.queryOne(
+        `SELECT teacher_id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
+        [sessionId]
+      );
+      
+      const { analyticsQueryRouterService } = await import('./analytics-query-router.service');
+      await analyticsQueryRouterService.logSessionEvent(
         sessionId,
-        recordCount: 1,
-        metadata: {
-          eventType: 'leader_ready',
+        session?.teacher_id || 'system',
+        'leader_ready',
+        {
           groupId,
           leaderId,
-          payloadSize: JSON.stringify({ groupId, leaderId }).length
-        },
-        sampleRate: 0.5, // Sample 50% of leader ready events
-      }
-    );
+          timestamp: readyAt.toISOString(),
+          source: 'websocket_service'
+        }
+      );
+    } catch (error) {
+      console.error('Failed to log leader ready event via analytics router:', error);
+    }
   } catch (error) {
     console.error('Failed to record leader ready analytics:', error);
     // Don't throw - analytics failure shouldn't block readiness update
