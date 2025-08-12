@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import { databricksService } from './databricks.service';
+import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 
 // ============================================================================
 // Input Validation Schemas
@@ -56,12 +57,52 @@ interface BufferStats {
 }
 
 // ============================================================================
+// Current Insights Types for Real-time Guidance
+// ============================================================================
+
+interface CurrentInsights {
+  sessionId: string;
+  lastUpdated: Date;
+  tier1Insights: Array<{
+    groupId: string;
+    insights: Tier1Insights;
+    bufferInfo: {
+      transcriptCount: number;
+      windowStart: Date;
+      lastAnalysis?: Date;
+    };
+  }>;
+  tier2Insights?: {
+    insights: Tier2Insights;
+    bufferInfo: {
+      totalGroups: number;
+      totalTranscripts: number;
+      lastAnalysis?: Date;
+    };
+  };
+  summary: {
+    overallConfidence: number;
+    averageTopicalCohesion: number;
+    averageConceptualDensity: number;
+    alertCount: number;
+    keyMetrics: Record<string, number>;
+    criticalAlerts: string[];
+  };
+  metadata: {
+    dataAge: number; // milliseconds since last update
+    cacheHit: boolean;
+    processingTime: number;
+  };
+}
+
+// ============================================================================
 // AI Analysis Buffer Service
 // ============================================================================
 
 export class AIAnalysisBufferService {
   private tier1Buffers = new Map<string, TranscriptBuffer>();
   private tier2Buffers = new Map<string, TranscriptBuffer>();
+  private insightsCache = new Map<string, { insights: CurrentInsights; timestamp: Date }>();
   private cleanupInterval: NodeJS.Timeout | null = null;
   
   private readonly config = {
@@ -227,6 +268,309 @@ export class AIAnalysisBufferService {
         sessionId
       });
     }
+  }
+
+  /**
+   * Get current AI insights for a session
+   * 
+   * ✅ COMPLIANCE: Aggregates group-level insights only
+   * ✅ PERFORMANCE: Implements intelligent caching with TTL
+   * ✅ REAL-TIME: Provides fresh insights for guidance system
+   * ✅ RELIABILITY: Graceful handling of partial data availability
+   */
+  async getCurrentInsights(sessionId: string, options?: {
+    maxAge?: number; // minutes, default 5
+    includeMetadata?: boolean;
+  }): Promise<CurrentInsights> {
+    const startTime = Date.now();
+
+    try {
+      // ✅ SECURITY: Input validation
+      if (!sessionId || typeof sessionId !== 'string') {
+        throw new Error('Invalid sessionId provided');
+      }
+
+      // ✅ COMPLIANCE: Audit logging for insights access
+      await this.auditLog({
+        eventType: 'ai_insights_access',
+        actorId: 'system',
+        targetType: 'session_insights',
+        targetId: sessionId,
+        educationalPurpose: 'Retrieve current AI insights for real-time teacher guidance',
+        complianceBasis: 'legitimate_educational_interest',
+        sessionId
+      });
+
+      const maxAge = (options?.maxAge || 5) * 60000; // Convert to milliseconds
+      const now = new Date();
+
+      // Step 1: Check cache for recent insights
+      const cached = this.insightsCache.get(sessionId);
+      if (cached && (now.getTime() - cached.timestamp.getTime()) < maxAge) {
+        console.log(`✅ Retrieved cached insights for session ${sessionId}`);
+        return {
+          ...cached.insights,
+          metadata: {
+            ...cached.insights.metadata,
+            cacheHit: true,
+            processingTime: Date.now() - startTime
+          }
+        };
+      }
+
+      // Step 2: Build fresh insights from buffers
+      const insights = await this.buildCurrentInsights(sessionId, maxAge);
+
+      // Step 3: Cache the results
+      this.insightsCache.set(sessionId, {
+        insights,
+        timestamp: now
+      });
+
+      const processingTime = Date.now() - startTime;
+      console.log(`✅ Built fresh insights for session ${sessionId} in ${processingTime}ms`);
+
+      return {
+        ...insights,
+        metadata: {
+          ...insights.metadata,
+          cacheHit: false,
+          processingTime
+        }
+      };
+
+    } catch (error) {
+      const processingTime = Date.now() - startTime;
+      console.error(`❌ Failed to get current insights for session ${sessionId}:`, error);
+
+      // ✅ COMPLIANCE: Audit log for errors
+      await this.auditLog({
+        eventType: 'ai_insights_access_error',
+        actorId: 'system',
+        targetType: 'session_insights',
+        targetId: sessionId,
+        educationalPurpose: 'Log insights access error for system monitoring',
+        complianceBasis: 'system_administration',
+        sessionId,
+        error: (error as Error).message
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Build current insights from available buffers and recent analysis
+   */
+  private async buildCurrentInsights(sessionId: string, maxAge: number): Promise<CurrentInsights> {
+    const now = new Date();
+    const cutoffTime = new Date(now.getTime() - maxAge);
+
+    // Step 1: Gather Tier 1 insights from all groups in the session
+    const tier1Insights: CurrentInsights['tier1Insights'] = [];
+    let totalTopicalCohesion = 0;
+    let totalConceptualDensity = 0;
+    let validTier1Count = 0;
+
+    for (const [bufferKey, buffer] of this.tier1Buffers.entries()) {
+      if (buffer.sessionId === sessionId && buffer.lastUpdate >= cutoffTime) {
+        try {
+          // Get latest analysis from database for this group
+          const latestAnalysis = await this.getLatestTier1AnalysisFromDB(buffer.groupId, sessionId);
+          
+          if (latestAnalysis) {
+            tier1Insights.push({
+              groupId: buffer.groupId,
+              insights: latestAnalysis,
+              bufferInfo: {
+                transcriptCount: buffer.transcripts.length,
+                windowStart: buffer.windowStart,
+                lastAnalysis: buffer.lastAnalysis
+              }
+            });
+
+            // Aggregate metrics for summary
+            totalTopicalCohesion += latestAnalysis.topicalCohesion;
+            totalConceptualDensity += latestAnalysis.conceptualDensity;
+            validTier1Count++;
+          }
+        } catch (error) {
+          console.warn(`⚠️ Failed to get Tier 1 analysis for group ${buffer.groupId}:`, error);
+          // Continue with other groups - graceful degradation
+        }
+      }
+    }
+
+    // Step 2: Gather Tier 2 insights for the session
+    let tier2Insights: CurrentInsights['tier2Insights'];
+    let tier2TotalGroups = 0;
+    let tier2TotalTranscripts = 0;
+
+    try {
+      const latestTier2 = await this.getLatestTier2AnalysisFromDB(sessionId);
+      if (latestTier2) {
+        // Count groups and transcripts in tier2 buffers for this session
+        for (const [bufferKey, buffer] of this.tier2Buffers.entries()) {
+          if (buffer.sessionId === sessionId) {
+            tier2TotalGroups++;
+            tier2TotalTranscripts += buffer.transcripts.length;
+          }
+        }
+
+        tier2Insights = {
+          insights: latestTier2,
+          bufferInfo: {
+            totalGroups: tier2TotalGroups,
+            totalTranscripts: tier2TotalTranscripts,
+            lastAnalysis: this.getLatestTier2Analysis(sessionId)
+          }
+        };
+      }
+    } catch (error) {
+      console.warn(`⚠️ Failed to get Tier 2 analysis for session ${sessionId}:`, error);
+      // Continue without tier2 - graceful degradation
+    }
+
+    // Step 3: Build summary metrics
+    const averageTopicalCohesion = validTier1Count > 0 ? totalTopicalCohesion / validTier1Count : 0;
+    const averageConceptualDensity = validTier1Count > 0 ? totalConceptualDensity / validTier1Count : 0;
+    const overallConfidence = this.calculateOverallConfidence(tier1Insights, tier2Insights);
+    
+    // Identify critical alerts
+    const criticalAlerts: string[] = [];
+    let alertCount = 0;
+
+    tier1Insights.forEach(group => {
+      group.insights.insights.forEach(insight => {
+        alertCount++;
+        if (insight.severity === 'warning') {
+          criticalAlerts.push(`Group ${group.groupId}: ${insight.message}`);
+        }
+      });
+    });
+
+    if (tier2Insights) {
+      tier2Insights.insights.recommendations.forEach(rec => {
+        if (rec.priority === 'high') {
+          alertCount++;
+          criticalAlerts.push(`Session: ${rec.message}`);
+        }
+      });
+    }
+
+    return {
+      sessionId,
+      lastUpdated: now,
+      tier1Insights,
+      tier2Insights,
+      summary: {
+        overallConfidence,
+        averageTopicalCohesion,
+        averageConceptualDensity,
+        alertCount,
+        keyMetrics: {
+          activeGroups: tier1Insights.length,
+          totalTranscripts: tier1Insights.reduce((sum, g) => sum + g.bufferInfo.transcriptCount, 0),
+          recentAnalyses: tier1Insights.filter(g => g.bufferInfo.lastAnalysis && 
+            (now.getTime() - g.bufferInfo.lastAnalysis.getTime()) < 300000).length // 5 minutes
+        },
+        criticalAlerts
+      },
+      metadata: {
+        dataAge: 0, // Will be set by caller
+        cacheHit: false, // Will be set by caller
+        processingTime: 0 // Will be set by caller
+      }
+    };
+  }
+
+  /**
+   * Get latest Tier 1 analysis from database
+   */
+  private async getLatestTier1AnalysisFromDB(
+    groupId: string, 
+    sessionId: string
+  ): Promise<Tier1Insights | null> {
+    try {
+      const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
+         WHERE analysis_type = 'tier1' 
+         AND session_id = ? 
+         AND JSON_EXTRACT(result_data, "$.groupId") = ?
+         ORDER BY analysis_timestamp DESC LIMIT 1`;
+
+      const result = await databricksService.queryOne(query, [sessionId, groupId]);
+
+      if (result && result.result_data) {
+        return JSON.parse(result.result_data) as Tier1Insights;
+      }
+
+      return null;
+    } catch (error) {
+      console.warn('⚠️ Database query failed for latest Tier 1 analysis:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get latest Tier 2 analysis from database
+   */
+  private async getLatestTier2AnalysisFromDB(
+    sessionId: string
+  ): Promise<Tier2Insights | null> {
+    try {
+      const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
+         WHERE analysis_type = 'tier2' 
+         AND session_id = ? 
+         ORDER BY analysis_timestamp DESC LIMIT 1`;
+
+      const result = await databricksService.queryOne(query, [sessionId]);
+
+      if (result && result.result_data) {
+        return JSON.parse(result.result_data) as Tier2Insights;
+      }
+
+      return null;
+    } catch (error) {
+      console.warn('⚠️ Database query failed for latest Tier 2 analysis:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get latest Tier 2 analysis timestamp for session
+   */
+  private getLatestTier2Analysis(sessionId: string): Date | undefined {
+    for (const [bufferKey, buffer] of this.tier2Buffers.entries()) {
+      if (buffer.sessionId === sessionId && buffer.lastAnalysis) {
+        return buffer.lastAnalysis;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Calculate overall confidence score from available insights
+   */
+  private calculateOverallConfidence(
+    tier1Insights: CurrentInsights['tier1Insights'], 
+    tier2Insights?: CurrentInsights['tier2Insights']
+  ): number {
+    let totalConfidence = 0;
+    let count = 0;
+
+    // Weight Tier 1 insights
+    tier1Insights.forEach(group => {
+      totalConfidence += group.insights.confidence * 0.6; // Lower weight for real-time
+      count++;
+    });
+
+    // Weight Tier 2 insights higher if available
+    if (tier2Insights) {
+      totalConfidence += tier2Insights.insights.confidence * 0.8; // Higher weight for deep analysis
+      count++;
+    }
+
+    return count > 0 ? totalConfidence / count : 0;
   }
 
   /**

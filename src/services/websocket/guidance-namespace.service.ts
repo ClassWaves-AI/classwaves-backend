@@ -282,9 +282,26 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       let insights: any = {};
 
       if (data.sessionId) {
-        // Get session-specific state
-        prompts = await teacherPromptService.getActivePrompts(data.sessionId);
-        insights = await aiAnalysisBufferService.getCurrentInsights(data.sessionId);
+        // Get session-specific state using implemented methods
+        try {
+          prompts = await teacherPromptService.getActivePrompts(data.sessionId, {
+            priorityFilter: ['high', 'medium'], // Focus on actionable prompts
+            maxAge: 30 // Last 30 minutes
+          });
+        } catch (error) {
+          console.warn(`⚠️ Failed to get active prompts for session ${data.sessionId}:`, error);
+          prompts = []; // Graceful degradation
+        }
+
+        try {
+          insights = await aiAnalysisBufferService.getCurrentInsights(data.sessionId, {
+            maxAge: 10, // Last 10 minutes for real-time relevance
+            includeMetadata: true
+          });
+        } catch (error) {
+          console.warn(`⚠️ Failed to get current insights for session ${data.sessionId}:`, error);
+          insights = {}; // Graceful degradation
+        }
       } else {
         // Get all active prompts for this teacher
         prompts = await databricksService.query(
@@ -365,17 +382,23 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     }
 
     // Record interaction analytics
-    await databricksService.recordAnalyticsEvent({
-      eventType: 'prompt_interaction',
-      eventCategory: 'teacher_guidance',
-      userId,
-      sessionId: data.sessionId,
-      metadata: {
-        promptId: data.promptId,
-        action: data.action,
-        feedback: data.feedback
-      }
-    });
+    // TODO: Implement recordAnalyticsEvent method in DatabricksService
+    try {
+      await databricksService.insert('session_events', {
+        id: `prompt_interaction_${data.promptId}_${Date.now()}`,
+        session_id: data.sessionId,
+        teacher_id: userId,
+        event_type: 'prompt_interaction',
+        event_time: new Date(),
+        payload: JSON.stringify({
+          promptId: data.promptId,
+          action: data.action,
+          feedback: data.feedback
+        })
+      });
+    } catch (error) {
+      console.warn('Failed to record prompt interaction analytics:', error);
+    }
   }
 
   // Utility Methods
