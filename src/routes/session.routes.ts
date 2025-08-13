@@ -10,7 +10,8 @@ import {
   endSession,
   getSessionAnalytics,
   joinSession,
-  getSessionParticipants
+  getSessionParticipants,
+  resendSessionEmail
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -38,6 +39,7 @@ router.post('/:sessionId/join', joinSession);
 // Participants (teacher auth)
 router.get('/:sessionId/participants', authenticate, getSessionParticipants);
 
-
+// Email notification endpoints
+router.post('/:sessionId/resend-email', authenticate, resendSessionEmail);
 
 export default router;

@@ -1,6 +1,13 @@
 import { Request, Response } from 'express';
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { emailService } from '../services/email.service';
+import { 
+  EmailRecipient, 
+  SessionEmailData, 
+  EmailNotificationResults,
+  ManualResendRequest
+} from '@classwaves/shared';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
 import { websocketService } from '../services/websocket.service';
@@ -493,7 +500,34 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       complianceBasis: 'legitimate_interest',
     });
 
-    // 7. Fetch complete session with groups for response
+    // 7. Send email notifications to group leaders if enabled
+    let emailResults: EmailNotificationResults = { sent: [], failed: [] };
+    
+    if (payload.emailNotifications?.enabled) {
+      try {
+        console.log('📧 Sending email notifications to group leaders...');
+        emailResults = await triggerSessionEmailNotifications(
+          sessionId,
+          {
+            sessionId,
+            sessionTitle: topic,
+            sessionDescription: description,
+            accessCode,
+            teacherName: teacher.display_name || teacher.name,
+            schoolName: school.name,
+            scheduledStart: scheduledStart ? new Date(scheduledStart) : undefined,
+            joinUrl: `${process.env.STUDENT_APP_URL || 'http://localhost:3003'}/join/${accessCode}`,
+          },
+          groupPlan
+        );
+        console.log(`📊 Email notifications completed: ${emailResults.sent.length} sent, ${emailResults.failed.length} failed`);
+      } catch (emailError) {
+        console.error('❌ Email notification failed, but session was created successfully:', emailError);
+        // Don't fail session creation if emails fail
+      }
+    }
+
+    // 8. Fetch complete session with groups for response
     const session = await getSessionWithGroups(sessionId, teacher.id);
 
     return res.status(201).json({
@@ -501,6 +535,11 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       data: {
         session,
         accessCode, // Include access code for student leader joining
+        emailNotifications: {
+          sent: emailResults.sent.length,
+          failed: emailResults.failed.length,
+          details: emailResults,
+        },
       },
     });
   } catch (error) {
@@ -513,6 +552,154 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       },
     });
   }
+}
+
+/**
+ * Trigger email notifications to group leaders
+ */
+async function triggerSessionEmailNotifications(
+  sessionId: string,
+  sessionData: SessionEmailData,
+  groupPlan: any
+): Promise<EmailNotificationResults> {
+  try {
+    // Get all group leaders and build recipient list
+    const recipients = await buildEmailRecipientList(sessionId, groupPlan);
+    
+    if (recipients.length === 0) {
+      console.warn('⚠️ No group leaders with email addresses found for session', sessionId);
+      return { sent: [], failed: [] };
+    }
+
+    // Send notifications via email service
+    return await emailService.sendSessionInvitation(recipients, sessionData);
+  } catch (error) {
+    console.error('Failed to send session email notifications:', error);
+    throw error;
+  }
+}
+
+/**
+ * Build email recipient list from group leaders
+ */
+async function buildEmailRecipientList(
+  sessionId: string,
+  groupPlan: any
+): Promise<EmailRecipient[]> {
+  const recipients: EmailRecipient[] = [];
+
+  for (const group of groupPlan.groups) {
+    // Only process groups that have a designated leader
+    if (!group.leaderId) {
+      console.warn(`⚠️ Group ${group.name} has no leader assigned, skipping email notification`);
+      continue;
+    }
+
+    // Get group leader details from roster
+    const groupLeader = await databricksService.queryOne(
+      `SELECT id, display_name, email FROM ${databricksConfig.catalog}.users.students WHERE id = ?`,
+      [group.leaderId]
+    );
+
+    if (groupLeader && groupLeader.email) {
+      recipients.push({
+        email: groupLeader.email,
+        name: groupLeader.display_name,
+        role: 'group_leader',
+        studentId: groupLeader.id,
+        groupId: group.id || `temp_group_${group.name}`, // Use actual group ID or temp for new groups
+        groupName: group.name,
+      });
+    } else {
+      console.warn(`⚠️ Group leader ${group.leaderId} not found or has no email, skipping notification`);
+    }
+  }
+
+  return recipients;
+}
+
+/**
+ * Manual resend endpoint for group leader emails
+ */
+export async function resendSessionEmail(req: Request, res: Response): Promise<Response> {
+  try {
+    const { sessionId } = req.params;
+    const { groupId, newLeaderId, reason } = req.body;
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    
+    // Validate session ownership
+    const session = await validateSessionOwnership(sessionId, teacher.id);
+    if (!session) {
+      return res.status(404).json({ 
+        success: false,
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: 'Session not found or access denied'
+        }
+      });
+    }
+    
+    // If changing leader, update database first
+    if (newLeaderId && reason === 'leader_change') {
+      await databricksService.update(
+        'sessions.student_groups',
+        groupId,
+        { leader_id: newLeaderId, updated_at: new Date() }
+      );
+      console.log(`👑 Updated group leader for group ${groupId} to ${newLeaderId}`);
+    }
+    
+    // Prepare session data for email
+    const sessionData: SessionEmailData = {
+      sessionId,
+      sessionTitle: session.title,
+      sessionDescription: session.description,
+      accessCode: session.access_code,
+      teacherName: teacher.display_name || teacher.name,
+      schoolName: session.school_name || 'School',
+      joinUrl: `${process.env.STUDENT_APP_URL || 'http://localhost:3003'}/join/${session.access_code}`,
+    };
+    
+    // Send resend email
+    const resendRequest: ManualResendRequest = {
+      sessionId,
+      groupId,
+      newLeaderId,
+      reason,
+    };
+    
+    const results = await emailService.resendSessionInvitation(resendRequest, sessionData);
+    
+    return res.json({
+      success: true,
+      data: {
+        sent: results.sent.length,
+        failed: results.failed.length,
+        details: results,
+        message: newLeaderId ? 'Email sent to new group leader' : 'Email resent to group leader',
+      },
+    });
+  } catch (error) {
+    console.error('Failed to resend session email:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'RESEND_EMAIL_FAILED',
+        message: error.message,
+      },
+    });
+  }
+}
+
+/**
+ * Validate session ownership by teacher
+ */
+async function validateSessionOwnership(sessionId: string, teacherId: string): Promise<any> {
+  return await databricksService.queryOne(
+    `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+    [sessionId, teacherId]
+  );
 }
 
 /**
