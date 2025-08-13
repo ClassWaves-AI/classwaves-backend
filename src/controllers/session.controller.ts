@@ -862,6 +862,22 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       actual_start: startedAt,
     });
     
+    // Broadcast session status change to all connected WebSocket clients
+    const { websocketService } = await import('../services/websocket.service');
+    if (websocketService.io) {
+      // Broadcast to general session room
+      websocketService.emitToSession(sessionId, 'session:status_changed', { 
+        sessionId, 
+        status: 'active'
+      });
+      
+      // Also broadcast to legacy namespace if needed
+      websocketService.io.to(`session:${sessionId}`).emit('session:status_changed', {
+        sessionId,
+        status: 'active'
+      });
+    }
+    
     // Record analytics - session started event
     await recordSessionStarted(sessionId, teacher.id, readyGroupsAtStart, startedWithoutReadyGroups);
     
