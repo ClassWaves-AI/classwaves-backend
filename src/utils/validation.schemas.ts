@@ -21,10 +21,11 @@ export const generateTestTokenSchema = z.object({
   permissions: z.array(z.string()).default([]),
 });
 
-// Session schemas
+// Session schemas (updated for declarative workflow)
 export const createSessionSchema = z.object({
   topic: z.string().min(1).max(200),
   goal: z.string().max(500).optional(),
+  subject: z.string().min(1).max(100),
   description: z.string().max(1000).optional(),
   scheduledStart: z.string()
     .transform(val => val === "" ? undefined : val)
@@ -38,13 +39,18 @@ export const createSessionSchema = z.object({
       message: "Invalid datetime string - must be ISO 8601 format",
     }),
   plannedDuration: z.number().min(5).max(480).default(45),
-  autoGroupEnabled: z.boolean().default(true),
-  maxStudents: z.number().min(1).max(100).default(30),
-  targetGroupSize: z.number().min(2).max(10).default(4),
-  settings: z.object({
-    recordingEnabled: z.boolean().default(true),
-    transcriptionEnabled: z.boolean().default(true),
-    aiAnalysisEnabled: z.boolean().default(true),
+  groupPlan: z.object({
+    numberOfGroups: z.number().min(1).max(20),
+    groupSize: z.number().min(2).max(10),
+    groups: z.array(z.object({
+      name: z.string().min(1).max(50),
+      leaderId: z.string().optional(),
+      memberIds: z.array(z.string()),
+    })),
+  }),
+  aiConfig: z.object({
+    hidden: z.boolean().default(true),
+    defaultsApplied: z.boolean().default(true),
   }).optional(),
 });
 
@@ -106,18 +112,12 @@ export const updateTeacherSchema = z.object({
 
 // Roster schemas
 export const createStudentSchema = z.object({
-  name: z.string().min(1).max(100, 'Student name must be 100 characters or less'),
-  email: z.string().email('Invalid email format').optional(),
+  firstName: z.string().min(1).max(50, 'First name must be 50 characters or less'),
+  lastName: z.string().min(1).max(50, 'Last name must be 50 characters or less'),
   gradeLevel: z.string().max(20).optional(),
   parentEmail: z.string().email('Invalid parent email format').optional(),
-  birthDate: z.string()
-    .refine((val) => {
-      if (!val) return true; // Allow empty
-      return !isNaN(Date.parse(val));
-    }, {
-      message: 'Invalid birth date format',
-    })
-    .optional(),
+  isUnderConsentAge: z.boolean().optional(), // Is student under 13?
+  hasParentalConsent: z.boolean().optional(), // If under 13, has consent been obtained?
   dataConsentGiven: z.boolean().default(false),
   audioConsentGiven: z.boolean().default(false),
 });
@@ -139,25 +139,7 @@ export const ageVerificationSchema = z.object({
   parentEmail: z.string().email('Invalid parent email format').optional(),
 });
 
-// Group schemas
-export const createGroupSchema = z.object({
-  name: z.string().min(1).max(50, 'Group name must be 50 characters or less').optional(),
-  maxMembers: z.number().int().min(2).max(10).default(4),
-  leaderId: z.string().uuid('Invalid leader ID format').optional(),
-});
-
-export const updateGroupSchema = z.object({
-  name: z.string().min(1).max(50).optional(),
-  maxMembers: z.number().int().min(2).max(10).optional(),
-  status: z.enum(['waiting', 'active', 'completed', 'cancelled']).optional(),
-  isReady: z.boolean().optional(),
-  studentIds: z.array(z.string().uuid()).optional(),
-});
-
-export const assignGroupLeaderSchema = z.object({
-  leaderId: z.string().uuid('Invalid leader ID format'),
-  reason: z.string().max(200).optional(),
-});
+// Note: Group schemas removed - groups are configured declaratively at session creation
 
 // Kiosk schemas
 export const updateGroupStatusSchema = z.object({

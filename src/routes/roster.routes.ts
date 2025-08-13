@@ -21,13 +21,39 @@ const router = Router();
 router.use(authenticate);
 
 // Student roster management
-router.get('/', listStudents);
-router.post('/', validate(createStudentSchema), createStudent);
-router.put('/:id', validate(updateStudentSchema), updateStudent);
-router.delete('/:id', deleteStudent);
+router.get('/students', listStudents);
+router.post('/students', validate(createStudentSchema), createStudent);
+router.put('/students/:id', validate(updateStudentSchema), updateStudent);
+router.delete('/students/:id', deleteStudent);
 
 // COPPA compliance endpoints
-router.post('/:id/age-verify', validate(ageVerificationSchema), ageVerifyStudent);
-router.post('/:id/parental-consent', requestParentalConsent);
+router.post('/students/:id/age-verify', validate(ageVerificationSchema), ageVerifyStudent);
+router.post('/students/:id/parental-consent', requestParentalConsent);
+
+// Roster overview endpoint
+router.get('/overview', async (req, res) => {
+  // TODO: Implement roster overview
+  res.json({
+    success: true,
+    data: {
+      totalStudents: 0,
+      byGrade: {},
+      withConsent: 0,
+      withoutConsent: 0
+    }
+  });
+});
+
+// Export endpoint  
+router.get('/export', async (req, res) => {
+  // TODO: Implement roster export
+  res.json({ success: true, message: 'Export functionality coming soon' });
+});
+
+// Import endpoint
+router.post('/import', async (req, res) => {
+  // TODO: Implement roster import
+  res.json({ success: true, message: 'Import functionality coming soon' });
+});
 
 export default router;

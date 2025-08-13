@@ -119,14 +119,16 @@ Manages real-time classroom sessions and participant tracking.
 | updated_at | TIMESTAMP | NOT NULL | Last update |
 
 #### Table: sessions.student_groups
-**Purpose:** Breakout groups within sessions.
+**Purpose:** Breakout groups within sessions with pre-configured membership and leader assignment.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
 | id | STRING | NOT NULL | Unique group identifier |
 | session_id | STRING | NOT NULL | Parent session (FK) |
-| name | STRING | NOT NULL | Group name |
+| name | STRING | NOT NULL | Group name (e.g., Group A, Team Alpha) |
 | group_number | INT | NOT NULL | Group number |
+| leader_id | STRING | NULL | Student ID of designated group leader |
+| is_ready | BOOLEAN | NOT NULL | Whether group leader has marked ready (default: false) |
 | status | STRING | NOT NULL | Status (active/paused/ended) |
 | max_size | INT | NOT NULL | Maximum members |
 | current_size | INT | NOT NULL | Current members |
@@ -134,11 +136,25 @@ Manages real-time classroom sessions and participant tracking.
 | start_time | TIMESTAMP | NULL | Group start time |
 | end_time | TIMESTAMP | NULL | Group end time |
 | total_speaking_time_seconds | INT | NULL | Total talk time |
-| participation_balance | DECIMAL(5,2) | NULL | Balance score |
 | collaboration_score | DECIMAL(5,2) | NULL | Collaboration metric |
 | topic_focus_score | DECIMAL(5,2) | NULL | On-topic score |
+| conceptual_density | DECIMAL(5,2) | NULL | Lexical richness and concept sophistication |
+| topical_cohesion | DECIMAL(5,2) | NULL | How focused the group discussion is |
+| argumentation_quality | DECIMAL(5,2) | NULL | Quality of arguments, evidence, and reasoning |
+| sentiment_arc | STRING | NULL | JSON string of group sentiment trend over time |
 | created_at | TIMESTAMP | NOT NULL | Record creation |
 | updated_at | TIMESTAMP | NOT NULL | Last update |
+
+#### Table: sessions.student_group_members
+**Purpose:** Explicit student-to-group assignments configured by teacher during session creation.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| id | STRING | NOT NULL | Unique member assignment ID |
+| session_id | STRING | NOT NULL | Parent session identifier (FK) |
+| group_id | STRING | NOT NULL | Parent group identifier (FK) |
+| student_id | STRING | NOT NULL | Student assigned to this group (FK) |
+| created_at | TIMESTAMP | NOT NULL | When student was assigned to group |
 
 #### Table: sessions.participants
 **Purpose:** Individual participant tracking in sessions.
@@ -193,7 +209,7 @@ Manages real-time classroom sessions and participant tracking.
 Stores calculated metrics and analytics data.
 
 #### Table: analytics.session_metrics
-**Purpose:** Overall session performance metrics.
+**Purpose:** Overall session performance metrics with planned vs actual analysis.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -217,10 +233,23 @@ Stores calculated metrics and analytics data.
 | group_stability_score | DECIMAL(5,2) | NULL | Group stability |
 | average_connection_quality | DECIMAL(5,2) | NULL | Connection quality |
 | technical_issues_count | INT | NULL | Tech problems |
+| planned_groups | INT | NULL | Number of groups configured by teacher |
+| planned_group_size | INT | NULL | Target group size configured by teacher |
+| planned_duration_minutes | INT | NULL | Planned session duration in minutes |
+| planned_members | INT | NULL | Total members planned across all groups |
+| planned_leaders | INT | NULL | Number of group leaders assigned |
+| planned_scheduled_start | TIMESTAMP | NULL | Teacher-scheduled start time |
+| configured_at | TIMESTAMP | NULL | When session was fully configured |
+| started_at | TIMESTAMP | NULL | When session was actually started |
+| started_without_ready_groups | BOOLEAN | NULL | Whether session started before all groups ready |
+| ready_groups_at_start | INT | NULL | Number of groups marked ready when session started |
+| ready_groups_at_5m | INT | NULL | Number of groups ready at 5 minutes |
+| ready_groups_at_10m | INT | NULL | Number of groups ready at 10 minutes |
+| adherence_members_ratio | DOUBLE | NULL | Ratio of actual to planned member participation |
 | created_at | TIMESTAMP | NOT NULL | Record creation |
 
 #### Table: analytics.group_metrics
-**Purpose:** Breakout group performance analysis.
+**Purpose:** Breakout group performance analysis with configuration and adherence tracking.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -240,6 +269,12 @@ Stores calculated metrics and analytics data.
 | average_sentiment_score | DECIMAL(5,2) | NULL | Group sentiment |
 | emotional_support_instances | INT | NULL | Support events |
 | conflict_instances | INT | NULL | Conflict events |
+| configured_name | STRING | NULL | Teacher-assigned group name |
+| configured_size | INT | NULL | Number of members assigned to group |
+| leader_assigned | BOOLEAN | NULL | Whether a leader was assigned to this group |
+| leader_ready_at | TIMESTAMP | NULL | When group leader marked ready |
+| members_configured | INT | NULL | Number of members configured for group |
+| members_present | INT | NULL | Number of configured members actually present |
 | created_at | TIMESTAMP | NOT NULL | Record creation |
 
 #### Table: analytics.student_metrics
@@ -267,6 +302,20 @@ Stores calculated metrics and analytics data.
 | confidence_level | DECIMAL(5,2) | NULL | Confidence metric |
 | stress_indicators_count | INT | NULL | Stress signals |
 | created_at | TIMESTAMP | NOT NULL | Record creation |
+
+#### Table: analytics.session_events
+**Purpose:** Detailed timeline of session lifecycle events for analytics and debugging.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| id | STRING | NOT NULL | Unique event identifier |
+| session_id | STRING | NOT NULL | Session this event belongs to (FK) |
+| teacher_id | STRING | NOT NULL | Teacher who owns the session (FK) |
+| event_type | STRING | NOT NULL | Type of event (configured, started, leader_ready, member_join, member_leave, ended) |
+| event_time | TIMESTAMP | NOT NULL | When the event occurred |
+| payload | STRING | NULL | JSON string with event-specific data (groupId, counts, etc.) |
+
+*Note: Table is partitioned by DATE(event_time) for optimal query performance.*
 
 #### Table: analytics.educational_metrics
 **Purpose:** Generic educational metrics storage.
@@ -629,11 +678,17 @@ Handles system notifications and alerts.
 - `sessions.classroom_sessions.teacher_id` → `users.teachers.id`
 - `sessions.classroom_sessions.school_id` → `users.schools.id`
 - `sessions.student_groups.session_id` → `sessions.classroom_sessions.id`
+- `sessions.student_groups.leader_id` → `users.students.id`
+- `sessions.student_group_members.session_id` → `sessions.classroom_sessions.id`
+- `sessions.student_group_members.group_id` → `sessions.student_groups.id`
+- `sessions.student_group_members.student_id` → `users.students.id`
 - `sessions.participants.session_id` → `sessions.classroom_sessions.id`
 - `sessions.participants.group_id` → `sessions.student_groups.id`
 - `sessions.participants.student_id` → `users.students.id`
 - `sessions.transcriptions.session_id` → `sessions.classroom_sessions.id`
 - `sessions.transcriptions.group_id` → `sessions.student_groups.id`
+- `analytics.session_events.session_id` → `sessions.classroom_sessions.id`
+- `analytics.session_events.teacher_id` → `users.teachers.id`
 - All analytics tables link to sessions via `session_id`
 - All compliance tables link to schools via `school_id`
 

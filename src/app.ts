@@ -1,8 +1,11 @@
+// Load environment variables FIRST before any other imports
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import dotenv from 'dotenv';
 import authRoutes from './routes/auth.routes';
 import sessionRoutes from './routes/session.routes';
 import rosterRoutes from './routes/roster.routes';
@@ -10,6 +13,11 @@ import kioskRoutes from './routes/kiosk.routes';
 import jwksRoutes from './routes/jwks.routes';
 import adminRoutes from './routes/admin.routes';
 import budgetRoutes from './routes/budget.routes';
+import aiAnalysisRoutes from './routes/ai-analysis.routes';
+import guidanceAnalyticsRoutes from './routes/guidance-analytics.routes';
+import analyticsMonitoringRoutes from './routes/analytics-monitoring.routes';
+import healthRoutes from './routes/health.routes';
+import debugRoutes from './routes/debug.routes';
 import { redisService } from './services/redis.service';
 import { databricksService } from './services/databricks.service';
 import { openAIWhisperService } from './services/openai-whisper.service';
@@ -17,9 +25,6 @@ import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
 import client from 'prom-client';
-
-// Load environment variables
-dotenv.config();
 
 const app = express();
 
@@ -53,10 +58,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
 }));
 
-// Initialize rate limiters (non-blocking)
-initializeRateLimiters().catch((err) => {
-  console.warn('Rate limiter initialization failed, continuing without enforced limits:', err);
-});
+// Rate limiters will be initialized by service manager after Redis connection
+// Middleware below will gracefully handle uninitialized state
 
 // Apply rate limiting
 app.use('/api/', rateLimitMiddleware);
@@ -168,6 +171,12 @@ app.use('/api/v1/roster', rosterRoutes);
 app.use('/api/v1/kiosk', kioskRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/schools', budgetRoutes);
+app.use('/api/v1/ai', aiAnalysisRoutes);
+app.use('/api/v1/analytics', guidanceAnalyticsRoutes);
+app.use('/api/v1/analytics/monitoring', analyticsMonitoringRoutes);
+app.use('/api/v1/health', healthRoutes);
+app.use('/api/v1/debug', debugRoutes);
+
 
 // 404 handler
 app.use((_req, res) => {

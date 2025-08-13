@@ -60,7 +60,7 @@ export async function csrfTokenGenerator(req: Request, res: Response, next: Next
     res.cookie(CSRF_COOKIE_NAME, token, {
       httpOnly: false,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
       maxAge: CSRF_TOKEN_EXPIRY * 1000
     });
   }

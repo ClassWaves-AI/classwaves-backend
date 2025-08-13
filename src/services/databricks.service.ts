@@ -77,7 +77,6 @@ interface Session {
   actual_end?: Date;
   planned_duration_minutes: number;
   actual_duration_minutes?: number;
-  max_students: number;
   target_group_size: number;
   auto_group_enabled: boolean;
   teacher_id: string;
@@ -396,8 +395,10 @@ export class DatabricksService {
       
       // Sessions schema
       'classroom_sessions': 'sessions',
-      'sessions': 'sessions', // Alias
+      'sessions': 'sessions', // Alias (deprecated - use classroom_sessions)
       'student_groups': 'sessions',
+      'student_group_members': 'sessions',
+      'session_events': 'sessions',
       'groups': 'sessions', // Alias
       'transcriptions': 'sessions',
       
@@ -483,6 +484,56 @@ export class DatabricksService {
     `;
     
     await this.query(sql, [...values, id]);
+  }
+
+  /**
+   * Upsert a record (insert or update based on condition)
+   */
+  async upsert(table: string, whereCondition: Record<string, any>, data: Record<string, any>): Promise<void> {
+    const schema = this.getSchemaForTable(table);
+    
+    // Build WHERE clause for existence check
+    const whereKeys = Object.keys(whereCondition);
+    const whereValues = Object.values(whereCondition);
+    const whereClause = whereKeys.map(key => `${key} = ?`).join(' AND ');
+    
+    // Check if record exists
+    const existingSql = `
+      SELECT id FROM ${databricksConfig.catalog}.${schema}.${table}
+      WHERE ${whereClause}
+      LIMIT 1
+    `;
+    
+    const existing = await this.queryOne(existingSql, whereValues);
+    
+    if (existing) {
+      // Update existing record
+      const updateColumns = Object.keys(data);
+      const updateValues = Object.values(data);
+      const setClause = updateColumns.map(col => `${col} = ?`).join(', ');
+      
+      const updateSql = `
+        UPDATE ${databricksConfig.catalog}.${schema}.${table}
+        SET ${setClause}, updated_at = CURRENT_TIMESTAMP
+        WHERE ${whereClause}
+      `;
+      
+      await this.query(updateSql, [...updateValues, ...whereValues]);
+    } else {
+      // Insert new record
+      const insertData = { ...whereCondition, ...data };
+      if (!insertData.id) {
+        insertData.id = this.generateId();
+      }
+      if (!insertData.created_at) {
+        insertData.created_at = new Date();
+      }
+      if (!insertData.updated_at) {
+        insertData.updated_at = new Date();
+      }
+      
+      await this.insert(table, insertData);
+    }
   }
 
   /**
@@ -598,7 +649,6 @@ export class DatabricksService {
              s.actual_end,
              s.planned_duration_minutes,
              s.actual_duration_minutes,
-             s.max_students,
              s.target_group_size,
              s.auto_group_enabled,
              s.teacher_id,
@@ -622,7 +672,7 @@ export class DatabricksService {
       LEFT JOIN ${databricksConfig.catalog}.sessions.student_groups g ON s.id = g.session_id
       WHERE s.teacher_id = ?
       GROUP BY s.id, s.title, s.description, s.status, s.scheduled_start, s.actual_start, s.actual_end,
-               s.planned_duration_minutes, s.actual_duration_minutes, s.max_students, s.target_group_size,
+               s.planned_duration_minutes, s.actual_duration_minutes, s.target_group_size,
                s.auto_group_enabled, s.teacher_id, s.school_id, s.recording_enabled, s.transcription_enabled,
                s.ai_analysis_enabled, s.ferpa_compliant, s.coppa_compliant, s.recording_consent_obtained,
                s.data_retention_date, s.total_groups, s.total_students, s.created_at, s.updated_at
@@ -666,8 +716,7 @@ export class DatabricksService {
       description: sessionData.description,
       teacher_id: sessionData.teacherId,
       school_id: sessionData.schoolId,
-      access_code: finalCode,
-      max_students: sessionData.maxStudents || 30,
+      access_code: accessCode,
       target_group_size: sessionData.targetGroupSize || 4,
       auto_group_enabled: sessionData.autoGroupEnabled ?? true,
       scheduled_start: sessionData.scheduledStart,
@@ -681,13 +730,13 @@ export class DatabricksService {
       recording_consent_obtained: false,
       total_groups: 0,
       total_students: 0,
-      participation_rate: 0.0,
       engagement_score: 0.0,
       created_at: createdAt,
       updated_at: createdAt,
     };
     
-    await this.insert('sessions', data);
+    console.log('🔍 Attempting to insert session with data:', JSON.stringify(data, null, 2));
+    await this.insert('classroom_sessions', data);
     
     // Return the data we already have instead of querying again
     return {
@@ -708,10 +757,10 @@ export class DatabricksService {
     // Only add fields that exist in the classroom_sessions table schema
     const allowedFields = [
       'title', 'description', 'status', 'scheduled_start', 'actual_start', 'actual_end',
-      'planned_duration_minutes', 'actual_duration_minutes', 'max_students', 'target_group_size',
+      'planned_duration_minutes', 'actual_duration_minutes', 'target_group_size',
       'auto_group_enabled', 'recording_enabled', 'transcription_enabled', 'ai_analysis_enabled',
       'ferpa_compliant', 'coppa_compliant', 'recording_consent_obtained', 'data_retention_date',
-      'total_groups', 'total_students', 'participation_rate', 'engagement_score'
+      'total_groups', 'total_students', 'engagement_score'
     ];
     
     // Filter additionalData to only include allowed fields
@@ -742,7 +791,7 @@ export class DatabricksService {
       }
     }
     
-    await this.update('sessions', sessionId, updateData);
+    await this.update('classroom_sessions', sessionId, updateData);
   }
 
   /**
@@ -946,6 +995,7 @@ export const databricksService = {
   generateId: () => getDatabricksService().generateId(),
   insert: (table: string, data: Record<string, any>) => getDatabricksService().insert(table, data),
   update: (table: string, id: string, data: Record<string, any>) => getDatabricksService().update(table, id, data),
+  upsert: (table: string, whereCondition: Record<string, any>, data: Record<string, any>) => getDatabricksService().upsert(table, whereCondition, data),
   delete: (table: string, id: string) => getDatabricksService().delete(table, id),
   getSchoolByDomain: (domain: string) => getDatabricksService().getSchoolByDomain(domain),
   getTeacherByGoogleId: (googleId: string) => getDatabricksService().getTeacherByGoogleId(googleId),

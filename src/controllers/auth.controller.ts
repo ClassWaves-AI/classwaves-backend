@@ -199,7 +199,7 @@ export async function googleAuthHandler(req: Request, res: Response): Promise<Re
     res.cookie('session_id', sessionId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
       maxAge: expiresIn * 1000, // Convert to milliseconds
       path: '/'
     });
@@ -240,7 +240,7 @@ export async function googleAuthHandler(req: Request, res: Response): Promise<Re
           resourceType: 'session',
           resourceId: sessionId,
           schoolId: school.id,
-          description: `Teacher ${teacher.email} logged in successfully`,
+          description: `Teacher ID ${teacher.id} logged in successfully`,
           ipAddress: req.ip,
           userAgent: req.headers['user-agent'],
           complianceBasis: 'legitimate_interest',

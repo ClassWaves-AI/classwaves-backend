@@ -11,10 +11,9 @@ export const classroomSessionDefaults = {
   planned_duration_minutes: 60,
   actual_duration_minutes: 0,
   
-  // Student and group settings
-  max_students: 30,
+  // Student and group settings (declarative mode)
   target_group_size: 4,
-  auto_group_enabled: true,
+  auto_group_enabled: false, // Always disabled - groups are pre-configured
   
   // Feature flags
   recording_enabled: false,
@@ -30,7 +29,6 @@ export const classroomSessionDefaults = {
   // Analytics (initial values)
   total_groups: 0,
   total_students: 0,
-  participation_rate: 0.0,
   engagement_score: 0.0,
   
   // Audit fields
@@ -47,7 +45,7 @@ export const studentGroupDefaults = {
   status: 'waiting',
   current_size: 0,
   student_ids: '[]',
-  auto_managed: false,
+  auto_managed: false, // Always false - groups are pre-configured
   start_time: new Date(),
   end_time: new Date(),
   total_speaking_time_seconds: 0,
