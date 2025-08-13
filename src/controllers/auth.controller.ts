@@ -199,7 +199,7 @@ export async function googleAuthHandler(req: Request, res: Response): Promise<Re
     res.cookie('session_id', sessionId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
       maxAge: expiresIn * 1000, // Convert to milliseconds
       path: '/'
     });
