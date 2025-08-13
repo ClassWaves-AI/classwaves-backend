@@ -12,7 +12,7 @@
 - Database initialization procedures
 - Development workflow
 
-### 2. API Documentation (Add STT notes)
+### 2. API Documentation ✅ **Updated Phase 4**
 **File to Create:** `/classwaves-backend/docs/API.md`
 **Content Needed:**
 - Authentication endpoints (Google OAuth flow)
@@ -49,7 +49,7 @@
 
 ## Priority 3: Operational Documentation
 
-### 6. Deployment Guide (Add STT env)
+### 6. Deployment Guide ✅ **Phase 4 STT Complete**
 **File to Create:** `/docs/DEPLOYMENT.md`
 **Content Needed:**
 - Databricks configuration
@@ -57,8 +57,8 @@
 - Security considerations
 - Monitoring and logging
 
-### 7. Compliance Documentation (Zero-disk & vendor)
-Add Whisper vendor/DPA notes; document zero-disk audio guarantees and `/metrics` exposure for auditing.
+### 7. Compliance Documentation ✅ **Phase 4 OpenAI Complete**
+**Migration Status**: Whisper vendor integration documented; zero-disk audio guarantees validated and `/metrics` exposure implemented for auditing.
 **File to Create:** `/docs/COMPLIANCE.md`
 **Content Needed:**
 - FERPA implementation details

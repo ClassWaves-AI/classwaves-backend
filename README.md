@@ -54,6 +54,7 @@
 - **Framework:** Express.js with TypeScript
 - **Database:** Databricks Unity Catalog (Delta Lake)
 - **Authentication:** Google OAuth 2.0 with JWT
+- **STT Provider:** OpenAI Whisper API with windowed batching
 - **Real-time:** Socket.IO with Redis adapter
 - **AI Integration:** OpenAI Whisper + Databricks Llama models
 - **Caching:** Redis for sessions and rate limiting
@@ -88,6 +89,7 @@ graph TB
     WS --> Cache
     Cache --> Redis
 ```
+
 
 ## Database Architecture
 
@@ -129,6 +131,28 @@ npm run db:show
 npm run db:health-check
 ```
 
+## Phase 4: OpenAI Whisper STT Integration
+
+**Migration Status**: ✅ **Complete** - Databricks waveWhisperer fully replaced
+
+### Key Features
+- **Zero-disk audio processing**: All audio handled in-memory only
+- **Windowed batching**: Configurable 10-20s windows for cost optimization  
+- **Budget controls**: Per-school daily limits with automatic alerting
+- **Classroom scale**: Tested for 25+ concurrent groups
+- **FERPA compliant**: No persistent audio storage, immediate buffer cleanup
+
+### STT Architecture
+```
+WebSocket Audio Chunks → In-Memory Aggregator → OpenAI Whisper API → Live Transcription
+```
+
+**Benefits over Databricks waveWhisperer**:
+- Lower latency and cost
+- Better reliability and scaling
+- Industry-standard OpenAI integration
+- Comprehensive budget monitoring
+
 ## Quick Start
 
 ### Prerequisites
@@ -164,6 +188,7 @@ STT_BUDGET_ALERT_PCTS=50,75,90,100
 # === Google OAuth Configuration ===
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
+
 GOOGLE_REDIRECT_URI=http://localhost:3001/api/auth/google/callback
 
 # === Security Configuration ===

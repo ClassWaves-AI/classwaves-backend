@@ -12,6 +12,7 @@ import rosterRoutes from './routes/roster.routes';
 import kioskRoutes from './routes/kiosk.routes';
 import jwksRoutes from './routes/jwks.routes';
 import adminRoutes from './routes/admin.routes';
+import budgetRoutes from './routes/budget.routes';
 import aiAnalysisRoutes from './routes/ai-analysis.routes';
 import guidanceAnalyticsRoutes from './routes/guidance-analytics.routes';
 import analyticsMonitoringRoutes from './routes/analytics-monitoring.routes';
@@ -19,6 +20,7 @@ import healthRoutes from './routes/health.routes';
 import debugRoutes from './routes/debug.routes';
 import { redisService } from './services/redis.service';
 import { databricksService } from './services/databricks.service';
+import { openAIWhisperService } from './services/openai-whisper.service';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
@@ -106,6 +108,7 @@ app.get('/api/v1/health', async (_req, res) => {
         api: 'healthy',
         redis: 'unknown',
         databricks: 'unknown',
+        openai_whisper: 'unknown',
       },
       version: process.env.npm_package_version || '1.0.0',
       environment: process.env.NODE_ENV || 'development',
@@ -123,6 +126,13 @@ app.get('/api/v1/health', async (_req, res) => {
       checks.services.databricks = 'healthy';
     } catch {
       checks.services.databricks = 'unhealthy';
+    }
+
+    try {
+      const whisperHealth = await openAIWhisperService.healthCheck();
+      checks.services.openai_whisper = whisperHealth ? 'healthy' : 'unhealthy';
+    } catch {
+      checks.services.openai_whisper = 'unhealthy';
     }
 
     const unhealthy = Object.values(checks.services).some((s) => s === 'unhealthy');
@@ -160,11 +170,13 @@ app.use('/api/v1/sessions', sessionRoutes);
 app.use('/api/v1/roster', rosterRoutes);
 app.use('/api/v1/kiosk', kioskRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/schools', budgetRoutes);
 app.use('/api/v1/ai', aiAnalysisRoutes);
 app.use('/api/v1/analytics', guidanceAnalyticsRoutes);
 app.use('/api/v1/analytics/monitoring', analyticsMonitoringRoutes);
 app.use('/api/v1/health', healthRoutes);
 app.use('/api/v1/debug', debugRoutes);
+
 
 // 404 handler
 app.use((_req, res) => {

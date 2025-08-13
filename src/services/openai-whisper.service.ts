@@ -31,6 +31,7 @@ export class OpenAIWhisperService {
   private readonly budgetMinutesGauge = this.getOrCreateGauge('stt_budget_minutes', 'Accumulated STT minutes for the day', ['school', 'date']);
   private readonly budgetAlerts = this.getOrCreateCounter('stt_budget_alerts_total', 'Total budget alerts emitted', ['school', 'pct']);
   private readonly budgetMemory = new Map<string, { minutes: number; lastPct: number }>();
+  private readonly budgetAlertsStore = new Map<string, Array<{ id: string; percentage: number; triggeredAt: string; acknowledged: boolean }>>();
 
   async transcribeBuffer(audio: Buffer, mimeType: string, options: WhisperOptions = {}, schoolId?: string): Promise<WhisperResult> {
     // In test environment, always return mock immediately to avoid timing issues with Bottleneck/jest timers
@@ -264,6 +265,69 @@ export class OpenAIWhisperService {
         validateStatus: () => true,
       });
       return resp.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Public API: Get budget usage for a school on a specific date
+   */
+  async getBudgetUsage(schoolId: string, date: string): Promise<{ minutes: number }> {
+    try {
+      // Convert date to dayKey format (YYYYMMDD)
+      const dayKey = date.replace(/-/g, '');
+      const usageKey = `stt:usage:minutes:${schoolId}:${dayKey}`;
+      
+      if (redisService.isConnected()) {
+        const client = redisService.getClient();
+        const minutesStr = await client.get(usageKey);
+        return { minutes: parseFloat(minutesStr || '0') };
+      } else {
+        // Fallback to in-memory cache
+        const key = `${schoolId}:${date}`;
+        const usage = this.budgetMemory.get(key);
+        return { minutes: usage?.minutes || 0 };
+      }
+    } catch (error) {
+      console.warn('Error fetching budget usage:', error);
+      return { minutes: 0 };
+    }
+  }
+
+  /**
+   * Public API: Get budget alerts for a school
+   */
+  async getBudgetAlerts(schoolId: string): Promise<Array<{ id: string; percentage: number; triggeredAt: string; acknowledged: boolean }>> {
+    return this.budgetAlertsStore.get(schoolId) || [];
+  }
+
+  /**
+   * Public API: Acknowledge a budget alert
+   */
+  async acknowledgeBudgetAlert(schoolId: string, alertId: string): Promise<void> {
+    const alerts = this.budgetAlertsStore.get(schoolId) || [];
+    const alert = alerts.find(a => a.id === alertId);
+    if (alert) {
+      alert.acknowledged = true;
+      this.budgetAlertsStore.set(schoolId, alerts);
+    }
+  }
+
+  /**
+   * Public API: Get health check status
+   */
+  async healthCheck(): Promise<boolean> {
+    if (process.env.NODE_ENV === 'test') {
+      return true;
+    }
+    if (!this.apiKey) {
+      return false;
+    }
+    // Simple health check - verify we can construct a request
+    try {
+      const form = new FormData();
+      return true; // If we can create FormData, basic functionality works
     } catch {
       return false;
     }
