@@ -1,210 +1,655 @@
 # ClassWaves Backend
 
-Educational platform backend service for real-time classroom collaboration with AI-powered insights.
+<div align="center">
+
+![ClassWaves](https://img.shields.io/badge/ClassWaves-Backend-blue)
+![Node.js](https://img.shields.io/badge/node.js-18%2B-brightgreen)
+![TypeScript](https://img.shields.io/badge/typescript-5.3-blue)
+![Express](https://img.shields.io/badge/express-4.18-green)
+![Databricks](https://img.shields.io/badge/databricks-unity%20catalog-orange)
+![License](https://img.shields.io/badge/license-Proprietary-red)
+
+**Educational platform backend service for real-time classroom collaboration with AI-powered insights**
+
+[Features](#features) • [Quick Start](#quick-start) • [API Documentation](#api-documentation) • [Database](#database-architecture) • [Testing](#testing)
+
+</div>
+
+## Table of Contents
+
+- [Features](#features)
+- [Architecture Overview](#architecture-overview)
+- [Database Architecture](#database-architecture)
+- [Quick Start](#quick-start)
+- [API Documentation](#api-documentation)
+- [WebSocket Events](#websocket-events)
+- [Admin Controls](#admin-controls)
+- [Testing](#testing)
+- [Security & Compliance](#security--compliance)
+- [Monitoring & Health](#monitoring--health)
+- [Development](#development)
+- [Deployment](#deployment)
+- [Repository Integration](#repository-integration)
+- [Contributing](#contributing)
+
+## Features
+
+🎯 **Core Capabilities**
+- **Real-time Collaboration**: WebSocket-powered classroom sessions
+- **AI-Powered Analytics**: Two-tier AI analysis system with Databricks
+- **Speech-to-Text**: OpenAI Whisper integration for live transcription
+- **Group-Centric Design**: Focus on group interactions, not individual tracking
+- **FERPA/COPPA Compliant**: Built-in educational privacy protections
+
+🏗️ **Technical Features**
+- **Unity Catalog Database**: 27 tables across 10 schemas
+- **Google Workspace Auth**: Seamless school integration
+- **Rate Limiting & Security**: Enterprise-grade protection
+- **Real-time Monitoring**: Health checks and performance metrics
+- **Comprehensive Testing**: Unit, integration, and E2E tests
 
 ## Architecture Overview
 
+### Technology Stack
 - **Framework:** Express.js with TypeScript
 - **Database:** Databricks Unity Catalog (Delta Lake)
 - **Authentication:** Google OAuth 2.0 with JWT
-- **Real-time:** WebRTC (planned) for audio/video
-- **AI Integration:** In-memory audio processing (planned)
+- **Real-time:** Socket.IO with Redis adapter
+- **AI Integration:** OpenAI Whisper + Databricks Llama models
+- **Caching:** Redis for sessions and rate limiting
+- **Testing:** Jest, Supertest, and Playwright integration
 
-## Unity Catalog Database Structure
+### Service Dependencies
+```mermaid
+graph TB
+    subgraph "ClassWaves Backend"
+        Express[Express.js Server]
+        WS[WebSocket Service]
+        Auth[Auth Service]
+        DB[Databricks Service]
+        Cache[Redis Cache]
+        AI[AI Analysis Service]
+    end
+    
+    subgraph "External Services"
+        Google[Google OAuth]
+        Databricks[Databricks Unity Catalog]
+        OpenAI[OpenAI Whisper]
+        Redis[Redis Server]
+    end
+    
+    Express --> Auth
+    Express --> DB
+    Express --> WS
+    Auth --> Google
+    DB --> Databricks
+    AI --> OpenAI
+    AI --> Databricks
+    WS --> Cache
+    Cache --> Redis
+```
 
+## Database Architecture
+
+### Unity Catalog Structure
 - **Catalog:** `classwaves`
-- **Schemas:** 10 (users, sessions, analytics, compliance, ai_insights, operational, admin, communication, audio, notifications)
-- **Tables:** 27 total with full FERPA/COPPA compliance
-- **Documentation:** See [DATABASE_SCHEMA.md](./docs/DATABASE_SCHEMA.md) for complete details
+- **Total Schemas:** 10
+- **Total Tables:** 27
+- **Compliance:** Full FERPA/COPPA support
+
+#### Schema Overview
+| Schema | Purpose | Tables | Key Features |
+|--------|---------|--------|-------------|
+| `users` | User Management | schools, teachers, students | Google Workspace integration |
+| `sessions` | Session Management | sessions, groups, recordings | Real-time collaboration |
+| `analytics` | Performance Data | session_analytics, group_metrics | AI-powered insights |
+| `compliance` | Privacy & Audit | audit_log, consent_tracking | FERPA/COPPA compliance |
+| `ai_insights` | AI Analysis | tier1_insights, tier2_insights | Two-tier AI system |
+| `operational` | System Operations | system_events, health_metrics | Monitoring & alerting |
+| `admin` | Administration | admin_actions, system_config | Super admin controls |
+| `communication` | Messaging | notifications, alerts | Teacher guidance |
+| `audio` | Audio Processing | transcriptions, audio_metadata | Speech-to-text |
+| `notifications` | Real-time Updates | delivery_queue, preferences | WebSocket integration |
+
+### Database Management Scripts
+```bash
+# Create complete database structure
+npm run db:create-catalog
+
+# Verify database integrity
+npm run db:verify
+
+# Run comprehensive audit
+npm run db:audit
+
+# Display current structure
+npm run db:show
+
+# Check connection and state
+npm run db:health-check
+```
 
 ## Quick Start
 
 ### Prerequisites
-- Node.js 18+
-- Databricks account with Unity Catalog access
-- Google Cloud project for OAuth
+- **Node.js**: 18+ (recommended: 20+)
+- **Databricks**: Unity Catalog workspace access
+- **Google Cloud**: OAuth 2.0 project setup
+- **Redis**: For session storage and caching
+- **OpenAI**: API key for Whisper transcription
 
 ### Environment Setup
 
-Create a `.env` file:
+Create a `.env` file with the following configuration:
 
 ```bash
-# Server
+# === Server Configuration ===
 NODE_ENV=development
 PORT=3001
 
-# Databricks (analytics only)
+# === Databricks Configuration ===
 DATABRICKS_HOST=https://dbc-d5db37cb-5441.cloud.databricks.com
 DATABRICKS_TOKEN=your-token-here
 DATABRICKS_WAREHOUSE_ID=077a4c2149eade40
 
-# OpenAI Whisper (STT)
+# === OpenAI Whisper Configuration ===
 OPENAI_API_KEY=your-openai-key
 OPENAI_WHISPER_TIMEOUT_MS=15000
 OPENAI_WHISPER_CONCURRENCY=20
 STT_WINDOW_SECONDS=15
-STT_PROVIDER=openai # or 'off' to disable STT submission
-STT_BUDGET_MINUTES_PER_DAY=0 # optional: daily per-school budget in minutes (0 to disable)
-STT_BUDGET_ALERT_PCTS=50,75,90,100 # optional: alert thresholds in % of daily budget
+STT_PROVIDER=openai # Options: 'openai' | 'off'
+STT_BUDGET_MINUTES_PER_DAY=0 # 0 = unlimited
+STT_BUDGET_ALERT_PCTS=50,75,90,100
 
-# Google OAuth
+# === Google OAuth Configuration ===
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:3001/api/auth/google/callback
 
-# Security
+# === Security Configuration ===
 SESSION_SECRET=your-session-secret
 JWT_SECRET=your-jwt-secret
 
-# Frontend
+# === Integration URLs ===
 FRONTEND_URL=http://localhost:3000
+STUDENT_APP_URL=http://localhost:3002
+
+# === Redis Configuration ===
+REDIS_URL=redis://localhost:6379
+REDIS_PASSWORD=
 ```
 
-### Installation
+### Installation & Setup
 
 ```bash
+# Clone and install dependencies
+git clone <repository-url>
+cd classwaves-backend
 npm install
-```
 
-### Database Setup
-
-Initialize the Unity Catalog structure:
-
-```bash
-# Create all schemas and tables
+# Set up database
 npm run db:create-catalog
-
-# Verify structure
 npm run db:verify
 
-# Audit tables
-npm run db:audit
+# Start development server
+npm run dev
 ```
 
-### Development
-
+### Verification
 ```bash
-# Start development server with hot reload
-npm run dev
+# Check server health
+curl http://localhost:3001/api/v1/health
 
-# Run tests
+# Verify database connection
+npm run db:health-check
+
+# Run test suite
+npm test
+```
+
+## API Documentation
+
+### Authentication Endpoints
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `POST` | `/api/v1/auth/google` | Initiate Google OAuth flow | No |
+| `GET` | `/api/v1/auth/google/callback` | OAuth callback handler | No |
+| `POST` | `/api/v1/auth/refresh` | Refresh JWT token | Yes |
+| `POST` | `/api/v1/auth/logout` | Logout user | Yes |
+
+### Session Management
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/api/v1/sessions` | List teacher's sessions | Teacher |
+| `POST` | `/api/v1/sessions` | Create new session | Teacher |
+| `GET` | `/api/v1/sessions/:id` | Get session details | Teacher |
+| `PUT` | `/api/v1/sessions/:id` | Update session | Teacher |
+| `POST` | `/api/v1/sessions/:id/start` | Start session | Teacher |
+| `POST` | `/api/v1/sessions/:id/end` | End session | Teacher |
+| `GET` | `/api/v1/sessions/:id/analytics` | Session analytics | Teacher |
+
+### AI Analysis System
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `POST` | `/api/v1/ai/analyze-discussion` | Tier 1 group analysis | Teacher |
+| `POST` | `/api/v1/ai/generate-insights` | Tier 2 deep analysis | Teacher |
+| `GET` | `/api/v1/ai/insights/:sessionId` | Retrieve insights | Teacher |
+| `GET` | `/api/v1/ai/tier1/status` | Tier 1 system status | Teacher |
+| `GET` | `/api/v1/ai/tier2/status` | Tier 2 system status | Teacher |
+
+### Analytics & Monitoring
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/api/v1/analytics/session/:id` | Session analytics | Teacher |
+| `GET` | `/api/v1/analytics/system` | System analytics | Admin |
+| `GET` | `/api/v1/health` | Basic health check | No |
+| `GET` | `/api/v1/health/guidance` | Detailed system health | Teacher |
+| `GET` | `/api/v1/health/components` | Component health | Admin |
+
+### Admin Controls (Super Admin Only)
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/api/v1/admin/schools` | List all schools | Super Admin |
+| `POST` | `/api/v1/admin/schools` | Create school | Super Admin |
+| `PUT` | `/api/v1/admin/schools/:id` | Update school | Super Admin |
+| `GET` | `/api/v1/admin/analytics` | Platform analytics | Super Admin |
+
+## WebSocket Events
+
+### Real-time Communication
+The backend uses Socket.IO for real-time communication with the frontend and student applications.
+
+#### Server-to-Client Events
+```typescript
+// Group-based events
+'group:joined': { groupId: string; sessionId: string; groupInfo: any }
+'group:status_changed': { groupId: string; status: string; isReady?: boolean }
+
+// Transcription events
+'transcription:group:new': {
+  id: string;
+  groupId: string;
+  text: string;
+  timestamp: string;
+  confidence: number;
+}
+
+// AI insights
+'insight:group:new': {
+  groupId: string;
+  insightType: 'argumentation_quality' | 'collaboration_patterns';
+  message: string;
+  severity: 'info' | 'warning' | 'success';
+}
+
+// Teacher guidance
+'teacher:alert:immediate': { alert: GuidanceAlert }
+'teacher:prompt:acknowledged': { promptId: string; timestamp: string }
+```
+
+#### Client-to-Server Events
+```typescript
+// Session management
+'session:join': { sessionId: string }
+'session:leave': { sessionId: string }
+
+// Group management
+'group:join': { groupId: string; sessionId: string }
+'group:status_update': { groupId: string; status: string }
+
+// Audio streaming
+'audio:chunk': { groupId: string; audioData: Buffer }
+'audio:start': { groupId: string; format: string }
+'audio:stop': { groupId: string }
+```
+
+## Admin Controls
+
+### Super Admin Features
+- **School Management**: Create, update, and monitor schools
+- **User Administration**: Manage teacher accounts and permissions
+- **System Analytics**: Platform-wide usage and performance metrics
+- **Compliance Monitoring**: FERPA/COPPA audit trails and reporting
+- **Subscription Management**: Handle billing and limits
+
+### Admin Dashboard Access
+Super admin users can access:
+- Complete audit logs (`compliance.audit_log`)
+- System performance metrics
+- School-level analytics
+- User activity monitoring
+- Data retention policy management
+
+### Security Controls
+- Role-based access control (teacher, admin, super_admin)
+- Comprehensive audit logging
+- Rate limiting per user and endpoint
+- IP allowlisting for admin functions
+- Session management and token validation
+
+## Testing
+
+### Test Suite Structure
+```
+src/__tests__/
+├── integration/          # API integration tests
+│   ├── auth.test.ts     # Authentication flows
+│   ├── sessions.test.ts # Session management
+│   └── ai-analysis.test.ts # AI analysis pipeline
+├── unit/                # Unit tests
+│   ├── services/        # Service layer tests
+│   ├── controllers/     # Controller tests
+│   └── middleware/      # Middleware tests
+├── e2e/                 # End-to-end tests
+│   └── full-workflow.test.ts
+└── fixtures/            # Test data
+    └── test-data.ts
+```
+
+### Running Tests
+```bash
+# Run all tests
 npm test
 
-# Lint code
-npm run lint
+# Run specific test suite
+npm run test:unit
+npm run test:integration
+npm run test:e2e
 
-# Type check
-npm run type-check
+# Watch mode for development
+npm run test:watch
+
+# Generate coverage report
+npm run test:coverage
 ```
 
-## API Endpoints
+### Test Requirements
+- **Real Data Testing**: Tests use actual Databricks connections, not mocks
+- **End-to-End Validation**: Complete workflows from API to database
+- **Performance Testing**: Load testing for WebSocket connections
+- **Security Testing**: Authentication and authorization flows
 
-### Authentication
-- `POST /api/auth/google` - Initiate Google OAuth
-- `GET /api/auth/google/callback` - OAuth callback
-- `POST /api/auth/refresh` - Refresh JWT token
-- `POST /api/auth/logout` - Logout user
+## Security & Compliance
 
-### Sessions
-- `GET /api/sessions` - List sessions for teacher
-- `POST /api/sessions` - Create new session
-- `GET /api/sessions/:id` - Get session details
-- `PUT /api/sessions/:id` - Update session
-- `POST /api/sessions/:id/start` - Start session
-- `POST /api/sessions/:id/end` - End session
+### FERPA Compliance
+- **Educational Records Protection**: All student data encrypted at rest and in transit
+- **Access Controls**: Role-based permissions with audit trails
+- **Data Minimization**: Only collect necessary educational data
+- **Retention Policies**: Configurable data retention periods
+- **Parental Rights**: COPPA-compliant consent management
 
-### Health
-- `GET /api/health` - Service health check
+### Security Features
+```typescript
+// Security middleware stack
+app.use(helmet({
+  contentSecurityPolicy: true,
+  hsts: true,
+  noSniff: true,
+  frameguard: { action: 'deny' }
+}));
 
-## Project Structure
+// Rate limiting
+app.use('/api/', rateLimiter({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // requests per window
+  standardHeaders: true
+}));
 
-```
-src/
-├── config/          # Configuration files
-├── controllers/     # Request handlers
-├── middleware/      # Express middleware
-├── routes/          # API routes
-├── services/        # Business logic
-├── scripts/         # Database and utility scripts
-├── types/           # TypeScript type definitions
-└── server.ts        # Application entry point
-
-docs/
-├── API.md                      # API documentation
-├── DATABASE_SCHEMA.md          # Complete schema docs
-├── DOCUMENTATION_UPDATE_PLAN.md # Doc strategy
-└── ...
+// Input validation with Zod
+app.use(validateInput(sessionSchema));
 ```
 
-## Database Scripts
+### Audit Trail
+All sensitive operations are logged to `compliance.audit_log`:
+- User authentication events
+- Data access operations
+- Administrative actions
+- System configuration changes
+- AI analysis requests
 
-Located in `src/scripts/`:
+## Monitoring & Health
 
-- `create-unity-catalog-structure.ts` - Create all schemas and tables
-- `audit-catalog-structure.ts` - Comprehensive audit tool
-- `verify-catalog.ts` - Quick verification
-- `show-catalog-structure.ts` - Display current structure
-- `check-databricks-state.ts` - Check connection and state
+### Health Check Endpoints
+```bash
+# Basic health (public)
+GET /api/v1/health
+# Returns: { status: "healthy", timestamp: "...", uptime: 12345 }
 
-## Security Features
+# Detailed health (authenticated)
+GET /api/v1/health/guidance
+# Returns: Complete system health including AI services
 
-- **Authentication:** Google OAuth 2.0 with JWT tokens
-- **Authorization:** Role-based access (teacher, admin, super_admin)
-- **Data Protection:** FERPA and COPPA compliance built-in
-- **Audit Logging:** All data access logged for compliance
-- **Rate Limiting:** API endpoint protection
-- **CORS:** Configured for frontend integration
-- **Helmet:** Security headers enabled
+# Component health (admin only)
+GET /api/v1/health/components
+# Returns: Individual service status and metrics
+```
 
-## Compliance
+### Metrics & Observability
+- **Prometheus Metrics**: Custom metrics at `/metrics`
+- **Performance Monitoring**: Response times, throughput, error rates
+- **AI System Monitoring**: Whisper latency, analysis success rates
+- **Database Health**: Connection pool status, query performance
+- **WebSocket Metrics**: Connection counts, message throughput
 
-### FERPA (Family Educational Rights and Privacy Act)
-- Student data access controls
-- Parental consent tracking
-- Audit trail for all data access
-- Configurable retention policies
+### Key Metrics
+```typescript
+// Custom Prometheus metrics
+whisper_latency_ms: Histogram
+whisper_status_count: Counter
+stt_window_bytes: Gauge
+ws_backpressure_drops_total: Counter
+session_duration_seconds: Histogram
+```
 
-### COPPA (Children's Online Privacy Protection Act)
-- Special protections for students under 13
-- Limited data collection
-- No behavioral targeting
-- Parental access controls
+## Development
 
-## Development Workflow
+### Project Structure
+```
+classwaves-backend/
+├── src/
+│   ├── config/              # Configuration management
+│   ├── controllers/         # Request handlers (9 controllers)
+│   │   ├── auth.controller.ts
+│   │   ├── session.controller.ts
+│   │   ├── ai-analysis.controller.ts
+│   │   ├── admin.controller.ts
+│   │   └── ...
+│   ├── middleware/          # Express middleware
+│   │   ├── auth.middleware.ts
+│   │   ├── validation.middleware.ts
+│   │   └── error.middleware.ts
+│   ├── routes/              # API route definitions (9 route files)
+│   ├── services/            # Business logic layer (15+ services)
+│   │   ├── databricks.service.ts
+│   │   ├── websocket.service.ts
+│   │   ├── ai-analysis.service.ts
+│   │   └── ...
+│   ├── scripts/             # Database and utility scripts (50+ scripts)
+│   ├── types/              # TypeScript type definitions
+│   └── utils/              # Utility functions
+├── docs/                   # Documentation
+├── examples/               # Example implementations
+└── keys/                   # SSL certificates and keys
+```
 
-1. **Feature Development**
-   - Create feature branch
-   - Implement with tests
-   - Update documentation
-   - Create pull request
+### Development Workflow
+1. **Branch Strategy**: Feature branches from `mvp` branch
+2. **Code Standards**: TypeScript strict mode, ESLint, Prettier
+3. **Testing**: Write tests for all new features
+4. **Documentation**: Update API docs and README
+5. **Security**: Follow OWASP guidelines
+6. **Performance**: Monitor metrics and optimize queries
 
-2. **Database Changes**
-   - Update schema in Unity Catalog
-   - Run audit script
-   - Update TypeScript types
-   - Update documentation
+### Available Scripts
+```bash
+# Development
+npm run dev              # Start development server with hot reload
+npm run build           # Build for production
+npm run start           # Start production server
 
-3. **API Changes**
-   - Update controllers and routes
-   - Add validation with Zod
-   - Update API documentation
-   - Test with Postman/Thunder Client
+# Database Management
+npm run db:create-catalog    # Initialize complete database
+npm run db:verify           # Verify database structure
+npm run db:audit           # Run comprehensive audit
+npm run db:show            # Display schema structure
 
-## Monitoring
+# Code Quality
+npm run lint              # ESLint code checking
+npm run format           # Prettier code formatting
+npm run type-check       # TypeScript type checking
 
-- **Health Checks:** `/api/health` endpoint
-- **Metrics:** `/metrics` Prometheus endpoint including `whisper_latency_ms`, `whisper_status_count`, `whisper_retry_count`, `whisper_429_count`, `stt_window_bytes`, `stt_window_seconds`, and `ws_backpressure_drops_total`
-- **System Events:** Logged to `operational.system_events`
-- **Audit Trail:** All actions in `compliance.audit_log`
+# Testing
+npm test                 # Run all tests
+npm run test:watch       # Watch mode
+npm run test:coverage    # Generate coverage report
+```
+
+## Deployment
+
+### Environment Requirements
+- **Node.js**: 18+ (production: 20+)
+- **Memory**: Minimum 2GB RAM (recommended: 4GB+)
+- **CPU**: 2+ cores for WebSocket handling
+- **Storage**: SSD recommended for logging
+- **Network**: Low latency to Databricks and Redis
+
+### Production Configuration
+```bash
+# Production environment variables
+NODE_ENV=production
+PORT=3001
+
+# Enable all security features
+ENABLE_RATE_LIMITING=true
+ENABLE_CORS_STRICT=true
+ENABLE_AUDIT_LOGGING=true
+
+# Production Redis cluster
+REDIS_CLUSTER_NODES=redis1:6379,redis2:6379,redis3:6379
+
+# SSL certificates
+SSL_CERT_PATH=/path/to/certificate.pem
+SSL_KEY_PATH=/path/to/private.key
+```
+
+### Docker Deployment
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+RUN npm run build
+EXPOSE 3001
+CMD ["npm", "start"]
+```
+
+### Health Checks
+```bash
+# Docker health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s \
+  CMD curl -f http://localhost:3001/api/v1/health || exit 1
+```
+
+## Repository Integration
+
+### Multi-Repository Architecture
+The ClassWaves platform consists of four independent repositories:
+
+```mermaid
+graph TB
+    subgraph "ClassWaves Platform"
+        Backend[classwaves-backend<br/>Port 3000]
+        Frontend[classwaves-frontend<br/>Port 3001]
+        Student[classwaves-student<br/>Port 3002]
+        Shared[classwaves-shared<br/>NPM Package]
+    end
+    
+    Frontend --> Backend
+    Student --> Backend
+    Frontend --> Shared
+    Backend --> Shared
+    Student --> Shared
+```
+
+### Integration Points
+- **Frontend → Backend**: REST API + WebSocket connections
+- **Student → Backend**: WebSocket for real-time updates
+- **Shared Package**: TypeScript types and validation schemas
+- **Database**: Single Databricks Unity Catalog for all data
+
+### Platform Startup Sequence
+```bash
+# 1. Start backend services
+cd classwaves-backend && npm run dev
+
+# 2. Start frontend dashboard  
+cd classwaves-frontend && npm run dev
+
+# 3. Start student application
+cd classwaves-student && npm run dev
+
+# 4. Verify full platform
+curl http://localhost:3001/api/v1/health  # Backend
+curl http://localhost:3000/api/health     # Frontend
+curl http://localhost:3002/api/health     # Student
+```
+
+### Shared Dependencies
+All repositories depend on `@classwaves/shared` for:
+- TypeScript type definitions
+- Zod validation schemas
+- Constants and enums
+- Utility functions
+- WebSocket event definitions
 
 ## Contributing
 
-1. Follow TypeScript best practices
-2. Write tests for new features
-3. Update documentation
-4. Run linters before committing
-5. Keep functions small and focused
+### Development Setup
+1. **Clone Repository**: `git clone <repo-url>`
+2. **Install Dependencies**: `npm install`
+3. **Environment Setup**: Copy `.env.example` to `.env`
+4. **Database Setup**: `npm run db:create-catalog`
+5. **Start Development**: `npm run dev`
+
+### Code Standards
+- **TypeScript**: Strict mode enabled
+- **ESLint**: Airbnb configuration with custom rules
+- **Prettier**: Automatic code formatting
+- **Zod**: Runtime validation for all inputs
+- **Tests**: Required for all new features
+
+### Pull Request Process
+1. Create feature branch from `mvp`
+2. Implement feature with comprehensive tests
+3. Update documentation and API specs
+4. Run full test suite (`npm test`)
+5. Create pull request with detailed description
+6. Code review and approval required
+7. Merge to `mvp` branch
+
+### Security Guidelines
+- Never commit secrets or API keys
+- Use environment variables for configuration
+- Validate all inputs with Zod schemas
+- Follow OWASP security guidelines
+- Implement proper error handling
+- Add audit logging for sensitive operations
+
+---
 
 ## License
 
-Proprietary - ClassWaves Educational Platform
+**Proprietary** - ClassWaves Educational Platform
+
+© 2025 ClassWaves. All rights reserved. This software is proprietary and confidential.
+
+---
+
+## Support & Contact
+
+- **Documentation**: See `/docs` directory for detailed guides
+- **Issues**: Use GitHub Issues for bug reports and feature requests
+- **Security**: Report security issues privately to security@classwaves.com
+
+For questions about setup or development, please refer to the comprehensive documentation in the `/docs` directory or contact the development team.

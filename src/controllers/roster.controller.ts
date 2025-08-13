@@ -234,6 +234,15 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       affectedStudentIds: [studentId]
     });
 
+    // Check if student was created successfully
+    if (!createdStudent) {
+      return res.status(500).json({
+        success: false,
+        error: 'STUDENT_CREATION_FAILED',
+        message: 'Student was created but could not be retrieved'
+      });
+    }
+
     // Transform created student to match frontend interface  
     let consentStatus = 'none';
     if (createdStudent.has_parental_consent) {
