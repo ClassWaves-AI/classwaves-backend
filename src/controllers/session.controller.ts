@@ -10,7 +10,8 @@ import {
   CreateSessionWithEmailRequest,
   Session, 
   SessionGroup, 
-  SessionGroupMember 
+  SessionGroupMember,
+  GroupConfiguration
 } from '@classwaves/shared';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
@@ -399,7 +400,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         recording_consent_obtained: false,
         data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), // 7 years
         total_groups: groupPlan.groups.length,
-        total_students: groupPlan.groups.reduce((sum, g) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
+        total_students: groupPlan.groups.reduce((sum: number, g: GroupConfiguration) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
         access_code: accessCode,
         end_reason: '',
         teacher_notes: '',
