@@ -6,17 +6,15 @@ import {
   EmailRecipient, 
   SessionEmailData, 
   EmailNotificationResults,
-  ManualResendRequest
-} from '@classwaves/shared';
-import { AuthRequest } from '../types/auth.types';
-import { redisService } from '../services/redis.service';
-import { websocketService } from '../services/websocket.service';
-import { 
-  CreateSessionRequest, 
+  ManualResendRequest,
+  CreateSessionWithEmailRequest,
   Session, 
   SessionGroup, 
   SessionGroupMember 
 } from '@classwaves/shared';
+import { AuthRequest } from '../types/auth.types';
+import { redisService } from '../services/redis.service';
+import { websocketService } from '../services/websocket.service';
 
 /**
  * Store session access code in Redis for student leader joining
@@ -314,7 +312,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     const school = authReq.school!;
     
     // Validate new payload structure per SOW
-    const payload: CreateSessionRequest = req.body;
+    const payload: CreateSessionWithEmailRequest = req.body;
     const {
       topic,
       goal,
@@ -513,7 +511,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             sessionTitle: topic,
             sessionDescription: description,
             accessCode,
-            teacherName: teacher.display_name || teacher.name,
+            teacherName: teacher.name,
             schoolName: school.name,
             scheduledStart: scheduledStart ? new Date(scheduledStart) : undefined,
             joinUrl: `${process.env.STUDENT_APP_URL || 'http://localhost:3003'}/join/${accessCode}`,
@@ -656,7 +654,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
       sessionTitle: session.title,
       sessionDescription: session.description,
       accessCode: session.access_code,
-      teacherName: teacher.display_name || teacher.name,
+      teacherName: teacher.name,
       schoolName: session.school_name || 'School',
       joinUrl: `${process.env.STUDENT_APP_URL || 'http://localhost:3003'}/join/${session.access_code}`,
     };
@@ -686,7 +684,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
       success: false,
       error: {
         code: 'RESEND_EMAIL_FAILED',
-        message: error.message,
+        message: error instanceof Error ? error.message : String(error),
       },
     });
   }

@@ -45,7 +45,7 @@ app.use(helmet({
     includeSubDomains: true,
     preload: true,
   },
-  crossOriginOpenerPolicy: false,
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
 
 // CORS configuration

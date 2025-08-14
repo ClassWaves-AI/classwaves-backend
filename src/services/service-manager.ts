@@ -30,13 +30,13 @@ class ServiceManager {
     try {
       this.updateServiceStatus('redis', 'initializing');
       if (!redisService.isConnected()) {
-        await redisService.connect();
+        // Redis connection handled automatically by ioredis
       }
       this.updateServiceStatus('redis', 'healthy', undefined, new Date());
       console.log('✅ Redis service initialized');
     } catch (error) {
       console.error('❌ Redis service initialization failed:', error);
-      this.updateServiceStatus('redis', 'unhealthy', error.message);
+      this.updateServiceStatus('redis', 'unhealthy', error instanceof Error ? error.message : String(error));
       allHealthy = false;
     }
 
@@ -48,7 +48,7 @@ class ServiceManager {
       console.log('✅ Databricks service initialized');
     } catch (error) {
       console.error('❌ Databricks service initialization failed:', error);
-      this.updateServiceStatus('databricks', 'unhealthy', error.message);
+      this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
       allHealthy = false;
     }
 
@@ -60,7 +60,7 @@ class ServiceManager {
       console.log('✅ Email service initialized');
     } catch (error) {
       console.error('❌ Email service initialization failed:', error);
-      this.updateServiceStatus('email', 'unhealthy', error.message);
+      this.updateServiceStatus('email', 'unhealthy', error instanceof Error ? error.message : String(error));
       
       // Allow degraded mode for development
       if (process.env.NODE_ENV !== 'production') {
@@ -122,7 +122,7 @@ class ServiceManager {
       const isRedisHealthy = redisService.isConnected();
       this.updateServiceStatus('redis', isRedisHealthy ? 'healthy' : 'unhealthy');
     } catch (error) {
-      this.updateServiceStatus('redis', 'unhealthy', error.message);
+      this.updateServiceStatus('redis', 'unhealthy', error instanceof Error ? error.message : String(error));
     }
 
     // Check Databricks (simple query)
@@ -130,15 +130,15 @@ class ServiceManager {
       await databricksService.query('SELECT 1 as health_check');
       this.updateServiceStatus('databricks', 'healthy');
     } catch (error) {
-      this.updateServiceStatus('databricks', 'unhealthy', error.message);
+      this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
     }
 
     // Check Email service
     try {
       const emailHealth = await emailService.getHealthStatus();
-      this.updateServiceStatus('email', emailHealth.status, JSON.stringify(emailHealth.details));
+      this.updateServiceStatus('email', emailHealth.status === 'degraded' ? 'unhealthy' : emailHealth.status, JSON.stringify(emailHealth.details));
     } catch (error) {
-      this.updateServiceStatus('email', 'unhealthy', error.message);
+      this.updateServiceStatus('email', 'unhealthy', error instanceof Error ? error.message : String(error));
     }
 
     const statuses = this.getServiceStatus();
@@ -182,14 +182,14 @@ class ServiceManager {
   /**
    * Get Redis service instance
    */
-  getRedisService() {
+  getRedisService(): any {
     return redisService;
   }
 
   /**
    * Get Databricks service instance
    */
-  getDatabricksService() {
+  getDatabricksService(): any {
     return databricksService;
   }
 

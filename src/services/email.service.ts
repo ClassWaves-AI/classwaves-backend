@@ -419,7 +419,7 @@ export class EmailService {
    * Get subject line for template
    */
   private getSubjectForTemplate(templateId: string, data: any): string {
-    const subjects = {
+    const subjects: Record<string, string> = {
       'group-leader-invitation': `👑 You're the Group Leader! Join: ${data.sessionTitle}`,
       'session-reminder': `⏰ Reminder: ${data.sessionTitle} starts soon`,
       'session-cancelled': `❌ Session Cancelled: ${data.sessionTitle}`,
