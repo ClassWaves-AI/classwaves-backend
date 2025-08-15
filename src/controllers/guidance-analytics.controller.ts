@@ -1243,84 +1243,20 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
       ORDER BY sg.group_number
     `, [sessionId]);
 
-    const groupAnalytics = groups.map((group: any) => ({
-      groupId: group.id,
-      name: group.name || group.configured_name,
-      configuration: {
-        leaderId: group.leader_id,
-        configuredSize: group.configured_size,
-        membersConfigured: group.members_configured || group.configured_size,
-      },
-      membership: {
-        actualMemberCount: group.actual_member_count,
-        leaderPresent: group.leader_present > 0,
-        regularMembersCount: group.regular_members_count,
-        membershipAdherence: group.configured_size > 0 
-          ? Number((group.actual_member_count / group.configured_size).toFixed(2))
-          : 0,
-        joinTimeline: {
-          firstMemberJoined: group.first_member_joined,
-          lastMemberJoined: group.last_member_joined,
-          formationTime: group.last_member_joined && group.first_member_joined
-            ? new Date(group.last_member_joined).getTime() - new Date(group.first_member_joined).getTime()
-            : null,
-        },
-      },
-      adherence: {
-        membersPresent: group.members_present,
-        adherenceRatio: group.configured_size > 0 
-          ? Number((group.members_present / group.configured_size).toFixed(2))
-          : 0,
-        leaderAssigned: Boolean(group.leader_id),
-        leaderReady: Boolean(group.is_ready),
-        leaderReadyAt: group.leader_ready_at,
-      },
+    const normalized = groups.map((group: any) => ({
+      group_id: group.id,
+      group_name: group.name || group.configured_name,
+      configured_members: group.members_configured || group.configured_size || 0,
+      actual_members: group.actual_member_count || 0,
+      configured_vs_actual_adherence: (group.configured_size && group.configured_size > 0)
+        ? Number((group.actual_member_count / group.configured_size).toFixed(2))
+        : 0,
+      leader_ready_at: group.leader_ready_at || undefined,
     }));
 
     return res.json({
       success: true,
-      data: {
-        sessionId,
-        groups: groupAnalytics,
-        summary: {
-          totalGroups: groups.length,
-          groupsWithLeaders: groups.filter((g: any) => g.leader_id).length,
-          readyGroups: groups.filter((g: any) => g.is_ready).length,
-          averageAdherence: groups.length > 0 
-            ? groups.reduce((sum: number, g: any) => 
-                sum + (g.configured_size > 0 ? g.members_present / g.configured_size : 0), 0
-              ) / groups.length
-            : 0,
-          // Enhanced membership statistics
-          membershipStats: {
-            totalConfiguredMembers: groups.reduce((sum: number, g: any) => sum + g.configured_size, 0),
-            totalActualMembers: groups.reduce((sum: number, g: any) => sum + g.actual_member_count, 0),
-            groupsWithLeadersPresent: groups.filter((g: any) => g.leader_present > 0).length,
-            groupsAtFullCapacity: groups.filter((g: any) => g.actual_member_count >= g.configured_size).length,
-            averageMembershipAdherence: groups.length > 0 
-              ? groups.reduce((sum: number, g: any) => 
-                  sum + (g.configured_size > 0 ? g.actual_member_count / g.configured_size : 0), 0
-                ) / groups.length
-              : 0,
-            membershipFormationTime: {
-              avgFormationTime: groups.length > 0 
-                ? groups
-                    .filter((g: any) => g.first_member_joined && g.last_member_joined)
-                    .reduce((sum: number, g: any) => 
-                      sum + (new Date(g.last_member_joined).getTime() - new Date(g.first_member_joined).getTime()), 0
-                    ) / groups.filter((g: any) => g.first_member_joined && g.last_member_joined).length
-                : null,
-              fastestGroup: groups
-                .filter((g: any) => g.first_member_joined && g.last_member_joined)
-                .reduce((fastest: any, current: any) => {
-                  const currentTime = new Date(current.last_member_joined).getTime() - new Date(current.first_member_joined).getTime();
-                  const fastestTime = fastest ? (new Date(fastest.last_member_joined).getTime() - new Date(fastest.first_member_joined).getTime()) : Infinity;
-                  return currentTime < fastestTime ? current : fastest;
-                }, null),
-            },
-          },
-        },
-      },
+      data: normalized,
     });
   } catch (error) {
     console.error('Error getting session groups analytics:', error);
@@ -1329,6 +1265,95 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
       error: {
         code: 'ANALYTICS_FETCH_FAILED',
         message: 'Failed to fetch group analytics',
+      },
+    });
+  }
+}
+
+/**
+ * GET /api/v1/analytics/session/:sessionId/membership-summary
+ * Returns finalized membership summary for a session
+ */
+export async function getSessionMembershipSummary(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    const sessionId = req.params.sessionId;
+
+    // Verify session belongs to teacher
+    const session = await databricksService.queryOne(`
+      SELECT id, teacher_id FROM classwaves.sessions.classroom_sessions 
+      WHERE id = ? AND teacher_id = ?
+    `, [sessionId, teacher.id]);
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: 'Session not found',
+        },
+      });
+    }
+
+    // Compute membership metrics from group/member tables
+    const groups = await databricksService.query(`
+      SELECT 
+        sg.id,
+        sg.name,
+        sg.max_size as configured_size,
+        COUNT(sgm.student_id) as actual_member_count,
+        COUNT(CASE WHEN sg.leader_id = sgm.student_id THEN 1 END) as leader_present,
+        MIN(sgm.created_at) as first_member_joined,
+        MAX(sgm.created_at) as last_member_joined
+      FROM classwaves.sessions.student_groups sg
+      LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
+      WHERE sg.session_id = ?
+      GROUP BY sg.id, sg.name, sg.max_size
+      ORDER BY sg.name
+    `, [sessionId]);
+
+    const groupsAtFullCapacity = groups.filter((g: any) => (g.actual_member_count || 0) >= (g.configured_size || 0)).length;
+    const groupsWithLeadersPresent = groups.filter((g: any) => (g.leader_present || 0) > 0).length;
+    const averageMembershipAdherence = groups.length > 0
+      ? groups.reduce((sum: number, g: any) => sum + ((g.configured_size || 0) > 0 ? (g.actual_member_count || 0) / (g.configured_size || 1) : 0), 0) / groups.length
+      : 0;
+
+    const formationCandidates = groups.filter((g: any) => g.first_member_joined && g.last_member_joined);
+    const avgFormationTime = formationCandidates.length > 0
+      ? formationCandidates.reduce((sum: number, g: any) => sum + (new Date(g.last_member_joined).getTime() - new Date(g.first_member_joined).getTime()), 0) / formationCandidates.length
+      : null;
+    const fastestGroup = formationCandidates.reduce((fastest: any, current: any) => {
+      const currentTime = new Date(current.last_member_joined).getTime() - new Date(current.first_member_joined).getTime();
+      const fastestTime = fastest ? (new Date(fastest.last_member_joined).getTime() - new Date(fastest.first_member_joined).getTime()) : Infinity;
+      return currentTime < fastestTime ? current : fastest;
+    }, null);
+
+    const summary = {
+      groupsAtFullCapacity,
+      groupsWithLeadersPresent,
+      averageMembershipAdherence: Number((averageMembershipAdherence).toFixed(2)),
+      membershipFormationTime: {
+        avgFormationTime,
+        fastestGroup: fastestGroup ? {
+          name: fastestGroup.name,
+          first_member_joined: fastestGroup.first_member_joined,
+          last_member_joined: fastestGroup.last_member_joined,
+        } : null,
+      },
+    };
+
+    return res.json({
+      success: true,
+      data: summary,
+    });
+  } catch (error) {
+    console.error('Error getting session membership summary:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_FETCH_FAILED',
+        message: 'Failed to fetch session membership summary',
       },
     });
   }

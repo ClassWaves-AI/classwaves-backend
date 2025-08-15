@@ -1183,6 +1183,8 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     try {
       websocketService.endSession(sessionId);
       websocketService.notifySessionUpdate(sessionId, { type: 'session_ended', sessionId });
+      // Emit analytics:finalized after backend finishes compute (MVP immediate emit)
+      websocketService.emitToSession(sessionId, 'analytics:finalized', { sessionId, timestamp: new Date().toISOString() });
     } catch (e) {
       console.warn('WebSocket notify failed in endSession:', e);
     }

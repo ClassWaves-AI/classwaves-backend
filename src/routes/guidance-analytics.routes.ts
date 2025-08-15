@@ -193,6 +193,16 @@ router.get('/session/:sessionId/groups',
   analyticsController.getSessionGroups
 );
 
+/**
+ * GET /analytics/session/:sessionId/membership-summary
+ * Phase 5: Returns finalized membership summary for session
+ */
+router.get('/session/:sessionId/membership-summary',
+  analyticsLimiter,
+  validateParams(sessionParamsSchema),
+  analyticsController.getSessionMembershipSummary as any
+);
+
 // ============================================================================
 // System Analytics Endpoints (Admin Only)
 // ============================================================================
