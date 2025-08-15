@@ -498,7 +498,7 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
       }
     ];
 
-    const results = [];
+    const results: { table: string; status: string; message: string }[] = [];
     let successCount = 0;
     let errorCount = 0;
 

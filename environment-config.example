@@ -1,0 +1,78 @@
+# ClassWaves Backend Environment Configuration Example
+# Copy the content below to your .env file and update the values for your environment
+
+# =============================================================================
+# EXISTING CONFIGURATION
+# =============================================================================
+
+# Google OAuth Configuration
+GOOGLE_CLIENT_ID=30672326240-99f2uv8cgmp0gtfm1b79hs7hp9efr5hs.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=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
+
+# JWT Configuration
+JWT_SECRET=your-existing-jwt-secret
+
+# Database Configuration (CORRECTED variable names)
+DATABRICKS_HOST=your-databricks-hostname
+DATABRICKS_TOKEN=your-databricks-access-token
+DATABRICKS_WAREHOUSE_ID=your-databricks-warehouse-id
+
+# Application Configuration
+NODE_ENV=development
+PORT=3000
+API_BASE_URL=http://localhost:3000
+
+# =============================================================================
+# NEW: ENHANCED SECURITY VARIABLES (Authentication Overhaul)
+# =============================================================================
+
+# Enhanced JWT Security
+JWT_REFRESH_SECRET=your-new-strong-jwt-refresh-secret
+SESSION_ENCRYPTION_SECRET=your-32-byte-strong-session-encryption-key
+
+# =============================================================================
+# NEW: REDIS OPTIMIZATION (Authentication Overhaul)
+# =============================================================================
+
+# Redis Connection Pool Configuration
+REDIS_POOL_SIZE=5
+REDIS_URL=redis://localhost:6379
+REDIS_PASSWORD=classwaves-redis-pass
+
+# =============================================================================
+# NEW: CIRCUIT BREAKER CONFIGURATION (Authentication Overhaul)
+# =============================================================================
+
+# Circuit Breaker Settings
+CIRCUIT_BREAKER_ENABLED=true
+GOOGLE_OAUTH_TIMEOUT=5000
+DATABASE_TIMEOUT=10000
+REDIS_TIMEOUT=3000
+
+# =============================================================================
+# NEW: MONITORING CONFIGURATION (Authentication Overhaul)
+# =============================================================================
+
+# Health Check and Metrics
+HEALTH_CHECK_ENABLED=true
+METRICS_COLLECTION_ENABLED=true
+ALERTING_ENABLED=true
+
+# =============================================================================
+# ENVIRONMENT-SPECIFIC OVERRIDES
+# =============================================================================
+
+# For Production, update these values:
+# NODE_ENV=production
+# PORT=3000
+# API_BASE_URL=https://api.classwaves.ai
+# JWT_SECRET=your-production-jwt-secret
+# JWT_REFRESH_SECRET=your-production-refresh-secret
+# SESSION_ENCRYPTION_SECRET=your-production-32-byte-encryption-key
+# REDIS_URL=redis://your-production-redis-host:6379
+# REDIS_PASSWORD=your-production-redis-password
+
+# For Testing, update these values:
+# NODE_ENV=test
+# REDIS_URL=redis://localhost:6380
+# DATABASE_TIMEOUT=5000

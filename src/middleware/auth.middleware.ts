@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import { verifyToken, JWTPayload } from '../utils/jwt.utils';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
+import { SecureJWTService } from '../services/secure-jwt.service';
+import { SecureSessionService } from '../services/secure-session.service';
 
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
   const authStart = performance.now();
@@ -43,8 +45,14 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           if (!looksLikeJwt) {
             throw new Error('Token does not look like a JWT');
           }
-          // Verify JWT token and extract session ID
-          const payload = verifyToken(token) as JWTPayload;
+          // Verify JWT token with enhanced security
+          const payload = await SecureJWTService.verifyTokenSecurity(token, req, 'access');
+          if (!payload) {
+            return res.status(401).json({
+              error: 'INVALID_TOKEN',
+              message: 'Invalid or expired token',
+            });
+          }
           if (payload.type !== 'access') {
             return res.status(401).json({
               error: 'INVALID_TOKEN_TYPE',
@@ -88,10 +96,10 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
         effectiveSessionId = sessionId!;
       }
 
-      // Check if session exists in Redis
+      // Check if session exists using secure session service
       const sessionLookupStart = performance.now();
-      const sessionData = await redisService.getSession(effectiveSessionId);
-      console.log(`⏱️  Session lookup took ${(performance.now() - sessionLookupStart).toFixed(2)}ms`);
+      const sessionData = await SecureSessionService.getSecureSession(effectiveSessionId, req);
+      console.log(`⏱️  Secure session lookup took ${(performance.now() - sessionLookupStart).toFixed(2)}ms`);
       
       if (!sessionData) {
         return res.status(401).json({
