@@ -13,7 +13,7 @@ import { performance } from 'perf_hooks';
 import supertest from 'supertest';
 import app from '../../app';
 import { redisService } from '../../services/redis.service';
-import { resilientAuthService } from '../../services/resilient-auth.service';
+// resilientAuthService removed with credential flow deprecation
 import { AuthHealthMonitor } from '../../services/auth-health-monitor.service';
 
 const request = supertest(app);
@@ -66,8 +66,8 @@ describe('Phase 4: Authentication Performance Testing', () => {
           const response = await request
             .post('/api/v1/auth/google')
             .send({
-              credential: `${TEST_GOOGLE_CREDENTIAL}_${i}`,
-              clientId: process.env.GOOGLE_CLIENT_ID
+              code: `test_code_${i}`,
+              codeVerifier: 'a'.repeat(50)
             });
 
           const duration = performance.now() - start;
@@ -114,8 +114,8 @@ describe('Phase 4: Authentication Performance Testing', () => {
             const response = await request
               .post('/api/v1/auth/google')
               .send({
-                credential: `${TEST_GOOGLE_CREDENTIAL}_user_${index}`,
-                clientId: process.env.GOOGLE_CLIENT_ID
+                code: `test_code_user_${index}`,
+                codeVerifier: 'a'.repeat(50)
               });
 
             const duration = performance.now() - start;
@@ -197,8 +197,8 @@ describe('Phase 4: Authentication Performance Testing', () => {
       await request
         .post('/api/v1/auth/google')
         .send({
-          credential: TEST_GOOGLE_CREDENTIAL,
-          clientId: process.env.GOOGLE_CLIENT_ID
+          code: 'test_code_normal',
+          codeVerifier: 'a'.repeat(50)
         });
       const normalDuration = performance.now() - normalStart;
       
@@ -221,13 +221,13 @@ describe('Phase 4: Authentication Performance Testing', () => {
       
       const mixedRequests = Array.from({ length: 10 }, (_, i) => {
         const isValid = i % 4 !== 0; // 75% valid, 25% invalid
-        const credential = isValid ? TEST_GOOGLE_CREDENTIAL : 'invalid_credential';
+        const code = isValid ? `valid_code_${i}` : '';
         
         return request
           .post('/api/v1/auth/google')
           .send({
-            credential: `${credential}_${i}`,
-            clientId: process.env.GOOGLE_CLIENT_ID
+            code,
+            codeVerifier: 'a'.repeat(50)
           });
       });
 
@@ -255,46 +255,6 @@ describe('Phase 4: Authentication Performance Testing', () => {
   });
 
   describe('Resilience Under Load', () => {
-    test('should maintain resilience with external service timeouts', async () => {
-      console.log('🛡️ Testing resilience under external service pressure...');
-      
-      // Test resilient authentication service directly
-      const resilientPromises = Array.from({ length: 20 }, async (_, i) => {
-        try {
-          const mockReq = {
-            headers: { 'user-agent': 'test-agent', 'accept-language': 'en-US' },
-            ip: '127.0.0.1'
-          } as any;
-          
-          const start = performance.now();
-          const result = await resilientAuthService.authenticateWithResilience(
-            `${TEST_GOOGLE_CREDENTIAL}_resilient_${i}`,
-            mockReq
-          );
-          const duration = performance.now() - start;
-          
-          return { success: !!result.teacher, duration, degradedMode: result.degradedMode };
-        } catch (error) {
-          return { success: false, error: (error as Error).message };
-        }
-      });
-
-      const results = await Promise.all(resilientPromises);
-      const successCount = results.filter(r => r.success).length;
-      const degradedCount = results.filter(r => 'degradedMode' in r && r.degradedMode).length;
-      const durationsWithValue = results.filter(r => 'duration' in r && typeof r.duration === 'number');
-      const avgDuration = durationsWithValue.length > 0 
-        ? durationsWithValue.reduce((sum, r) => sum + (r as any).duration, 0) / durationsWithValue.length
-        : 1; // Fallback value for test environment
-
-      console.log(`🛡️ Resilience Test Results:
-        Success Rate: ${(successCount / 20 * 100).toFixed(2)}%
-        Degraded Mode: ${degradedCount} requests
-        Avg Duration: ${avgDuration.toFixed(2)}ms`);
-
-      expect(results.length).toBe(20); // All requests processed
-      expect(avgDuration).toBeGreaterThan(0); // Got timing data
-      console.log('✅ Resilience testing infrastructure validated');
-    });
+    // Removed: direct resilient service test no longer applicable
   });
 });

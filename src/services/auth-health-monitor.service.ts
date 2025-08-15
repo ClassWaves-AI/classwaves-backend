@@ -1,7 +1,7 @@
 import { OAuth2Client } from 'google-auth-library';
 import { databricksService } from './databricks.service';
 import { redisService } from './redis.service';
-import { resilientAuthService } from './resilient-auth.service';
+// resilientAuthService removed with GSI credential flow deprecation
 import { RetryService } from './retry.service';
 
 /**
@@ -245,22 +245,9 @@ export class AuthHealthMonitor {
   }
 
   private checkCircuitBreakerHealth(): 'healthy' | 'degraded' | 'unhealthy' {
-    try {
-      const circuitBreakerStatus = resilientAuthService.getCircuitBreakerStatus();
-      
-      if (circuitBreakerStatus.overall === 'healthy') {
-        return 'healthy';
-      } else if (circuitBreakerStatus.overall === 'degraded') {
-        this.createAlert('warning', 'circuitBreakers', 'Some circuit breakers are experiencing issues', circuitBreakerStatus);
-        return 'degraded';
-      } else {
-        this.createAlert('critical', 'circuitBreakers', 'Multiple circuit breakers are open', circuitBreakerStatus);
-        return 'unhealthy';
-      }
-    } catch (error) {
-      console.error('❌ Circuit breaker health check failed:', error);
-      return 'unhealthy';
-    }
+    // With credential flow removed, treat circuit breaker health as healthy by default
+    // If future breakers are reintroduced, integrate them here
+    return 'healthy';
   }
 
   private determineCircuitBreakerHealth(): 'healthy' | 'degraded' | 'unhealthy' {

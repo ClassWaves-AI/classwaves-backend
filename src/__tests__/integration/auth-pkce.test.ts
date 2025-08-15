@@ -67,36 +67,9 @@ describe('Auth Controller PKCE Integration', () => {
       expect(response.body.error).toBe('VALIDATION_ERROR');
     });
 
-    test('allows credential flow without PKCE verifier (GSI compatibility)', async () => {
-      const response = await request(app)
-        .post('/api/v1/auth/google')
-        .send({
-          credential: 'valid_gsi_credential_token'
-          // No code, no codeVerifier - should be fine for GSI flow
-        });
+    // Removed: credential flow is no longer supported
 
-      // Should not fail due to missing PKCE verifier for credential flow
-      expect(response.status).not.toBe(400);
-      if (response.status === 400) {
-        expect(response.body.error).not.toBe('PKCE_VERIFIER_MISSING_OR_INVALID');
-      }
-    });
-
-    test('validates request structure with both code and credential', async () => {
-      const response = await request(app)
-        .post('/api/v1/auth/google')
-        .send({
-          code: 'test_code',
-          credential: 'test_credential',
-          codeVerifier: 'valid_pkce_verifier_abcdefghijklmnopqrstuvwxyz123456789'
-        });
-
-      // Should accept the request structure (though may fail for other reasons)
-      expect(response.status).not.toBe(400);
-      if (response.status === 400) {
-        expect(response.body.error).not.toBe('PKCE_VERIFIER_MISSING_OR_INVALID');
-      }
-    });
+    // Removed: mixed code+credential request structure test
   });
 
   describe('Validation schema compliance', () => {

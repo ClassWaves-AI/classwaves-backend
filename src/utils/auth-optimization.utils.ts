@@ -19,15 +19,7 @@ export async function verifyGoogleTokenWithTimeout(
   const verificationPromise = (async () => {
     let payload;
     
-    if (credential) {
-      // Handle ID token flow (from Google Sign-In JavaScript library)
-      console.log('📱 Verifying Google ID token...');
-      const ticket = await googleClient.verifyIdToken({
-        idToken: credential,
-        audience: process.env.GOOGLE_CLIENT_ID!,
-      });
-      payload = ticket.getPayload();
-    } else if (code) {
+    if (code) {
       // Handle authorization code flow (PKCE-aware)
       console.log('🔑 Exchanging authorization code...', { pkce: true, hasCodeVerifier: Boolean(codeVerifier) });
       const tokenParams = codeVerifier || redirectUri
@@ -43,7 +35,7 @@ export async function verifyGoogleTokenWithTimeout(
       });
       payload = ticket.getPayload();
     } else {
-      throw new Error('Either code or credential must be provided');
+      throw new Error('Authorization code is required');
     }
 
     if (!payload) {
