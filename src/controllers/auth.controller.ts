@@ -553,6 +553,27 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       req
     );
 
+    // Store a secure session so cookie-based auth works in E2E
+    try {
+      await SecureSessionService.storeSecureSession(
+        sessionId,
+        testTeacher as Teacher,
+        testSchool as School,
+        req
+      );
+    } catch (e) {
+      console.error('⚠️ Failed to store secure test session:', e);
+    }
+
+    // Set session cookie for convenience (Playwright also sets it, but this makes API usage consistent)
+    res.cookie('session_id', sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
+      maxAge: 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+
     return res.json({
       success: true,
       teacher: {
