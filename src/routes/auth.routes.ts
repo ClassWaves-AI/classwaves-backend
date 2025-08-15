@@ -42,7 +42,8 @@ router.get('/me', authenticate, async (req, res) => {
     res.cookie('session_id', sessionId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      // Lax works better for top-level auth redirects and avoids inadvertent stripping
+      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
       maxAge: secureTokens.expiresIn * 1000,
       path: '/'
     });
