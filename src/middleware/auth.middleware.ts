@@ -59,7 +59,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
               message: 'Invalid token type',
             });
           }
-          effectiveSessionId = payload.sessionId;
+          // PREFER session cookie if present, since it represents the current active session
+          // The JWT sessionId might be from a previous session that got rotated
+          effectiveSessionId = req.cookies?.session_id || payload.sessionId;
 
           // Test-mode fallback: populate req.user directly from token when Redis is not part of unit tests
           if (process.env.NODE_ENV === 'test') {
