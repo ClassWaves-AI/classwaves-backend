@@ -1005,5 +1005,6 @@ export const databricksService = {
   createSession: (sessionData: CreateSessionData) => getDatabricksService().createSession(sessionData),
   updateSessionStatus: (sessionId: string, status: SessionStatus, additionalData?: any) => getDatabricksService().updateSessionStatus(sessionId, status, additionalData),
   recordAuditLog: (auditData: any) => getDatabricksService().recordAuditLog(auditData),
+  batchAuthOperations: (googleUser: any, domain: string) => getDatabricksService().batchAuthOperations(googleUser, domain),
   // STT removed
 };

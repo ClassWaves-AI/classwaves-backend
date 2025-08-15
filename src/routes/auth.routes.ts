@@ -1,21 +1,22 @@
 import { Router } from 'express';
-import { googleAuthHandler, refreshTokenHandler, logoutHandler, generateTestTokenHandler } from '../controllers/auth.controller';
+import { optimizedGoogleAuthHandler, generateTestTokenHandler, rotateTokens, secureLogout } from '../controllers/auth.controller';
 import { validate } from '../middleware/validation.middleware';
 import { googleAuthSchema, refreshTokenSchema, generateTestTokenSchema } from '../utils/validation.schemas';
 import { authenticate } from '../middleware/auth.middleware';
 import { generateCSRFToken } from '../middleware/csrf.middleware';
 import { AuthRequest } from '../types/auth.types';
+import { authHealthMonitor } from '../services/auth-health-monitor.service';
 
 const router = Router();
 
-// Google OAuth callback
-router.post('/google', validate(googleAuthSchema), googleAuthHandler);
+// Google OAuth callback (optimized)
+router.post('/google', validate(googleAuthSchema), optimizedGoogleAuthHandler);
 
-// Refresh token
-router.post('/refresh', validate(refreshTokenSchema), refreshTokenHandler);
+// Token refresh (now uses secure rotation under the hood)
+router.post('/refresh', validate(refreshTokenSchema), rotateTokens);
 
-// Logout
-router.post('/logout', authenticate, logoutHandler);
+// Logout (now uses secure implementation under the hood)
+router.post('/logout', secureLogout);
 
 // Get current user with fresh tokens (session validation)
 router.get('/me', authenticate, async (req, res) => {
@@ -27,18 +28,12 @@ router.get('/me', authenticate, async (req, res) => {
     const teacher = authReq.user!;
     const school = authReq.school!;
     
-    // Generate fresh tokens for the current session
-    const { 
-      generateAccessToken, 
-      generateRefreshToken, 
-      generateSessionId, 
-      getExpiresInSeconds 
-    } = await import('../utils/jwt.utils');
+    // Generate fresh secure tokens for the current session
+    const { SecureJWTService } = await import('../services/secure-jwt.service');
+    const { generateSessionId } = await import('../utils/jwt.utils');
     
     const sessionId = generateSessionId();
-    const accessToken = generateAccessToken(teacher, school, sessionId);
-    const refreshToken = generateRefreshToken(teacher, school, sessionId);
-    const expiresIn = getExpiresInSeconds();
+    const secureTokens = await SecureJWTService.generateSecureTokens(teacher, school, sessionId, req);
     
     const meTotal = performance.now() - meStart;
     console.log(`👤 /auth/me ENDPOINT COMPLETE - Total time: ${meTotal.toFixed(2)}ms`);
@@ -48,7 +43,7 @@ router.get('/me', authenticate, async (req, res) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: expiresIn * 1000,
+      maxAge: secureTokens.expiresIn * 1000,
       path: '/'
     });
 
@@ -68,10 +63,12 @@ router.get('/me', authenticate, async (req, res) => {
         subscriptionTier: school.subscription_tier,
       },
       tokens: {
-        accessToken,
-        refreshToken,
-        expiresIn,
+        accessToken: secureTokens.accessToken,
+        refreshToken: secureTokens.refreshToken,
+        expiresIn: secureTokens.expiresIn,
+        refreshExpiresIn: secureTokens.refreshExpiresIn,
         tokenType: 'Bearer',
+        deviceFingerprint: secureTokens.deviceFingerprint,
       },
     });
   } catch (error) {
@@ -98,5 +95,129 @@ router.get('/csrf-token', authenticate, async (req, res) => {
 
 // Generate test token for E2E testing (test environment only)
 router.post('/generate-test-token', validate(generateTestTokenSchema), generateTestTokenHandler);
+
+// ============================================================================
+// Health Monitoring Endpoints
+// ============================================================================
+
+/**
+ * GET /auth/health
+ * 
+ * Authentication system health check endpoint
+ * Returns comprehensive health status of auth dependencies and metrics
+ */
+router.get('/health', async (req, res) => {
+  try {
+    console.log('🔍 Auth health check requested');
+    const healthStatus = await authHealthMonitor.checkAuthSystemHealth();
+    
+    // Return appropriate HTTP status based on health
+    const httpStatus = healthStatus.overall === 'healthy' ? 200 : 
+                      healthStatus.overall === 'degraded' ? 206 : 503;
+    
+    res.status(httpStatus).json({
+      success: true,
+      data: healthStatus
+    });
+  } catch (error) {
+    console.error('❌ Auth health check failed:', error);
+    res.status(503).json({
+      success: false,
+      error: 'HEALTH_CHECK_FAILED',
+      message: 'Authentication health check failed',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * GET /auth/health/metrics
+ * 
+ * Authentication performance metrics endpoint
+ * Returns detailed performance and reliability metrics
+ */
+router.get('/health/metrics', authenticate, async (req, res) => {
+  try {
+    const authReq = req as AuthRequest;
+    const user = authReq.user;
+    
+    // Only allow admin access to detailed metrics
+    if (user?.role !== 'admin' && user?.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'Admin access required for detailed metrics'
+      });
+    }
+    
+    const performanceReport = await authHealthMonitor.generatePerformanceReport();
+    const alerts = authHealthMonitor.getAllAlerts();
+    
+    res.json({
+      success: true,
+      data: {
+        performance: performanceReport,
+        alerts: {
+          active: alerts.filter(a => !a.resolved),
+          total: alerts.length,
+          recent: alerts.slice(-10) // Last 10 alerts
+        },
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('❌ Auth metrics retrieval failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'METRICS_RETRIEVAL_FAILED',
+      message: 'Failed to retrieve authentication metrics'
+    });
+  }
+});
+
+/**
+ * POST /auth/health/alerts/:alertId/resolve
+ * 
+ * Resolve a specific alert (admin only)
+ */
+router.post('/health/alerts/:alertId/resolve', authenticate, async (req, res) => {
+  try {
+    const authReq = req as AuthRequest;
+    const user = authReq.user;
+    const { alertId } = req.params;
+    
+    // Only allow admin access
+    if (user?.role !== 'admin' && user?.role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'Admin access required to resolve alerts'
+      });
+    }
+    
+    const resolved = authHealthMonitor.resolveAlert(alertId);
+    
+    if (resolved) {
+      res.json({
+        success: true,
+        message: 'Alert resolved successfully',
+        alertId
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'ALERT_NOT_FOUND',
+        message: 'Alert not found or already resolved'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Alert resolution failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'ALERT_RESOLUTION_FAILED',
+      message: 'Failed to resolve alert'
+    });
+  }
+});
 
 export default router;

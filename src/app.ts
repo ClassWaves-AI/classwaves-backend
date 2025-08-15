@@ -5,6 +5,7 @@ dotenv.config();
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes';
 import sessionRoutes from './routes/session.routes';
@@ -28,35 +29,156 @@ import client from 'prom-client';
 
 const app = express();
 
-// Security middleware
+/**
+ * SECURITY HARDENING - Phase 2 Implementation
+ * 
+ * Enhanced security middleware with:
+ * - Strict CORS policy with whitelisted origins
+ * - Enhanced Content Security Policy (CSP)
+ * - Global rate limiting for brute force protection
+ * - Additional security headers
+ */
+
+// SECURITY 1: Global rate limiting to prevent brute-force attacks
+const globalRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Limit each IP to 1000 requests per windowMs
+  message: {
+    error: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many requests from this IP, please try again later.',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for health checks and internal monitoring
+    return req.path === '/api/v1/health' || req.path === '/metrics';
+  }
+  // Use default IP-based key generator (handles IPv6 correctly)
+});
+
+app.use(globalRateLimit);
+
+// SECURITY 2: Enhanced CORS with strict origin validation
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // In dev, allow all origins for simplicity, but log violations
+    if (process.env.NODE_ENV !== 'production') {
+      if (origin && !['http://localhost:3001', 'http://127.0.0.1:3001'].includes(origin)) {
+        console.warn(`🚨 CORS VIOLATION: Origin ${origin} not in dev whitelist`);
+      }
+      callback(null, true);
+      return;
+    }
+
+    const whitelist = (process.env.CORS_WHITELIST || '').split(',');
+    if (origin && whitelist.includes(origin)) {
+      callback(null, true);
+    } else {
+      const error = new Error(`CORS policy: Origin ${origin} is not allowed`);
+      console.error(error);
+      callback(error);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+};
+app.use(cors(corsOptions));
+
+// SECURITY 3: Enhanced Content Security Policy and security headers
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'", "https://accounts.google.com", "https://apis.google.com"],
-      imgSrc: ["'self'", "data:", "https:", "https://accounts.google.com"],
-      connectSrc: ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com"],
-      frameSrc: ["https://accounts.google.com"],
-    },
+      scriptSrc: [
+        "'self'",
+        "'unsafe-inline'", // Required for Google OAuth widget
+        "https://accounts.google.com",
+        "https://apis.google.com",
+        "https://www.google.com", // Google reCAPTCHA if used
+        // Nonce-based CSP would be better, but requires frontend changes
+      ],
+      styleSrc: [
+        "'self'", 
+        "'unsafe-inline'", // Required for dynamic styling
+        "https://fonts.googleapis.com"
+      ],
+      fontSrc: [
+        "'self'",
+        "https://fonts.gstatic.com"
+      ],
+      imgSrc: [
+        "'self'", 
+        "data:", 
+        "https:", 
+        "https://accounts.google.com",
+        "https://www.google.com"
+      ],
+      connectSrc: [
+        "'self'",
+        "https://accounts.google.com",
+        "https://oauth2.googleapis.com",
+        "https://www.googleapis.com",
+        // Add Databricks if needed
+        process.env.DATABRICKS_HOST ? `https://${process.env.DATABRICKS_HOST}` : ""
+      ].filter(Boolean),
+      frameSrc: [
+        "https://accounts.google.com",
+        "https://www.google.com" // For reCAPTCHA
+      ],
+      frameAncestors: ["'self'"], // Prevent embedding in foreign frames
+      objectSrc: ["'none'"], // Block Flash, Java, etc.
+      baseUri: ["'self'"], // Restrict base tag
+      formAction: ["'self'"], // Restrict form submissions
+      upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null
+    }
   },
+  // SECURITY 4: Enhanced security headers
   hsts: {
-    maxAge: 31536000,
+    maxAge: 31536000, // 1 year
     includeSubDomains: true,
-    preload: true,
+    preload: true
   },
-  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  crossOriginOpenerPolicy: { 
+    policy: "same-origin-allow-popups" // Required for OAuth popups
+  },
+  crossOriginResourcePolicy: { 
+    policy: "same-origin" 
+  },
+  crossOriginEmbedderPolicy: false, // Disabled for OAuth compatibility
+  referrerPolicy: {
+    policy: "strict-origin-when-cross-origin"
+  },
+  noSniff: true, // X-Content-Type-Options: nosniff
+  frameguard: { action: 'sameorigin' }, // X-Frame-Options: SAMEORIGIN
+  xssFilter: true, // X-XSS-Protection: 1; mode=block
+  dnsPrefetchControl: { allow: false }, // X-DNS-Prefetch-Control: off
+  permittedCrossDomainPolicies: false // X-Permitted-Cross-Domain-Policies: none
 }));
 
-// CORS configuration
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? ['https://classwaves.com', 'https://app.classwaves.com']
-    : ['http://localhost:3001', 'http://127.0.0.1:3001'],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
-}));
+// SECURITY 5: Additional custom security headers
+app.use((req, res, next) => {
+  // Prevent MIME type sniffing
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  
+  // Control referrer information
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
+  // Feature Policy / Permissions Policy
+  res.setHeader('Permissions-Policy', 
+    'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), speaker=()'
+  );
+  
+  // Expect-CT header for certificate transparency (production only)
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Expect-CT', 'max-age=86400, enforce');
+  }
+  
+  next();
+});
+
+// Enhanced CORS configuration is applied above in the security hardening section
 
 // Rate limiters will be initialized by service manager after Redis connection
 // Middleware below will gracefully handle uninitialized state
