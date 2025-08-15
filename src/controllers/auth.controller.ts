@@ -568,8 +568,8 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
     // Set session cookie for convenience (Playwright also sets it, but this makes API usage consistent)
     res.cookie('session_id', sessionId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
+      secure: false,
+      sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000,
       path: '/',
     });
