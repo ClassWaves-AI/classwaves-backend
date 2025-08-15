@@ -2,12 +2,9 @@ import { z } from 'zod';
 
 // Auth schemas
 export const googleAuthSchema = z.object({
-  code: z.string().min(1, 'Authorization code is required').optional(),
-  credential: z.string().min(1, 'Google credential is required').optional(),
-  codeVerifier: z.string().min(43).max(256).optional(),
+  code: z.string().min(1, 'Authorization code is required'),
+  codeVerifier: z.string().min(43).max(256),
   state: z.string().optional(),
-}).refine((data) => data.code || data.credential, {
-  message: 'Either code or credential must be provided',
 });
 
 export const refreshTokenSchema = z.object({

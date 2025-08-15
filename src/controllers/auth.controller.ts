@@ -20,7 +20,7 @@ import {
   authCircuitBreaker,
   storeSessionOptimized
 } from '../utils/auth-optimization.utils';
-import { resilientAuthService } from '../services/resilient-auth.service';
+// Removed resilientAuthService (GSI credential flow)
 import { authHealthMonitor } from '../services/auth-health-monitor.service';
 import { RetryService } from '../services/retry.service';
 
@@ -71,25 +71,18 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
   authHealthMonitor.recordAuthStart(requestId);
   
   try {
-    const { code, credential, codeVerifier, state } = req.body;
-    
-    // Validate input early
-    if (!code && !credential) {
-      const errorResponse = createAuthErrorResponse(
-        'INVALID_REQUEST',
-        'Either code or credential must be provided',
-        400
-      );
-      
-      const authTime = performance.now() - startTime;
-      authHealthMonitor.recordAuthAttempt(false, authTime, requestId);
-      return res.status(400).json(errorResponse);
-    }
-    
-    console.log(`🛡️ Using ${code ? 'authorization code' : 'credential'} authentication [${requestId}]`);
-    
-    let authResult;
-    
+    const { code, codeVerifier, state } = req.body;
+
+    console.log(`🛡️ Using authorization code authentication [${requestId}]`);
+
+    let authResult: {
+      teacher: Teacher;
+      school: School;
+      tokens: { accessToken: string; refreshToken: string } | null;
+      sessionId: string | null;
+      degradedMode: boolean;
+    } | null = null;
+
     if (code) {
       // Handle authorization code flow
       console.log(`🔑 Processing authorization code flow [${requestId}]`);
@@ -143,22 +136,14 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
         authHealthMonitor.recordAuthAttempt(false, performance.now() - startTime, requestId);
         return res.status(500).json(errorResponse);
       }
-    } else {
-      // Handle credential flow (existing resilient auth)
-      authResult = await RetryService.retryGoogleOAuth(
-        () => resilientAuthService.authenticateWithResilience(credential, req),
-        'ResilientAuth'
-      );
     }
     
     const authTime = performance.now() - startTime;
-    console.log(`⏱️ Resilient authentication took ${authTime.toFixed(2)}ms [${requestId}]`);
-    if (code) {
-      console.log(`PKCE_EXCHANGE_OK: true [${requestId}]`);
-    }
+    console.log(`⏱️ Authentication took ${authTime.toFixed(2)}ms [${requestId}]`);
+    console.log(`PKCE_EXCHANGE_OK: true [${requestId}]`);
     
     // Validate authentication result
-    if (!authResult.school) {
+    if (!authResult || !authResult.school) {
       const errorResponse = createAuthErrorResponse(
         'SCHOOL_NOT_AUTHORIZED',
         `Domain not authorized for ClassWaves`,
@@ -201,12 +186,8 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
     // Use tokens from resilient auth service or generate new ones if needed
     const tokenGenerationStart = performance.now();
     let tokens = authResult.tokens;
-    let sessionId = authResult.sessionId;
+    let sessionId = authResult.sessionId || generateSessionId();
     let secureTokens: any = null;
-    
-    if (!sessionId) {
-      sessionId = generateSessionId();
-    }
     
     // If degraded mode or tokens not available, generate secure tokens
     if (authResult.degradedMode || !tokens) {
@@ -275,7 +256,7 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
       degradedMode: authResult.degradedMode || false,
       performance: {
         totalTime: totalAuthTime,
-        circuitBreakerStatus: resilientAuthService.getCircuitBreakerStatus(),
+        circuitBreakerStatus: { overall: 'healthy' },
         requestId
       },
     });

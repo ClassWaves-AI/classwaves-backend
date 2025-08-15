@@ -333,8 +333,8 @@ describe('Phase 4: Authentication Security Validation', () => {
       const response = await request
         .post('/api/v1/auth/google')
         .send({
-          credential: 'rate_limit_test',
-          clientId: process.env.GOOGLE_CLIENT_ID
+          code: 'rate_limit_test_code',
+          codeVerifier: 'a'.repeat(50)
         });
 
       // Validate that the endpoint is accessible and processes requests
@@ -351,8 +351,8 @@ describe('Phase 4: Authentication Security Validation', () => {
         .post('/api/v1/auth/google')
         .set('X-Forwarded-For', '192.168.1.200') // Suspicious IP
         .send({
-          credential: 'invalid_credential',
-          clientId: process.env.GOOGLE_CLIENT_ID
+          code: 'invalid_code',
+          codeVerifier: 'a'.repeat(50)
         });
       
       // Validate the request was processed (regardless of auth result)
