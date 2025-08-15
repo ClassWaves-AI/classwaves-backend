@@ -27,27 +27,19 @@ router.get('/me', authenticate, async (req, res) => {
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     const school = authReq.school!;
+    const currentSessionId = authReq.sessionId!; // Use EXISTING session ID
     
-    // Generate fresh secure tokens for the current session
+    // Generate fresh secure tokens for the CURRENT session (not a new one)
     const { SecureJWTService } = await import('../services/secure-jwt.service');
-    const { generateSessionId } = await import('../utils/jwt.utils');
     
-    const sessionId = generateSessionId();
-    const secureTokens = await SecureJWTService.generateSecureTokens(teacher, school, sessionId, req);
+    const secureTokens = await SecureJWTService.generateSecureTokens(teacher, school, currentSessionId, req);
     
     const meTotal = performance.now() - meStart;
     console.log(`👤 /auth/me ENDPOINT COMPLETE - Total time: ${meTotal.toFixed(2)}ms`);
     
-    // Refresh session cookie
-    res.cookie('session_id', sessionId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      // Lax works better for top-level auth redirects and avoids inadvertent stripping
-      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
-      maxAge: secureTokens.expiresIn * 1000,
-      path: '/'
-    });
-
+    // DO NOT set a new cookie - the session already exists and is valid
+    // Just refresh the session TTL in Redis if needed
+    
     res.json({
       success: true,
       teacher: {
