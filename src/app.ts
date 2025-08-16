@@ -17,6 +17,7 @@ import budgetRoutes from './routes/budget.routes';
 import aiAnalysisRoutes from './routes/ai-analysis.routes';
 import guidanceAnalyticsRoutes from './routes/guidance-analytics.routes';
 import analyticsMonitoringRoutes from './routes/analytics-monitoring.routes';
+
 import healthRoutes from './routes/health.routes';
 import debugRoutes from './routes/debug.routes';
 import { redisService } from './services/redis.service';

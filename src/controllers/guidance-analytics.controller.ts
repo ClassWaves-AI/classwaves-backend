@@ -1273,6 +1273,9 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
 /**
  * GET /api/v1/analytics/session/:sessionId/membership-summary
  * Returns finalized membership summary for a session
+ * 
+ * UPGRADED IMPLEMENTATION: Uses robust AnalyticsComputationService
+ * while maintaining exact API compatibility for frontend.
  */
 export async function getSessionMembershipSummary(req: Request, res: Response): Promise<Response> {
   try {
@@ -1296,7 +1299,76 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       });
     }
 
-    // Compute membership metrics from group/member tables
+    // UPGRADED: Use robust analytics computation service
+    const { analyticsComputationService } = await import('../services/analytics-computation.service');
+    
+    try {
+      // Try to get computed analytics first (preferred path)
+      const analyticsData = await databricksService.queryOne(`
+        SELECT analytics_data, computed_at, status
+        FROM session_analytics 
+        WHERE session_id = ? AND analysis_type = 'final_summary'
+        ORDER BY computed_at DESC 
+        LIMIT 1
+      `, [sessionId]);
+
+      let membershipSummary;
+
+      if (analyticsData && analyticsData.analytics_data) {
+        // Use pre-computed analytics (fast path)
+        const fullAnalytics = JSON.parse(analyticsData.analytics_data);
+        membershipSummary = fullAnalytics.membershipSummary;
+        
+      } else {
+        // Fallback: compute on-demand (slower but always works)
+        console.log(`⚡ Computing on-demand analytics for session ${sessionId}`);
+        const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
+        
+        if (computedAnalytics) {
+          membershipSummary = computedAnalytics.sessionAnalyticsOverview.membershipSummary;
+        } else {
+          // Final fallback: use legacy calculation
+          return await getLegacyMembershipSummary(sessionId, res);
+        }
+      }
+
+      // Transform to maintain API compatibility (keep same response format)
+      const legacyFormatSummary = {
+        groupsAtFullCapacity: membershipSummary.groupsAtFullCapacity,
+        groupsWithLeadersPresent: membershipSummary.groupsWithLeadersPresent,
+        averageMembershipAdherence: Number(membershipSummary.averageMembershipAdherence.toFixed(2)),
+        membershipFormationTime: membershipSummary.membershipFormationTime,
+        // Enhanced data available but maintained for backward compatibility
+        totalConfiguredMembers: membershipSummary.totalConfiguredMembers,
+        totalActualMembers: membershipSummary.totalActualMembers
+      };
+
+      return res.json({
+        success: true,
+        data: legacyFormatSummary,
+      });
+
+    } catch (computationError) {
+      console.warn('Analytics computation failed, falling back to legacy calculation:', computationError);
+      // Fallback to legacy calculation for reliability
+      return await getLegacyMembershipSummary(sessionId, res);
+    }
+
+  } catch (error) {
+    console.error('Error getting session membership summary:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'ANALYTICS_FETCH_FAILED',
+        message: 'Failed to fetch session membership summary',
+      },
+    });
+  }
+}
+
+// Legacy calculation as fallback (extracted from original implementation)
+async function getLegacyMembershipSummary(sessionId: string, res: Response): Promise<Response> {
+  try {
     const groups = await databricksService.query(`
       SELECT 
         sg.id,
@@ -1348,13 +1420,7 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       data: summary,
     });
   } catch (error) {
-    console.error('Error getting session membership summary:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'ANALYTICS_FETCH_FAILED',
-        message: 'Failed to fetch session membership summary',
-      },
-    });
+    console.error('Legacy membership summary calculation failed:', error);
+    throw error;
   }
 }

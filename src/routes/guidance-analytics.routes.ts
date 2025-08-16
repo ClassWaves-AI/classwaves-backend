@@ -16,6 +16,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireAnalyticsAccess } from '../middleware/session-auth.middleware';
 import { validate, validateQuery, validateParams } from '../middleware/validation.middleware';
 import * as analyticsController from '../controllers/guidance-analytics.controller';
 
@@ -200,6 +201,7 @@ router.get('/session/:sessionId/groups',
 router.get('/session/:sessionId/membership-summary',
   analyticsLimiter,
   validateParams(sessionParamsSchema),
+  requireAnalyticsAccess, // Enhanced: Session-scoped authorization with audit logging
   analyticsController.getSessionMembershipSummary as any
 );
 

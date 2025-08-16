@@ -346,11 +346,11 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       });
     }
 
-    // Validate each group has required members
+    // Validate each group has required leader (members are optional for now)
     for (let i = 0; i < groupPlan.groups.length; i++) {
       const group = groupPlan.groups[i];
       
-      if (!group.leaderId) {
+      if (!group.leaderId || group.leaderId.trim() === '') {
         return res.status(400).json({
           success: false,
           error: {
@@ -360,15 +360,9 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         });
       }
       
-      if (!group.memberIds || group.memberIds.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: `Group "${group.name}" must have at least 1 member assigned`,
-          },
-        });
-      }
+      // Members are optional - group leaders can participate without additional members
+      // This allows for single-person groups led by the group leader
+      console.log(`✅ Group "${group.name}" validated with leader ${group.leaderId} and ${group.memberIds?.length || 0} members`);
     }
 
     // Generate session ID and access code
@@ -1183,8 +1177,35 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     try {
       websocketService.endSession(sessionId);
       websocketService.notifySessionUpdate(sessionId, { type: 'session_ended', sessionId });
-      // Emit analytics:finalized after backend finishes compute (MVP immediate emit)
-      websocketService.emitToSession(sessionId, 'analytics:finalized', { sessionId, timestamp: new Date().toISOString() });
+      
+      // Trigger robust analytics computation in background
+      // The service will emit analytics:finalized only after successful computation
+      setImmediate(async () => {
+        try {
+          const { analyticsComputationService } = await import('../services/analytics-computation.service');
+          const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
+          
+          if (computedAnalytics) {
+            await analyticsComputationService.emitAnalyticsFinalized(sessionId);
+            console.log(`🎯 Analytics computation completed and event emitted for session ${sessionId}`);
+          } else {
+            console.warn(`⚠️ Analytics computation failed for session ${sessionId}, emitting error event`);
+            websocketService.emitToSession(sessionId, 'analytics:failed', { 
+              sessionId, 
+              timestamp: new Date().toISOString(),
+              error: 'Analytics computation failed' 
+            });
+          }
+        } catch (error) {
+          console.error(`❌ Analytics computation error for session ${sessionId}:`, error);
+          websocketService.emitToSession(sessionId, 'analytics:failed', { 
+            sessionId, 
+            timestamp: new Date().toISOString(),
+            error: error instanceof Error ? error.message : 'Unknown analytics error' 
+          });
+        }
+      });
+      
     } catch (e) {
       console.warn('WebSocket notify failed in endSession:', e);
     }

@@ -50,6 +50,9 @@ export const createSessionSchema = z.object({
     hidden: z.boolean().default(true),
     defaultsApplied: z.boolean().default(true),
   }).optional(),
+  emailNotifications: z.object({
+    enabled: z.boolean(),
+  }).optional(),
 });
 
 // Student schemas
