@@ -145,7 +145,11 @@ export class DatabricksService {
     });
     
     if (!databricksConfig.host || !databricksConfig.token || !databricksConfig.warehouse) {
-      throw new Error('Databricks configuration is incomplete');
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('⚠️ Databricks configuration is incomplete. Proceeding in dev mode without DB connection.');
+      } else {
+        throw new Error('Databricks configuration is incomplete');
+      }
     }
 
     // Parse the warehouse path from the environment variable
@@ -154,7 +158,7 @@ export class DatabricksService {
     this.connectionParams = {
       hostname: databricksConfig.host.replace(/^https?:\/\//, ''),
       path: warehousePath,
-      token: databricksConfig.token,
+      token: databricksConfig.token || '',
     };
 
     this.client = new DBSQLClient();
@@ -170,7 +174,7 @@ export class DatabricksService {
       console.log('Connection params:', {
         host: this.connectionParams.hostname,
         path: this.connectionParams.path,
-        tokenLength: this.connectionParams.token.length,
+        tokenLength: (this.connectionParams.token ? this.connectionParams.token.length : 0),
       });
       
       // Reset session state per connection
@@ -183,6 +187,10 @@ export class DatabricksService {
         token: this.connectionParams.token,
       };
       
+      if (!databricksConfig.token) {
+        console.warn('⚠️ Skipping Databricks connection in dev mode (no token)');
+        return;
+      }
       this.connection = await (this.client as any).connect({
         ...connectionOptions,
         authType: 'access-token',

@@ -20,12 +20,21 @@ export class EmailService {
   private transporter: nodemailer.Transporter | null = null;
   private templates: Map<string, Handlebars.TemplateDelegate> = new Map();
   private isInitialized = false;
+  private devMode: boolean = (process.env.EMAIL_DEV_MODE === 'true') || (process.env.NODE_ENV !== 'production');
 
   /**
    * Initialize the email service with Gmail OAuth2
    */
   async initialize(): Promise<void> {
     try {
+      // Debug logging for OAuth2 credentials
+      console.log('🔍 EMAIL SERVICE DEBUG:');
+      console.log('  GMAIL_USER_EMAIL:', process.env.GMAIL_USER_EMAIL ? `${process.env.GMAIL_USER_EMAIL.substring(0, 3)}***@${process.env.GMAIL_USER_EMAIL.split('@')[1]}` : 'MISSING');
+      console.log('  GMAIL_CLIENT_ID:', process.env.GMAIL_CLIENT_ID ? `${process.env.GMAIL_CLIENT_ID.substring(0, 10)}...` : 'MISSING');
+      console.log('  GMAIL_CLIENT_SECRET:', process.env.GMAIL_CLIENT_SECRET ? `${process.env.GMAIL_CLIENT_SECRET.substring(0, 6)}...` : 'MISSING');
+      console.log('  GMAIL_REFRESH_TOKEN:', process.env.GMAIL_REFRESH_TOKEN ? `${process.env.GMAIL_REFRESH_TOKEN.substring(0, 10)}...` : 'MISSING');
+      console.log('  GMAIL_APP_PASSWORD:', process.env.GMAIL_APP_PASSWORD ? 'SET' : 'NOT SET');
+
       // Configure Gmail OAuth2 transporter
       this.transporter = nodemailer.createTransport({
         service: 'gmail',
@@ -39,8 +48,43 @@ export class EmailService {
       });
 
       // Verify transporter configuration
-      await this.transporter.verify();
-      console.log('✅ Email service initialized successfully with Gmail OAuth2');
+      try {
+        console.log('🔍 Attempting Gmail OAuth2 verification...');
+        await this.transporter.verify();
+        console.log('✅ Email service initialized successfully with Gmail OAuth2');
+      } catch (oauthErr) {
+        console.log('❌ Gmail OAuth2 verification failed:', oauthErr instanceof Error ? oauthErr.message : String(oauthErr));
+        // Optional fallback: Gmail App Password (no Ethereal)
+        if (process.env.GMAIL_APP_PASSWORD) {
+          console.warn('⚠️ Gmail OAuth2 failed; attempting Gmail App Password fallback');
+          this.transporter = nodemailer.createTransport({
+            host: 'smtp.gmail.com',
+            port: 465,
+            secure: true,
+            auth: {
+              user: process.env.GMAIL_USER_EMAIL,
+              pass: process.env.GMAIL_APP_PASSWORD,
+            },
+          });
+          await this.transporter.verify();
+          console.log('✅ Email service initialized with Gmail App Password');
+        } else if (process.env.SMTP_HOST) {
+          console.warn('⚠️ Gmail OAuth2 failed; attempting custom SMTP fallback');
+          this.transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST,
+            port: parseInt(process.env.SMTP_PORT || '587', 10),
+            secure: process.env.SMTP_SECURE === 'true' || process.env.SMTP_PORT === '465',
+            auth: process.env.SMTP_USER && process.env.SMTP_PASS ? {
+              user: process.env.SMTP_USER,
+              pass: process.env.SMTP_PASS,
+            } : undefined,
+          } as any);
+          await this.transporter.verify();
+          console.log('✅ Email service initialized with custom SMTP');
+        } else {
+          throw oauthErr;
+        }
+      }
 
       // Load email templates
       await this.loadTemplates();
@@ -63,15 +107,25 @@ export class EmailService {
       throw new Error('Email service not initialized');
     }
 
-    // Validate Gmail rate limits before sending
-    await this.checkDailyRateLimit();
+    // Validate Gmail rate limits before sending (skip in dev mode)
+    if (!this.devMode) {
+      await this.checkDailyRateLimit();
+    } else {
+      try {
+        await this.checkDailyRateLimit();
+      } catch (e) {
+        console.warn('⚠️ Skipping daily rate limit check in dev mode:', e instanceof Error ? e.message : String(e));
+      }
+    }
     
     const results = { sent: [] as string[], failed: [] as string[] };
 
     for (const recipient of recipients) {
       try {
-        // Validate COPPA compliance for this student
-        const compliance = await this.validateEmailConsent(recipient.studentId);
+        // Validate COPPA compliance for this student (skip in dev mode)
+        const compliance = this.devMode
+          ? { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' as const }
+          : await this.validateEmailConsent(recipient.studentId);
         if (!compliance.canSendEmail) {
           console.warn(`❌ Cannot send email to ${recipient.email}: ${compliance.consentStatus}`);
           results.failed.push(recipient.email);
@@ -102,13 +156,17 @@ export class EmailService {
 
         results.sent.push(recipient.email);
         
-        // Record successful delivery
-        await this.recordEmailDelivery(
-          sessionData.sessionId,
-          recipient.email,
-          templateId,
-          'sent'
-        );
+        // Record successful delivery (skip DB in dev mode)
+        if (this.devMode) {
+          console.log(`[DEV] Email delivery recorded: session=${sessionData.sessionId}, to=${recipient.email}, template=${templateId}, status=sent`);
+        } else {
+          await this.recordEmailDelivery(
+            sessionData.sessionId,
+            recipient.email,
+            templateId,
+            'sent'
+          );
+        }
 
         console.log(`📧 Email sent successfully to group leader: ${recipient.email}`);
 
@@ -116,14 +174,18 @@ export class EmailService {
         console.error(`❌ Failed to send email to group leader ${recipient.email}:`, error);
         results.failed.push(recipient.email);
 
-        // Record failed delivery
-        await this.recordEmailDelivery(
-          sessionData.sessionId,
-          recipient.email,
-          'group-leader-invitation',
-          'failed',
-          error instanceof Error ? error.message : String(error)
-        );
+        // Record failed delivery (skip DB in dev mode)
+        if (this.devMode) {
+          console.warn(`[DEV] Email delivery failure recorded: session=${sessionData.sessionId}, to=${recipient.email}, template=group-leader-invitation, status=failed, reason=${error instanceof Error ? error.message : String(error)}`);
+        } else {
+          await this.recordEmailDelivery(
+            sessionData.sessionId,
+            recipient.email,
+            'group-leader-invitation',
+            'failed',
+            error instanceof Error ? error.message : String(error)
+          );
+        }
       }
     }
 
