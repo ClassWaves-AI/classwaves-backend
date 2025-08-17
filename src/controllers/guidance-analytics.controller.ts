@@ -1317,7 +1317,18 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       if (analyticsData && analyticsData.analytics_data) {
         // Use pre-computed analytics (fast path)
         const fullAnalytics = JSON.parse(analyticsData.analytics_data);
-        membershipSummary = fullAnalytics.membershipSummary;
+        // Transform the old format to new format for consistency
+        membershipSummary = {
+          totalConfiguredMembers: fullAnalytics.totalConfiguredMembers || 0,
+          totalActualMembers: fullAnalytics.totalActualMembers || 0,
+          groupsWithLeadersPresent: fullAnalytics.groupsWithLeadersPresent || 0,
+          groupsAtFullCapacity: fullAnalytics.groupsAtFullCapacity || 0,
+          averageMembershipAdherence: fullAnalytics.averageMembershipAdherence || 0,
+          membershipFormationTime: fullAnalytics.membershipFormationTime || {
+            avgFormationTime: null,
+            fastestGroup: null
+          }
+        };
         
       } else {
         // Fallback: compute on-demand (slower but always works)

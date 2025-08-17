@@ -58,14 +58,18 @@ export class AnalyticsComputationService {
    * Compute comprehensive analytics for a session
    */
   async computeSessionAnalytics(sessionId: string): Promise<ComputedAnalytics> {
-    const computationId = uuidv4();
     const startTime = Date.now();
+    const computationId = `analytics_${sessionId}_${Date.now()}`;
 
     try {
-      console.log(`🧮 Starting analytics computation for session ${sessionId}`);
-      
       // Mark computation as in progress
       await this.markComputationInProgress(sessionId, computationId);
+
+      // Check for existing analytics first
+      const existingAnalytics = await this.getExistingAnalytics(sessionId);
+      if (existingAnalytics) {
+        return existingAnalytics;
+      }
 
       // Fetch session data
       const sessionData = await this.fetchSessionData(sessionId);
@@ -93,8 +97,6 @@ export class AnalyticsComputationService {
 
       // Persist analytics to database
       await this.persistAnalytics(sessionId, computedAnalytics);
-
-      console.log(`✅ Analytics computation completed for session ${sessionId} in ${computationMetadata.processingTime}ms`);
       
       return computedAnalytics;
 
@@ -134,7 +136,7 @@ export class AnalyticsComputationService {
 
     const totalStudents = plannedVsActual?.total_students || participants.length;
     const activeStudents = plannedVsActual?.active_students || participants.filter(p => p.is_active).length;
-    const participationRate = plannedVsActual?.avg_participation_rate || (activeStudents / totalStudents);
+    const participationRate = plannedVsActual?.avg_participation_rate || (totalStudents > 0 ? (activeStudents / totalStudents) : 0);
 
     return {
       sessionId,
@@ -164,8 +166,8 @@ export class AnalyticsComputationService {
         g.*,
         COUNT(p.id) as member_count,
         AVG(CASE WHEN p.is_active THEN 1 ELSE 0 END) as engagement_rate
-      FROM student_groups g
-      LEFT JOIN participants p ON g.id = p.group_id
+      FROM classwaves.sessions.student_groups g
+      LEFT JOIN classwaves.sessions.participants p ON g.id = p.group_id
       WHERE g.session_id = ?
       GROUP BY g.id, g.name, g.created_at
     `, [sessionId]);
@@ -265,8 +267,7 @@ export class AnalyticsComputationService {
         sessionId,
         timestamp: new Date().toISOString()
       });
-      
-      console.log(`📡 Emitted analytics:finalized event for session ${sessionId}`);
+
     } catch (error) {
       console.error(`Failed to emit analytics:finalized for session ${sessionId}:`, error);
     }

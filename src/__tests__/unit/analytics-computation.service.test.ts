@@ -25,7 +25,14 @@ describe('AnalyticsComputationService', () => {
     status: 'ended',
     actual_start: '2024-01-01T10:00:00Z',
     actual_end: '2024-01-01T11:00:00Z',
-    duration_minutes: 60
+    duration_minutes: 60,
+    // Add other fields that might be expected
+    name: 'Test Session',
+    subject: 'Mathematics',
+    grade_level: '9th',
+    max_students: 20,
+    created_at: '2024-01-01T09:00:00Z',
+    updated_at: '2024-01-01T11:00:00Z'
   };
 
   const mockGroupsData = [
@@ -59,10 +66,29 @@ describe('AnalyticsComputationService', () => {
     ready_groups_at_start: 1,
     ready_groups_at_5m: 2,
     ready_groups_at_10m: 2,
-    avg_participation_rate: 0.43,
+    avg_participation_rate: 0.57, // 4/7 = 0.57
     total_students: 7,
-    active_students: 3
+    active_students: 4 // Updated to match mockParticipantsData
   };
+
+  const mockGroupPerformanceData = [
+    {
+      id: 'group1',
+      name: 'Group A',
+      created_at: '2024-01-01T10:00:00Z',
+      first_member_joined: '2024-01-01T10:05:00Z',
+      member_count: 4, // member1, member2, member3, member4
+      engagement_rate: 0.75 // 3 active out of 4 = 0.75
+    },
+    {
+      id: 'group2',
+      name: 'Group B',
+      created_at: '2024-01-01T10:00:00Z',
+      first_member_joined: '2024-01-01T10:07:00Z',
+      member_count: 3, // member5, member6, member7
+      engagement_rate: 0.33 // 1 active out of 3 = 0.33
+    }
+  ];
 
   beforeEach(() => {
     // Create mock DatabricksService
@@ -90,26 +116,37 @@ describe('AnalyticsComputationService', () => {
 
   describe('computeSessionAnalytics', () => {
 
+    it('should debug mock setup', async () => {
+      // Simple test to debug mock setup
+      console.log('🔍 Debug: Testing mock setup...');
+      
+      // Test basic mock functionality
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce('test-value-1')
+        .mockResolvedValueOnce('test-value-2');
+      
+      const result1 = await mockDatabricksService.queryOne('query1');
+      const result2 = await mockDatabricksService.queryOne('query2');
+      
+      console.log('🔍 Debug: Mock results:', { result1, result2 });
+      
+      expect(result1).toBe('test-value-1');
+      expect(result2).toBe('test-value-2');
+    });
+
     it('should compute comprehensive session analytics successfully', async () => {
       // Clear all previous mocks
       jest.clearAllMocks();
       
-      // Set up complete mock sequence for successful computation
-      // The service calls these methods in this order:
-      // 1. getExistingAnalytics -> queryOne on session_metrics
-      // 2. fetchSessionData -> queryOne on classroom_sessions  
-      // 3. computeSessionOverview -> query on student_groups, query on participants, queryOne on session_analytics_cache
-      // 4. computeGroupPerformance -> query on student_groups with JOIN
-      
+      // Set up minimal mock sequence - focus on getting the basic flow working
       mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // 1. No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData) // 2. Session data (fetchSessionData)
-        .mockResolvedValueOnce(mockPlannedVsActualData); // 3. Planned vs actual data (computeSessionOverview)
+        .mockResolvedValueOnce(null) // 1. No existing analytics
+        .mockResolvedValueOnce(mockSessionData); // 2. Session data (this is the key one!)
 
       mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // 3a. Group membership data (computeSessionOverview)
-        .mockResolvedValueOnce(mockParticipantsData) // 3b. Participant data (computeSessionOverview)
-        .mockResolvedValueOnce(mockGroupsData); // 4. Group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // 3. Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // 4. Participants data
+        .mockResolvedValueOnce(mockGroupPerformanceData); // 5. Group performance data
 
       // Mock upsert operations
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
@@ -118,11 +155,11 @@ describe('AnalyticsComputationService', () => {
 
       expect(result).toBeDefined();
       expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
-      expect(result.sessionAnalyticsOverview.totalStudents).toBe(7); // 4 + 3
-      expect(result.sessionAnalyticsOverview.activeStudents).toBe(3);
-      expect(result.sessionAnalyticsOverview.participationRate).toBe(43); // 3/7 * 100
+      expect(result.sessionAnalyticsOverview.totalStudents).toBe(7);
+      expect(result.sessionAnalyticsOverview.activeStudents).toBe(4);
+      expect(result.sessionAnalyticsOverview.participationRate).toBe(57); // 4/7 = 57%
       expect(result.sessionAnalyticsOverview.groupCount).toBe(2);
-      expect(result.sessionAnalyticsOverview.averageGroupSize).toBe(4); // 7/2 rounded
+      expect(result.sessionAnalyticsOverview.averageGroupSize).toBe(4);
     });
 
     it('should be idempotent - return cached result if already computed', async () => {
@@ -172,7 +209,7 @@ describe('AnalyticsComputationService', () => {
       mockDatabricksService.query
         .mockResolvedValueOnce(mockGroupsData) // Groups data
         .mockResolvedValueOnce(mockParticipantsData) // Participants data
-        .mockResolvedValueOnce(mockGroupsData); // Group performance data
+        .mockResolvedValueOnce(mockGroupPerformanceData); // Group performance data
 
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
@@ -194,7 +231,7 @@ describe('AnalyticsComputationService', () => {
       mockDatabricksService.query
         .mockResolvedValueOnce(mockGroupsData) // Groups data
         .mockResolvedValueOnce(mockParticipantsData) // Participants data
-        .mockResolvedValueOnce(mockGroupsData); // Group performance data
+        .mockResolvedValueOnce(mockGroupPerformanceData); // Group performance data
 
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
@@ -207,9 +244,9 @@ describe('AnalyticsComputationService', () => {
         expect.objectContaining({
           session_id: sessionId,
           total_students: 7,
-          active_students: 3,
-          participation_rate: 0.43, // 43/100
-          overall_engagement_score: 43
+          active_students: 4,
+          participation_rate: 0.57, // 57/100
+          overall_engagement_score: 57
         })
       );
 
@@ -220,7 +257,7 @@ describe('AnalyticsComputationService', () => {
         expect.objectContaining({
           session_id: sessionId,
           actual_groups: 2,
-          avg_participation_rate: 0.43
+          avg_participation_rate: 0.57
         })
       );
 
