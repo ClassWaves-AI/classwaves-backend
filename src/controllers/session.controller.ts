@@ -474,9 +474,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     await storeSessionAccessCode(sessionId, accessCode);
 
     // 5. Record analytics - session configured event
-    // TEMPORARILY DISABLED - Planning data already stored in classroom_sessions
-    // The session_metrics table is for calculated analytics, not planning data
-    // await recordSessionConfigured(sessionId, teacher.id, groupPlan);
+    await recordSessionConfigured(sessionId, teacher.id, groupPlan);
 
     // 6. Audit logging
     await databricksService.recordAuditLog({
@@ -703,65 +701,49 @@ async function recordSessionConfigured(sessionId: string, teacherId: string, gro
   
   try {
     const configuredAt = new Date();
-    const plannedMembers = groupPlan.groups.reduce((sum: number, g: any) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0);
-    const plannedLeaders = groupPlan.groups.filter((g: any) => g.leaderId).length;
     
-    // Insert session_analytics record with planned metrics
+    // Insert session_metrics record with planned metrics
     await logAnalyticsOperation(
       'session_configured_analytics',
-      'session_analytics',
-      () => databricksService.insert('session_metrics', {
-        id: (databricksService as any).generateId?.() ?? `analytics_${sessionId}`,
+      'session_metrics',
+      () => databricksService.upsert('session_metrics', { session_id: sessionId }, {
         session_id: sessionId,
-        planned_groups: groupPlan.numberOfGroups,
-        planned_group_size: groupPlan.groupSize,
-        planned_members: plannedMembers,
-        planned_leaders: plannedLeaders,
-        configured_at: configuredAt,
         calculation_timestamp: configuredAt,
+        total_students: groupPlan.totalStudents || 0,
+        active_students: 0, // Will be updated when session starts
+        participation_rate: 0, // Will be calculated during session
+        overall_engagement_score: 0, // Will be calculated during session
+        average_group_size: groupPlan.groups?.length > 0 ? Math.round(groupPlan.totalStudents / groupPlan.groups.length) : 0,
+        planned_groups: groupPlan.groups?.length || 0,
+        actual_groups: 0, // Will be updated when session starts
+        created_at: configuredAt
       }),
       {
         sessionId,
         teacherId,
         recordCount: 1,
         metadata: {
-          plannedGroups: groupPlan.numberOfGroups,
-          plannedMembers,
-          plannedLeaders,
-          groupPlanSize: groupPlan.groups.length
+          totalStudents: groupPlan.totalStudents,
+          groupCount: groupPlan.groups?.length,
+          averageGroupSize: groupPlan.groups?.length > 0 ? Math.round(groupPlan.totalStudents / groupPlan.groups.length) : 0
         },
         sampleRate: 1.0, // Always log session configuration
         forceLog: true
       }
     );
 
-    // Insert session_events record
-    await logAnalyticsOperation(
-      'session_configured_event',
-      'session_events',
-      () => databricksService.insert('session_events', {
-        id: (databricksService as any).generateId?.() ?? `event_${sessionId}_configured`,
-        session_id: sessionId,
-        teacher_id: teacherId,
-        event_type: 'configured',
-        event_time: configuredAt,
-        payload: JSON.stringify({
-          numberOfGroups: groupPlan.numberOfGroups,
-          groupSize: groupPlan.groupSize,
-          totalMembers: plannedMembers,
-          leadersAssigned: plannedLeaders,
-        }),
-      }),
+    // NEW: Enhanced session_events logging using analytics query router
+    const { analyticsQueryRouterService } = await import('../services/analytics-query-router.service');
+    await analyticsQueryRouterService.logSessionEvent(
+      sessionId,
+      teacherId,
+      'configured',
       {
-        sessionId,
-        teacherId,
-        recordCount: 1,
-        metadata: {
-          eventType: 'configured',
-          payloadSize: JSON.stringify({ numberOfGroups: groupPlan.numberOfGroups }).length
-        },
-        sampleRate: 1.0, // Always log session events
-        forceLog: true
+        groupPlan,
+        timestamp: configuredAt.toISOString(),
+        source: 'session_controller',
+        totalStudents: groupPlan.totalStudents,
+        groupCount: groupPlan.groups?.length
       }
     );
   } catch (error) {
@@ -784,15 +766,15 @@ async function recordSessionStarted(
   try {
     const startedAt = new Date();
     
-    // Update session_analytics with start metrics
+    // Update session_metrics with start metrics
     await logAnalyticsOperation(
       'session_started_analytics',
-      'session_analytics',
-      () => databricksService.update('session_analytics', `session_id = '${sessionId}'`, {
-        started_at: startedAt,
-        started_without_ready_groups: startedWithoutReadyGroups,
-        ready_groups_at_start: readyGroupsAtStart,
+      'session_metrics',
+      () => databricksService.update('session_metrics', `session_id = '${sessionId}'`, {
         calculation_timestamp: startedAt,
+        actual_groups: readyGroupsAtStart,
+        ready_groups_at_start: readyGroupsAtStart,
+        started_without_ready_groups: startedWithoutReadyGroups
       }),
       {
         sessionId,

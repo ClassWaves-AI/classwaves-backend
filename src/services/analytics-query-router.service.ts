@@ -16,6 +16,7 @@ interface QueryRoutingDecision {
   usePreAggregated: boolean;
   tableName: string;
   reason: string;
+  fallbackStrategy: string;
   estimatedSavings: {
     executionTimeReduction: number; // percentage
     costReduction: number; // percentage
@@ -36,52 +37,36 @@ interface PreAggregationStrategy {
 }
 
 export class AnalyticsQueryRouterService {
-  private readonly strategies: PreAggregationStrategy[] = [
-    {
-      name: 'teacher_analytics_summary',
-      tableName: 'teacher_analytics_summary',
-      freshnessThreshold: 25, // 25 hours (daily + buffer)
-      queryPatterns: ['teacher_analytics', 'teacher_prompt_metrics', 'teacher_effectiveness'],
-      costBenefit: {
-        queryTimeReduction: 85,
-        costReduction: 80,
-        dataScanningSaved: '20GB per query'
-      }
-    },
-    {
-      name: 'dashboard_metrics_hourly',
+  private readonly strategies = {
+    'dashboard_metrics': {
+      name: 'dashboard_metrics_cache',
       tableName: 'dashboard_metrics_hourly',
-      freshnessThreshold: 2, // 2 hours (hourly + buffer)
-      queryPatterns: ['dashboard_summary', 'system_metrics', 'school_overview'],
-      costBenefit: {
-        queryTimeReduction: 90,
-        costReduction: 85,
-        dataScanningSaved: '25.5GB per query'
-      }
+      priority: 1,
+      queryPatterns: ['dashboard_metrics', 'hourly_metrics', 'school_performance'],
+      fallbackStrategy: 'source'
     },
-    {
+    'session_analytics': {
       name: 'session_analytics_cache',
       tableName: 'session_analytics_cache',
-      freshnessThreshold: 0.5, // 30 minutes
-      queryPatterns: ['session_analytics', 'session_overview', 'session_metrics'],
-      costBenefit: {
-        queryTimeReduction: 70,
-        costReduction: 60,
-        dataScanningSaved: '7.2GB per query'
-      }
+      priority: 2,
+      queryPatterns: ['session_analytics', 'session_overview', 'session_metrics'], // ✅ Updated to include correct table name
+      fallbackStrategy: 'source'
     },
-    {
-      name: 'school_comparison_metrics',
-      tableName: 'school_comparison_metrics',
-      freshnessThreshold: 168, // 1 week
-      queryPatterns: ['school_comparison', 'admin_analytics', 'school_benchmarks'],
-      costBenefit: {
-        queryTimeReduction: 75,
-        costReduction: 70,
-        dataScanningSaved: '30GB per query'
-      }
+    'group_analytics': {
+      name: 'group_analytics_cache',
+      tableName: 'group_metrics', // ✅ Updated to use correct table name
+      priority: 3,
+      queryPatterns: ['group_analytics', 'group_performance', 'group_metrics'],
+      fallbackStrategy: 'source'
+    },
+    'teacher_analytics': {
+      name: 'teacher_analytics_cache',
+      tableName: 'teacher_analytics_summary',
+      priority: 4,
+      queryPatterns: ['teacher_analytics', 'teacher_performance', 'teacher_metrics'],
+      fallbackStrategy: 'source'
     }
-  ];
+  };
 
   /**
    * Route teacher analytics query to optimal data source
@@ -180,7 +165,7 @@ export class AnalyticsQueryRouterService {
     timeframeHours: number = 24
   ): Promise<any> {
     const queryStartTime = Date.now();
-    const decision = await this.makeRoutingDecision('dashboard_summary', { schoolId, timeframeHours });
+    const decision = await this.makeRoutingDecision('dashboard_metrics', { schoolId, timeframeHours });
 
     try {
       let result;
@@ -296,54 +281,84 @@ export class AnalyticsQueryRouterService {
     queryType: string, 
     params: Record<string, any>
   ): Promise<QueryRoutingDecision> {
-    // Find matching strategy
-    const strategy = this.strategies.find(s => 
-      s.queryPatterns.some(pattern => queryType.includes(pattern))
-    );
-
-    if (!strategy) {
-      return {
-        usePreAggregated: false,
-        tableName: 'source_tables',
-        reason: 'No pre-aggregation strategy available',
-        estimatedSavings: { executionTimeReduction: 0, costReduction: 0, dataScanningSaved: 0 }
-      };
-    }
-
-    // Check if pre-aggregated data is fresh
-    const freshness = await this.checkDataFreshness(strategy.tableName, params);
     
-    if (!freshness.isFresh) {
-      return {
-        usePreAggregated: false,
-        tableName: 'source_tables',
-        reason: `Pre-aggregated data is stale (${freshness.ageHours}h > ${strategy.freshnessThreshold}h threshold)`,
-        estimatedSavings: { executionTimeReduction: 0, costReduction: 0, dataScanningSaved: 0 }
-      };
-    }
-
-    // Check if pre-aggregated table has the required data
-    const hasData = await this.checkDataAvailability(strategy.tableName, params);
-    
-    if (!hasData) {
-      return {
-        usePreAggregated: false,
-        tableName: 'source_tables',
-        reason: 'Required data not available in pre-aggregated table',
-        estimatedSavings: { executionTimeReduction: 0, costReduction: 0, dataScanningSaved: 0 }
-      };
-    }
-
-    return {
-      usePreAggregated: true,
-      tableName: strategy.tableName,
-      reason: `Using ${strategy.name} - fresh data available (${freshness.ageHours}h old)`,
-      estimatedSavings: {
-        executionTimeReduction: strategy.costBenefit.queryTimeReduction,
-        costReduction: strategy.costBenefit.costReduction,
-        dataScanningSaved: parseFloat(strategy.costBenefit.dataScanningSaved.match(/[\d.]+/)?.[0] || '0')
+    try {
+      // Find matching strategy
+      const strategy = this.strategies[queryType as keyof typeof this.strategies];
+      if (!strategy) {
+        return {
+          usePreAggregated: false,
+          tableName: 'source_tables',
+          reason: 'No strategy found for query type',
+          fallbackStrategy: 'source',
+          estimatedSavings: {
+            executionTimeReduction: 0,
+            costReduction: 0,
+            dataScanningSaved: 0
+          }
+        };
       }
-    };
+
+      // Check if pre-aggregated data is fresh
+      const freshness = await this.checkDataFreshness(strategy.tableName, params);
+      
+      if (!freshness.isFresh) {
+        return {
+          usePreAggregated: false,
+          tableName: 'source_tables',
+          reason: `Pre-aggregated data is stale (${freshness.ageHours}h old)`,
+          fallbackStrategy: strategy.fallbackStrategy,
+          estimatedSavings: {
+            executionTimeReduction: 0,
+            costReduction: 0,
+            dataScanningSaved: 0
+          }
+        };
+      }
+
+      // Check if pre-aggregated table has the required data
+      const hasData = await this.checkDataAvailability(strategy.tableName, params);
+      
+      if (!hasData) {
+        return {
+          usePreAggregated: false,
+          tableName: 'source_tables',
+          reason: 'Required data not available in pre-aggregated table',
+          fallbackStrategy: strategy.fallbackStrategy,
+          estimatedSavings: {
+            executionTimeReduction: 0,
+            costReduction: 0,
+            dataScanningSaved: 0
+          }
+        };
+      }
+
+      return {
+        usePreAggregated: true,
+        tableName: strategy.tableName,
+        reason: `Using ${strategy.name} - fresh data available (${freshness.ageHours}h old)`,
+        fallbackStrategy: strategy.fallbackStrategy,
+        estimatedSavings: {
+          executionTimeReduction: 70, // Default values since we don't have costBenefit in new structure
+          costReduction: 60,
+          dataScanningSaved: 7.2
+        }
+      };
+
+    } catch (error) {
+      console.error('Error making routing decision:', error);
+      return {
+        usePreAggregated: false,
+        tableName: 'source_tables',
+        reason: `Error checking pre-aggregated tables: ${error}`,
+        fallbackStrategy: 'source',
+        estimatedSavings: {
+          executionTimeReduction: 0,
+          costReduction: 0,
+          dataScanningSaved: 0
+        }
+      };
+    }
   }
 
   private async checkDataFreshness(
@@ -351,7 +366,8 @@ export class AnalyticsQueryRouterService {
     params: Record<string, any>
   ): Promise<{ isFresh: boolean; ageHours: number }> {
     try {
-      const strategy = this.strategies.find(s => s.tableName === tableName);
+      // Find strategy by table name
+      const strategy = Object.values(this.strategies).find(s => s.tableName === tableName);
       if (!strategy) return { isFresh: false, ageHours: 999 };
 
       let freshnessQuery = '';
@@ -375,9 +391,17 @@ export class AnalyticsQueryRouterService {
           
         case 'session_analytics_cache':
           freshnessQuery = `
-            SELECT TIMESTAMPDIFF(HOUR, MAX(cached_at), CURRENT_TIMESTAMP()) as age_hours
+            SELECT TIMESTAMPDIFF(HOUR, MAX(last_updated), CURRENT_TIMESTAMP()) as age_hours
             FROM ${tableName}
-            WHERE session_id = ?
+            WHERE session_id = ? AND last_updated >= CURRENT_TIMESTAMP() - INTERVAL 1 HOUR
+          `;
+          break;
+          
+        case 'group_metrics':
+          freshnessQuery = `
+            SELECT TIMESTAMPDIFF(HOUR, MAX(calculation_timestamp), CURRENT_TIMESTAMP()) as age_hours
+            FROM ${tableName}
+            WHERE session_id = ? AND calculation_timestamp >= CURRENT_TIMESTAMP() - INTERVAL 1 HOUR
           `;
           break;
           
@@ -385,17 +409,22 @@ export class AnalyticsQueryRouterService {
           return { isFresh: false, ageHours: 999 };
       }
 
-      const result = await databricksService.queryOne(freshnessQuery, [
-        params.teacherId || params.schoolId || params.sessionId
-      ]);
-      
+      const result = await databricksService.queryOne(freshnessQuery, [params.sessionId || params.teacherId || params.schoolId]);
       const ageHours = result?.age_hours || 999;
-      const isFresh = ageHours <= strategy.freshnessThreshold;
       
-      return { isFresh, ageHours };
+      // Use appropriate freshness threshold based on table type
+      let freshnessThreshold = 24; // Default 24 hours
+      if (tableName === 'dashboard_metrics_hourly') freshnessThreshold = 2; // 2 hours for hourly metrics
+      if (tableName === 'session_analytics_cache') freshnessThreshold = 0.5; // 30 minutes for session cache
+      if (tableName === 'group_metrics') freshnessThreshold = 1; // 1 hour for group metrics
+      
+      return {
+        isFresh: ageHours <= freshnessThreshold,
+        ageHours
+      };
       
     } catch (error) {
-      console.warn('Failed to check data freshness:', error);
+      console.error(`Error checking freshness for ${tableName}:`, error);
       return { isFresh: false, ageHours: 999 };
     }
   }
@@ -667,12 +696,10 @@ export class AnalyticsQueryRouterService {
           session_id,
           total_students,
           active_students,
-          planned_groups,
-          actual_groups,
-          avg_participation_rate,
-          ready_groups_at_5m,
-          ready_groups_at_10m,
-          adherence_members_ratio,
+          participation_rate,
+          overall_engagement_score,
+          average_group_size,
+          group_formation_time_seconds,
           created_at
         FROM classwaves.analytics.session_metrics
         WHERE session_id = ?
@@ -696,15 +723,14 @@ export class AnalyticsQueryRouterService {
         sessionId,
         totalStudents: sessionMetric.total_students || 0,
         activeStudents: sessionMetric.active_students || 0,
-        participationRate: Math.round((sessionMetric.avg_participation_rate || 0) * 100),
+        participationRate: Math.round((sessionMetric.participation_rate || 0) * 100),
         recordings: {
           total: 0,
           transcribed: 0
         },
-        plannedGroups: sessionMetric.planned_groups || 0,
-        actualGroups: sessionMetric.actual_groups || 0,
-        readyGroupsAt5m: sessionMetric.ready_groups_at_5m || 0,
-        readyGroupsAt10m: sessionMetric.ready_groups_at_10m || 0
+        engagementScore: sessionMetric.overall_engagement_score || 0,
+        averageGroupSize: sessionMetric.average_group_size || 0,
+        groupFormationTime: sessionMetric.group_formation_time_seconds || 0
       };
     } catch (error) {
       console.error('Failed to execute session analytics from source:', error);

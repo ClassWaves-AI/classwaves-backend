@@ -411,11 +411,11 @@ export class DatabricksService {
       'transcriptions': 'sessions',
       
       // Analytics schema
-      'session_metrics': 'analytics',
+      'session_metrics': 'analytics', // ✅ Updated to use correct table name
       'group_metrics': 'analytics',
       'student_metrics': 'analytics',
       'educational_metrics': 'analytics',
-      'session_analytics': 'analytics', // Alias
+      'session_analytics_cache': 'analytics', // ✅ Keep cache table reference
       'group_analytics': 'analytics', // Alias
       'student_analytics': 'analytics', // Alias
       

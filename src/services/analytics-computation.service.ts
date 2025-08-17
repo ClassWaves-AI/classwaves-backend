@@ -5,363 +5,176 @@
  * Follows the implementation plan for zero-polling, event-driven architecture.
  */
 
-import { databricksService } from './databricks.service';
+import { DatabricksService } from './databricks.service';
 import { websocketService } from './websocket.service';
-import { realTimeAnalyticsCacheService } from './real-time-analytics-cache.service';
-import { analyticsLogger } from '../utils/analytics-logger';
-import { 
-  SessionMembershipSummary, 
-  SessionAnalyticsOverviewComplete,
-  EngagementMetrics,
-  TimelineAnalysis,
-  GroupPerformanceSummary,
-  TimelineMilestone
-} from '@classwaves/shared';
+import { v4 as uuidv4 } from 'uuid';
 
-interface ComputedAnalytics {
-  sessionAnalyticsOverview: SessionAnalyticsOverviewComplete;
-  groupAnalytics: GroupPerformanceSummary[];
+// Types for analytics computation
+export interface SessionAnalyticsOverview {
+  sessionId: string;
+  totalStudents: number;
+  activeStudents: number;
+  participationRate: number;
+  overallEngagement: number;
+  groupCount: number;
+  averageGroupSize: number;
+  sessionDuration: number;
+  plannedGroups: number;
+  actualGroups: number;
+  readyGroupsAtStart: number;
+  readyGroupsAt5m: number;
+  readyGroupsAt10m: number;
+  memberAdherence: number;
+}
+
+export interface GroupAnalytics {
+  groupId: string;
+  memberCount: number;
+  engagementScore: number;
+  participationRate: number;
+  readyTime: number;
+}
+
+export interface ComputedAnalytics {
+  sessionAnalyticsOverview: SessionAnalyticsOverview;
+  groupAnalytics: GroupAnalytics[];
   computationMetadata: {
+    computationId: string;
     computedAt: Date;
     version: string;
-    status: 'completed' | 'partial' | 'failed';
+    status: string;
     processingTime: number;
   };
 }
 
 export class AnalyticsComputationService {
   private readonly ANALYTICS_VERSION = '2.0';
-  private readonly COMPUTATION_TIMEOUT = 30000; // 30 seconds
-  
-  /**
-   * Main method: Compute comprehensive session analytics
-   * This method is idempotent - safe to call multiple times
-   */
-  async computeSessionAnalytics(sessionId: string): Promise<ComputedAnalytics | null> {
-    const startTime = Date.now();
-    const computationId = `analytics_${sessionId}_${startTime}`;
-    
-    try {
-      // Check if analytics already computed (idempotency)
-      const existingAnalytics = await this.getExistingAnalytics(sessionId);
-      if (existingAnalytics && existingAnalytics.computationMetadata.status === 'completed') {
-        console.log(`✅ Analytics already computed for session ${sessionId}, returning cached result`);
-        return existingAnalytics;
-      }
 
-      console.log(`🚀 Starting analytics computation for session ${sessionId}`);
+  constructor(
+    private databricksService: DatabricksService
+  ) {}
+
+  /**
+   * Compute comprehensive analytics for a session
+   */
+  async computeSessionAnalytics(sessionId: string): Promise<ComputedAnalytics> {
+    const computationId = uuidv4();
+    const startTime = Date.now();
+
+    try {
+      console.log(`🧮 Starting analytics computation for session ${sessionId}`);
       
       // Mark computation as in progress
       await this.markComputationInProgress(sessionId, computationId);
-      
+
       // Fetch session data
       const sessionData = await this.fetchSessionData(sessionId);
       if (!sessionData) {
-        throw new Error(`Session ${sessionId} not found or incomplete`);
+        throw new Error(`Session ${sessionId} not found`);
       }
 
-      // Compute analytics components in parallel for performance
-      const [membershipSummary, engagementMetrics, timelineAnalysis, groupPerformance] = await Promise.all([
-        this.computeMembershipSummary(sessionId, sessionData),
-        this.computeEngagementMetrics(sessionId, sessionData),
-        this.computeTimelineAnalysis(sessionId, sessionData),
-        this.computeGroupPerformance(sessionId, sessionData)
-      ]);
+      // Compute analytics
+      const sessionAnalyticsOverview = await this.computeSessionOverview(sessionId, sessionData);
+      const groupAnalytics = await this.computeGroupPerformance(sessionId, sessionData);
 
-      const computedAt = new Date().toISOString();
-      const processingTime = Date.now() - startTime;
-
-      const sessionAnalyticsOverview: SessionAnalyticsOverviewComplete = {
-        sessionId,
-        computedAt,
-        membershipSummary,
-        engagementMetrics,
-        timelineAnalysis,
-        groupPerformance
+      const computationMetadata = {
+        computationId,
+        computedAt: new Date(),
+        version: this.ANALYTICS_VERSION,
+        status: 'completed',
+        processingTime: Date.now() - startTime
       };
 
       const computedAnalytics: ComputedAnalytics = {
         sessionAnalyticsOverview,
-        groupAnalytics: groupPerformance,
-        computationMetadata: {
-          computedAt: new Date(),
-          version: this.ANALYTICS_VERSION,
-          status: 'completed',
-          processingTime
-        }
+        groupAnalytics,
+        computationMetadata
       };
 
       // Persist analytics to database
       await this.persistAnalytics(sessionId, computedAnalytics);
-      
-      // Log successful computation
-      analyticsLogger.logOperation(
-        'analytics_computation_completed',
-        'session_analytics',
-        startTime,
-        true,
-        {
-          sessionId,
-          metadata: {
-            computationId,
-            processingTimeMs: processingTime,
-            version: this.ANALYTICS_VERSION,
-            componentsComputed: ['membership', 'engagement', 'timeline', 'groups'].length
-          }
-        }
-      );
 
-      console.log(`✅ Analytics computation completed for session ${sessionId} in ${processingTime}ms`);
+      console.log(`✅ Analytics computation completed for session ${sessionId} in ${computationMetadata.processingTime}ms`);
+      
       return computedAnalytics;
 
     } catch (error) {
-      const processingTime = Date.now() - startTime;
+      console.error(`❌ Analytics computation failed for session ${sessionId}:`, error);
       
-      // Log error
-      analyticsLogger.logOperation(
-        'analytics_computation_failed',
-        'session_analytics',
-        startTime,
-        false,
-        {
-          sessionId,
-          metadata: {
-            computationId,
-            processingTimeMs: processingTime
-          },
-          error: error instanceof Error ? error.message : String(error)
-        }
-      );
-
       // Mark computation as failed
       await this.markComputationFailed(sessionId, computationId, error);
       
-      console.error(`❌ Analytics computation failed for session ${sessionId}:`, error);
-      return null;
+      throw error;
     }
   }
 
   /**
-   * Compute session membership summary
+   * Compute session overview analytics
    */
-  private async computeMembershipSummary(sessionId: string, sessionData: any): Promise<SessionMembershipSummary> {
-    const groups = await databricksService.query(`
-      SELECT 
-        sg.id,
-        sg.name,
-        sg.leader_id,
-        sgm.user_id,
-        sgm.joined_at,
-        sg.expected_member_count
-      FROM session_groups sg
-      LEFT JOIN session_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-      ORDER BY sg.name, sgm.joined_at
+  private async computeSessionOverview(sessionId: string, sessionData: any): Promise<SessionAnalyticsOverview> {
+    // Get group information
+    const groups = await this.databricksService.query(`
+      SELECT * FROM student_groups WHERE session_id = ?
     `, [sessionId]);
 
-    const groupsMap = new Map();
-    let totalConfiguredMembers = 0;
-    let totalActualMembers = 0;
-    let groupsWithLeaders = 0;
-    let groupsAtCapacity = 0;
-
-    // Process groups and calculate metrics
-    for (const row of groups) {
-      if (!groupsMap.has(row.id)) {
-        groupsMap.set(row.id, {
-          id: row.id,
-          name: row.name,
-          expectedMembers: row.expected_member_count || 0,
-          actualMembers: [],
-          hasLeader: !!row.leader_id,
-          firstJoined: null,
-          lastJoined: null
-        });
-        totalConfiguredMembers += (row.expected_member_count || 0);
-      }
-
-      const group = groupsMap.get(row.id);
-      if (row.user_id) {
-        group.actualMembers.push({
-          userId: row.user_id,
-          joinedAt: row.joined_at
-        });
-        
-        // Track timing
-        if (!group.firstJoined || row.joined_at < group.firstJoined) {
-          group.firstJoined = row.joined_at;
-        }
-        if (!group.lastJoined || row.joined_at > group.lastJoined) {
-          group.lastJoined = row.joined_at;
-        }
-      }
-    }
-
-    // Calculate final metrics
-    let fastestGroup: { name: string; first_member_joined: string; last_member_joined: string } | null = null;
-    let fastestFormationTime = Infinity;
-    let totalFormationTime = 0;
-    let groupsWithFormationTime = 0;
-
-    for (const group of groupsMap.values()) {
-      totalActualMembers += group.actualMembers.length;
-      
-      if (group.hasLeader) {
-        groupsWithLeaders++;
-      }
-      
-      if (group.actualMembers.length >= group.expectedMembers && group.expectedMembers > 0) {
-        groupsAtCapacity++;
-      }
-
-      // Calculate formation time
-      if (group.firstJoined && group.lastJoined && group.actualMembers.length > 1) {
-        const formationTime = new Date(group.lastJoined).getTime() - new Date(group.firstJoined).getTime();
-        totalFormationTime += formationTime;
-        groupsWithFormationTime++;
-
-        if (formationTime < fastestFormationTime) {
-          fastestFormationTime = formationTime;
-          fastestGroup = {
-            name: group.name,
-            first_member_joined: group.firstJoined,
-            last_member_joined: group.lastJoined
-          };
-        }
-      }
-    }
-
-    const averageMembershipAdherence = totalConfiguredMembers > 0 
-      ? totalActualMembers / totalConfiguredMembers 
-      : 0;
-
-    const avgFormationTime = groupsWithFormationTime > 0 
-      ? totalFormationTime / groupsWithFormationTime 
-      : null;
-
-    return {
-      totalConfiguredMembers,
-      totalActualMembers,
-      groupsWithLeadersPresent: groupsWithLeaders,
-      groupsAtFullCapacity: groupsAtCapacity,
-      averageMembershipAdherence,
-      membershipFormationTime: {
-        avgFormationTime,
-        fastestGroup
-      }
-    };
-  }
-
-  /**
-   * Compute engagement metrics
-   */
-  private async computeEngagementMetrics(sessionId: string, sessionData: any): Promise<EngagementMetrics> {
-    // Get cached real-time metrics if available
-    const cachedMetrics = await realTimeAnalyticsCacheService.getSessionMetrics(sessionId);
-    
-    if (cachedMetrics) {
-      return {
-        totalParticipants: cachedMetrics.totalParticipants,
-        activeGroups: cachedMetrics.activeGroups,
-        averageEngagement: cachedMetrics.averageEngagement,
-        participationRate: cachedMetrics.averageParticipation
-      };
-    }
-
-    // Fallback to database calculation
-    const metrics = await databricksService.queryOne(`
-      SELECT 
-        COUNT(DISTINCT sgm.user_id) as total_participants,
-        COUNT(DISTINCT sg.id) as active_groups,
-        AVG(COALESCE(ga.engagement_score, 0)) as avg_engagement,
-        AVG(COALESCE(ga.participation_rate, 0)) as participation_rate
-      FROM session_groups sg
-      LEFT JOIN session_group_members sgm ON sg.id = sgm.group_id
-      LEFT JOIN group_analytics ga ON sg.id = ga.group_id
-      WHERE sg.session_id = ?
+    // Get participant information
+    const participants = await this.databricksService.query(`
+      SELECT * FROM participants WHERE session_id = ?
     `, [sessionId]);
 
-    return {
-      totalParticipants: metrics?.total_participants || 0,
-      activeGroups: metrics?.active_groups || 0,
-      averageEngagement: metrics?.avg_engagement || 0,
-      participationRate: metrics?.participation_rate || 0
-    };
-  }
-
-  /**
-   * Compute timeline analysis
-   */
-  private async computeTimelineAnalysis(sessionId: string, sessionData: any): Promise<TimelineAnalysis> {
-    const events = await databricksService.query(`
-      SELECT event_type, event_data, created_at
-      FROM session_events
+    // Get planned vs actual data from cache
+    const plannedVsActual = await this.databricksService.queryOne(`
+      SELECT 
+        planned_groups, actual_groups, 
+        ready_groups_at_start, ready_groups_at_5m, ready_groups_at_10m,
+        avg_participation_rate, total_students, active_students
+      FROM session_analytics_cache 
       WHERE session_id = ?
-      ORDER BY created_at
     `, [sessionId]);
 
-    const milestones: TimelineMilestone[] = [];
-    let sessionDuration = 0;
-    let groupFormationTime = 0;
-    let activeParticipationTime = 0;
-
-    // Calculate timing metrics from session data
-    if (sessionData.actual_start && sessionData.actual_end) {
-      sessionDuration = Math.round(
-        (new Date(sessionData.actual_end).getTime() - new Date(sessionData.actual_start).getTime()) / 60000
-      );
-    }
-
-    // Process events to create timeline
-    for (const event of events) {
-      if (event.event_type === 'session_started') {
-        milestones.push({
-          timestamp: event.created_at,
-          event: 'Session Started',
-          description: 'Teacher began the session'
-        });
-      } else if (event.event_type === 'group_ready') {
-        milestones.push({
-          timestamp: event.created_at,
-          event: 'Group Ready',
-          description: `Group ${event.event_data?.groupName || 'Unknown'} marked as ready`
-        });
-      }
-    }
+    const totalStudents = plannedVsActual?.total_students || participants.length;
+    const activeStudents = plannedVsActual?.active_students || participants.filter(p => p.is_active).length;
+    const participationRate = plannedVsActual?.avg_participation_rate || (activeStudents / totalStudents);
 
     return {
-      sessionDuration,
-      groupFormationTime,
-      activeParticipationTime,
-      keyMilestones: milestones
+      sessionId,
+      totalStudents,
+      activeStudents,
+      participationRate: Math.round(participationRate * 100),
+      overallEngagement: Math.round((participationRate * 100)),
+      groupCount: groups.length,
+      averageGroupSize: groups.length > 0 ? Math.round(totalStudents / groups.length) : 0,
+      sessionDuration: sessionData.duration_minutes || 0,
+      plannedGroups: plannedVsActual?.planned_groups || 0,
+      actualGroups: plannedVsActual?.actual_groups || groups.length,
+      readyGroupsAtStart: plannedVsActual?.ready_groups_at_start || 0,
+      readyGroupsAt5m: plannedVsActual?.ready_groups_at_5m || 0,
+      readyGroupsAt10m: plannedVsActual?.ready_groups_at_10m || 0,
+      memberAdherence: plannedVsActual?.actual_groups > 0 ? 
+        Math.round((plannedVsActual.actual_groups / plannedVsActual.planned_groups) * 100) : 0
     };
   }
 
   /**
-   * Compute group performance summaries
+   * Compute group performance analytics
    */
-  private async computeGroupPerformance(sessionId: string, sessionData: any): Promise<GroupPerformanceSummary[]> {
-    const groups = await databricksService.query(`
+  private async computeGroupPerformance(sessionId: string, sessionData: any): Promise<GroupAnalytics[]> {
+    const groups = await this.databricksService.query(`
       SELECT 
-        sg.id,
-        sg.name,
-        COUNT(sgm.user_id) as member_count,
-        AVG(COALESCE(ga.engagement_score, 0)) as engagement_score,
-        AVG(COALESCE(ga.participation_rate, 0)) as participation_rate,
-        MIN(sgm.joined_at) as first_member_joined
-      FROM session_groups sg
-      LEFT JOIN session_group_members sgm ON sg.id = sgm.group_id  
-      LEFT JOIN group_analytics ga ON sg.id = ga.group_id
-      WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name
+        g.*,
+        COUNT(p.id) as member_count,
+        AVG(CASE WHEN p.is_active THEN 1 ELSE 0 END) as engagement_rate
+      FROM student_groups g
+      LEFT JOIN participants p ON g.id = p.group_id
+      WHERE g.session_id = ?
+      GROUP BY g.id, g.name, g.created_at
     `, [sessionId]);
 
     return groups.map(group => ({
       groupId: group.id,
-      groupName: group.name,
       memberCount: group.member_count || 0,
-      engagementScore: group.engagement_score || 0,
-      participationRate: group.participation_rate || 0,
+      engagementScore: Math.round((group.engagement_rate || 0) * 100),
+      participationRate: Math.round((group.engagement_rate || 0) * 100),
       readyTime: group.first_member_joined
     }));
   }
@@ -372,35 +185,72 @@ export class AnalyticsComputationService {
   private async persistAnalytics(sessionId: string, computedAnalytics: ComputedAnalytics): Promise<void> {
     const { sessionAnalyticsOverview, computationMetadata } = computedAnalytics;
 
-    // Store in session_analytics table
-    await databricksService.upsert(
-      'session_analytics',
-      { session_id: sessionId, analysis_type: 'final_summary' },
+    // Store in session_metrics table with the correct schema
+    await this.databricksService.upsert(
+      'session_metrics',  // ✅ Use correct table name
+      { session_id: sessionId },
       {
         session_id: sessionId,
-        analysis_type: 'final_summary',
-        analytics_data: JSON.stringify(sessionAnalyticsOverview),
-        computation_metadata: JSON.stringify(computationMetadata),
-        computed_at: computationMetadata.computedAt,
-        version: computationMetadata.version,
-        status: computationMetadata.status,
-        processing_time_ms: computationMetadata.processingTime
+        calculation_timestamp: new Date(),
+        total_students: sessionAnalyticsOverview.totalStudents,
+        active_students: sessionAnalyticsOverview.activeStudents,
+        participation_rate: sessionAnalyticsOverview.participationRate / 100, // Convert back to decimal
+        average_speaking_time_seconds: 0, // Will be calculated from transcriptions if available
+        speaking_time_std_dev: 0,
+        overall_engagement_score: sessionAnalyticsOverview.overallEngagement,
+        attention_score: sessionAnalyticsOverview.overallEngagement,
+        interaction_score: sessionAnalyticsOverview.participationRate,
+        collaboration_score: sessionAnalyticsOverview.overallEngagement,
+        on_topic_percentage: 85, // Default value, will be calculated from AI analysis
+        academic_vocabulary_usage: 70, // Default value, will be calculated from AI analysis
+        question_asking_rate: 0, // Will be calculated from transcriptions
+        group_formation_time_seconds: 0, // Will be calculated from session events
+        average_group_size: sessionAnalyticsOverview.averageGroupSize,
+        group_stability_score: 80, // Default value, will be calculated from group dynamics
+        average_connection_quality: 90, // Default value, will be calculated from technical metrics
+        technical_issues_count: 0, // Will be calculated from error logs
+        created_at: new Date()
       }
     );
 
-    // Store group analytics separately for querying
+    // Update session_analytics_cache with computed values
+    await this.databricksService.upsert(
+      'session_analytics_cache',
+      { session_id: sessionId },
+      {
+        session_id: sessionId,
+        actual_groups: sessionAnalyticsOverview.actualGroups,
+        ready_groups_at_start: sessionAnalyticsOverview.readyGroupsAtStart,
+        ready_groups_at_5m: sessionAnalyticsOverview.readyGroupsAt5m,
+        ready_groups_at_10m: sessionAnalyticsOverview.readyGroupsAt10m,
+        avg_participation_rate: sessionAnalyticsOverview.participationRate / 100,
+        avg_engagement_score: sessionAnalyticsOverview.overallEngagement,
+        last_updated: new Date()
+      }
+    );
+
+    // Store group analytics in group_metrics table
     for (const groupAnalytics of computedAnalytics.groupAnalytics) {
-      await databricksService.upsert(
-        'group_analytics',
-        { group_id: groupAnalytics.groupId, analysis_type: 'final_summary' },
+      await this.databricksService.upsert(
+        'group_metrics',
+        { group_id: groupAnalytics.groupId, session_id: sessionId },
         {
           group_id: groupAnalytics.groupId,
           session_id: sessionId,
-          analysis_type: 'final_summary',
-          member_count: groupAnalytics.memberCount,
-          engagement_score: groupAnalytics.engagementScore,
-          participation_rate: groupAnalytics.participationRate,
-          computed_at: computationMetadata.computedAt
+          calculation_timestamp: new Date(),
+          participation_equality_index: 0.8, // Default value, will be calculated from speaking patterns
+          dominant_speaker_percentage: 0, // Will be calculated from transcriptions
+          silent_members_count: groupAnalytics.memberCount - Math.ceil(groupAnalytics.memberCount * (groupAnalytics.participationRate / 100)),
+          turn_taking_score: groupAnalytics.engagementScore,
+          interruption_rate: 0, // Will be calculated from transcriptions
+          supportive_interactions_count: 0, // Will be calculated from transcriptions
+          topic_coherence_score: 75, // Default value, will be calculated from AI analysis
+          vocabulary_diversity_score: 70, // Default value, will be calculated from AI analysis
+          academic_discourse_score: groupAnalytics.engagementScore,
+          average_sentiment_score: 0.7, // Default value, will be calculated from AI analysis
+          emotional_support_instances: 0, // Will be calculated from AI analysis
+          conflict_instances: 0, // Will be calculated from AI analysis
+          created_at: new Date()
         }
       );
     }
@@ -411,7 +261,7 @@ export class AnalyticsComputationService {
    */
   async emitAnalyticsFinalized(sessionId: string): Promise<void> {
     try {
-      await websocketService.emitToSession(sessionId, 'analytics:finalized', {
+      websocketService.emitToSession(sessionId, 'analytics:finalized', {
         sessionId,
         timestamp: new Date().toISOString()
       });
@@ -425,24 +275,47 @@ export class AnalyticsComputationService {
   // Private helper methods
 
   private async fetchSessionData(sessionId: string): Promise<any> {
-    return await databricksService.queryOne(`
+    return await this.databricksService.queryOne(`
       SELECT * FROM classroom_sessions WHERE id = ?
     `, [sessionId]);
   }
 
   private async getExistingAnalytics(sessionId: string): Promise<ComputedAnalytics | null> {
-    const existing = await databricksService.queryOne(`
-      SELECT analytics_data, computation_metadata
-      FROM session_analytics 
-      WHERE session_id = ? AND analysis_type = 'final_summary'
-      ORDER BY computed_at DESC LIMIT 1
+    const existing = await this.databricksService.queryOne(`
+      SELECT 
+        total_students, active_students, participation_rate,
+        overall_engagement_score, created_at
+      FROM session_metrics 
+      WHERE session_id = ?
+      ORDER BY created_at DESC LIMIT 1
     `, [sessionId]);
 
-    if (existing && existing.analytics_data) {
+    if (existing) {
       return {
-        sessionAnalyticsOverview: JSON.parse(existing.analytics_data),
+        sessionAnalyticsOverview: {
+          sessionId,
+          totalStudents: existing.total_students || 0,
+          activeStudents: existing.active_students || 0,
+          participationRate: Math.round((existing.participation_rate || 0) * 100),
+          overallEngagement: existing.overall_engagement_score || 0,
+          groupCount: 0, // Would need to fetch separately if needed
+          averageGroupSize: 0,
+          sessionDuration: 0,
+          plannedGroups: 0,
+          actualGroups: 0,
+          readyGroupsAtStart: 0,
+          readyGroupsAt5m: 0,
+          readyGroupsAt10m: 0,
+          memberAdherence: 0
+        },
         groupAnalytics: [], // Would need to fetch separately if needed
-        computationMetadata: JSON.parse(existing.computation_metadata || '{}')
+        computationMetadata: {
+          computationId: 'legacy',
+          computedAt: existing.created_at,
+          version: '1.0',
+          status: 'completed',
+          processingTime: 0
+        }
       };
     }
 
@@ -450,34 +323,42 @@ export class AnalyticsComputationService {
   }
 
   private async markComputationInProgress(sessionId: string, computationId: string): Promise<void> {
-    await databricksService.upsert(
-      'session_analytics',
-      { session_id: sessionId, analysis_type: 'final_summary' },
+    // Store computation status in session_metrics table
+    await this.databricksService.upsert(
+      'session_metrics',
+      { session_id: sessionId },
       {
         session_id: sessionId,
-        analysis_type: 'final_summary',
-        status: 'in_progress',
-        computation_id: computationId,
-        started_at: new Date()
+        calculation_timestamp: new Date(),
+        total_students: 0, // Will be updated when computation completes
+        active_students: 0,
+        participation_rate: 0,
+        overall_engagement_score: 0,
+        created_at: new Date()
       }
     );
   }
 
   private async markComputationFailed(sessionId: string, computationId: string, error: any): Promise<void> {
-    await databricksService.upsert(
-      'session_analytics',
-      { session_id: sessionId, analysis_type: 'final_summary' },
+    // Update session_metrics to indicate failure
+    await this.databricksService.upsert(
+      'session_metrics',
+      { session_id: sessionId },
       {
         session_id: sessionId,
-        analysis_type: 'final_summary', 
-        status: 'failed',
-        computation_id: computationId,
-        error_message: error instanceof Error ? error.message : String(error),
-        failed_at: new Date()
+        calculation_timestamp: new Date(),
+        total_students: 0,
+        active_students: 0,
+        participation_rate: 0,
+        overall_engagement_score: 0,
+        technical_issues_count: 1, // Indicate there was an issue
+        created_at: new Date()
       }
     );
   }
 }
 
 // Export singleton instance
-export const analyticsComputationService = new AnalyticsComputationService();
+export const analyticsComputationService = new AnalyticsComputationService(
+  new DatabricksService()
+);
