@@ -417,4 +417,337 @@ describe('AnalyticsComputationService', () => {
       expect(result.sessionAnalyticsOverview.averageGroupSize).toBe(0);
     });
   });
+
+  // ============================================================================
+  // COMPREHENSIVE ERROR HANDLING TESTS
+  // ============================================================================
+
+  describe('Error Handling & Robustness', () => {
+    beforeEach(() => {
+      // Reset circuit breaker state before each test
+      (service as any).circuitBreaker = {
+        state: 'CLOSED',
+        failures: 0,
+        lastFailureTime: 0,
+        successCount: 0
+      };
+    });
+
+    describe('Timeout Handling', () => {
+      it('should timeout if computation takes too long', async () => {
+        // Mock a very slow database operation
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockImplementationOnce(() => new Promise(resolve => setTimeout(resolve, 35000))); // 35 second delay
+
+        const startTime = Date.now();
+        
+        await expect(service.computeSessionAnalytics(sessionId))
+          .rejects
+          .toThrow('Analytics computation timed out after 30000ms');
+
+        const elapsed = Date.now() - startTime;
+        expect(elapsed).toBeLessThan(32000); // Should timeout around 30 seconds
+      }, 35000);
+
+      it('should timeout individual database operations', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        // Mock slow group query that exceeds database timeout
+        mockDatabricksService.query
+          .mockImplementationOnce(() => new Promise<any[]>(resolve => setTimeout(() => resolve([]), 15000))) // 15 second delay
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        await expect(service.computeSessionAnalytics(sessionId))
+          .rejects
+          .toThrow('Compute session overview timed out after 10000ms');
+      }, 20000);
+    });
+
+    describe('Circuit Breaker Pattern', () => {
+      it('should open circuit breaker after repeated failures', async () => {
+        // Simulate 5 consecutive failures
+        for (let i = 0; i < 5; i++) {
+          mockDatabricksService.queryOne.mockRejectedValueOnce(new Error('Database connection failed'));
+          
+          try {
+            await service.computeSessionAnalytics(`session-${i}`);
+          } catch (error) {
+            // Expected to fail
+          }
+        }
+
+        // 6th attempt should be blocked by circuit breaker
+        await expect(service.computeSessionAnalytics('session-6'))
+          .rejects
+          .toThrow('Analytics service temporarily unavailable due to repeated failures');
+      });
+
+      it('should move to half-open state after reset timeout', async () => {
+        // Force circuit breaker to open
+        (service as any).circuitBreaker = {
+          state: 'OPEN',
+          failures: 5,
+          lastFailureTime: Date.now() - 65000, // 65 seconds ago (past reset timeout)
+          successCount: 0
+        };
+
+        // Mock successful operation
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData)
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+        expect(result).toBeDefined();
+        expect((service as any).circuitBreaker.state).toBe('HALF_OPEN');
+      });
+
+      it('should close circuit breaker after successful operations in half-open state', async () => {
+        // Set circuit breaker to half-open
+        (service as any).circuitBreaker = {
+          state: 'HALF_OPEN',
+          failures: 3,
+          lastFailureTime: Date.now() - 30000,
+          successCount: 1 // Already one success
+        };
+
+        // Mock successful operation
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData)
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+        expect(result).toBeDefined();
+        expect((service as any).circuitBreaker.state).toBe('CLOSED');
+        expect((service as any).circuitBreaker.failures).toBe(0);
+      });
+    });
+
+    describe('Partial Failure Recovery', () => {
+      it('should succeed with session analytics even if group analytics fail', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData) // Groups data succeeds
+          .mockResolvedValueOnce(mockParticipantsData) // Participants data succeeds
+          .mockRejectedValueOnce(new Error('Group performance query failed')); // Group performance fails
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        // Should have session analytics
+        expect(result.sessionAnalyticsOverview).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        
+        // Should have empty group analytics due to failure
+        expect(result.groupAnalytics).toEqual([]);
+        
+        // Should indicate partial success
+        expect(result.computationMetadata.status).toBe('partial_success');
+        expect(result.computationMetadata.errors).toContain('Group performance query failed');
+      });
+
+      it('should provide minimal analytics when session overview fails', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockRejectedValueOnce(new Error('Session overview query failed')) // Session overview fails
+          .mockResolvedValueOnce(mockParticipantsData) // Participants data succeeds
+          .mockResolvedValueOnce(mockGroupPerformanceData); // Group performance succeeds
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        // Should have minimal session analytics
+        expect(result.sessionAnalyticsOverview).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        expect(result.sessionAnalyticsOverview.totalStudents).toBe(0); // Minimal values
+        expect(result.sessionAnalyticsOverview.sessionDuration).toBe(60); // From session data
+
+        // Should have group analytics
+        expect(result.groupAnalytics).toBeDefined();
+        expect(result.groupAnalytics.length).toBeGreaterThan(0);
+        
+        // Should indicate partial success
+        expect(result.computationMetadata.status).toBe('partial_success');
+      });
+
+      it('should continue even if persistence fails', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData)
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        // Mock persistence failure
+        mockDatabricksService.upsert = jest.fn().mockRejectedValue(new Error('Database write failed'));
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        // Should still return computed analytics
+        expect(result).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        expect(result.groupAnalytics).toBeDefined();
+      });
+    });
+
+    describe('Error Classification', () => {
+      it('should classify database connection errors correctly', async () => {
+        const connectionError = new Error('ECONNRESET: Connection reset by peer');
+        mockDatabricksService.queryOne.mockRejectedValueOnce(connectionError);
+
+        try {
+          await service.computeSessionAnalytics(sessionId);
+        } catch (error: any) {
+          expect(error.type).toBe('DATABASE_CONNECTION');
+          expect(error.message).toContain('Database connection failed');
+        }
+      });
+
+      it('should classify timeout errors correctly', async () => {
+        const timeoutError = new Error('Query timed out after 30000ms');
+        mockDatabricksService.queryOne.mockRejectedValueOnce(timeoutError);
+
+        try {
+          await service.computeSessionAnalytics(sessionId);
+        } catch (error: any) {
+          expect(error.type).toBe('TIMEOUT');
+          expect(error.message).toContain('took too long');
+        }
+      });
+
+      it('should classify data corruption errors correctly', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(null); // Session not found
+
+        try {
+          await service.computeSessionAnalytics(sessionId);
+        } catch (error: any) {
+          expect(error.type).toBe('DATA_CORRUPTION');
+          expect(error.message).toContain('Session data is invalid or corrupted');
+        }
+      });
+    });
+
+    describe('Fallback Analytics', () => {
+      it('should provide cached analytics when database connection fails', async () => {
+        // Mock database connection failure
+        const connectionError = new Error('ECONNRESET: Connection reset by peer');
+        mockDatabricksService.queryOne.mockRejectedValueOnce(connectionError);
+
+        // Mock cached analytics available
+        const cachedAnalytics = {
+          session_id: sessionId,
+          total_students: 5,
+          active_students: 4,
+          avg_participation_rate: 0.8,
+          actual_groups: 2,
+          avg_group_size: 2.5,
+          session_duration: 45,
+          planned_groups: 2,
+          ready_groups_at_start: 1,
+          ready_groups_at_5m: 2,
+          ready_groups_at_10m: 2,
+          member_adherence: 100
+        };
+
+        // Mock fallback query for cached data
+        mockDatabricksService.queryOne.mockResolvedValueOnce(cachedAnalytics);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        expect(result).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        expect(result.sessionAnalyticsOverview.totalStudents).toBe(5);
+        expect(result.sessionAnalyticsOverview.activeStudents).toBe(4);
+        expect(result.computationMetadata.status).toBe('fallback_from_cache');
+      });
+
+      it('should not provide fallback for data corruption errors', async () => {
+        // Mock data corruption error (session not found)
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(null); // Session not found
+
+        await expect(service.computeSessionAnalytics(sessionId))
+          .rejects
+          .toThrow('Session data is invalid or corrupted');
+      });
+    });
+
+    describe('Idempotency', () => {
+      it('should return existing analytics without recomputation', async () => {
+        const existingAnalytics = {
+          sessionAnalyticsOverview: {
+            sessionId,
+            totalStudents: 10,
+            activeStudents: 8,
+            participationRate: 80,
+            overallEngagement: 75,
+            groupCount: 3,
+            averageGroupSize: 3,
+            sessionDuration: 60,
+            plannedGroups: 3,
+            actualGroups: 3,
+            readyGroupsAtStart: 2,
+            readyGroupsAt5m: 3,
+            readyGroupsAt10m: 3,
+            memberAdherence: 100
+          },
+          groupAnalytics: [],
+          computationMetadata: {
+            computationId: 'existing-123',
+            computedAt: new Date(),
+            version: '2.0',
+            status: 'completed',
+            processingTime: 1500
+          }
+        };
+
+        // Mock existing analytics found
+        mockDatabricksService.queryOne.mockResolvedValueOnce(existingAnalytics);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        expect(result).toEqual(existingAnalytics);
+        
+        // Should not call any other database methods
+        expect(mockDatabricksService.query).not.toHaveBeenCalled();
+        expect(mockDatabricksService.upsert).not.toHaveBeenCalled();
+      });
+    });
+  });
 });
