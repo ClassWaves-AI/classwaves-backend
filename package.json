@@ -26,6 +26,7 @@
     "db:show": "ts-node src/scripts/show-catalog-structure.ts",
     "db:check": "ts-node src/scripts/check-databricks-state.ts",
     "architecture-scan": "node scripts/architecture-scan.js",
+    "feature-scan": "node scripts/feature-scan.js",
     "redis:monitor": "./scripts/redis-monitor.sh",
     "redis:backup": "./scripts/redis-backup.sh",
     "redis:config": "./scripts/apply-redis-config.sh"
