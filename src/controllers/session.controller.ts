@@ -144,7 +144,7 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
  */
 export async function joinSession(req: Request, res: Response): Promise<Response> {
   try {
-    const { sessionCode, studentName, displayName, avatar, dateOfBirth } = (req.body || {}) as any;
+    const { sessionCode, studentName, displayName, avatar, dateOfBirth, email } = (req.body || {}) as any;
     if (!sessionCode || !(studentName || displayName)) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Missing required fields' });
     }
@@ -181,17 +181,111 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     }
 
     const studentId = (databricksService as any).generateId?.() ?? `stu_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const safeDisplayName = String(displayName || studentName).replace(/[<>"/\\]/g, '');
+    let safeDisplayName = String(displayName || studentName).replace(/[<>"/\\]/g, '');
+    let rosterEmail = email;
 
-    // Insert or upsert minimal student record for the session
-    await databricksService.insert('students', {
+    // Look up which group this student is supposed to lead
+    // Since only group leaders get email invitations, anyone joining via email must be a group leader
+    // Match by email first (most reliable), fall back to display name
+    let groupLeaderAssignment;
+    
+    if (email && email.trim()) {
+      // Primary: Match by email address (most reliable)
+      groupLeaderAssignment = await databricksService.query(
+        `SELECT 
+           sg.id as group_id,
+           sg.name as group_name,
+           sg.leader_id,
+           s.display_name as leader_name,
+           s.email as leader_email
+         FROM ${databricksConfig.catalog}.sessions.student_groups sg
+         JOIN ${databricksConfig.catalog}.users.students s ON sg.leader_id = s.id
+         WHERE sg.session_id = ? AND LOWER(s.email) = LOWER(?)`,
+        [session.id, email.trim()]
+      );
+    } else {
+      // Fallback: Match by display name (less reliable but backward compatible)
+      groupLeaderAssignment = await databricksService.query(
+        `SELECT 
+           sg.id as group_id,
+           sg.name as group_name,
+           sg.leader_id,
+           s.display_name as leader_name,
+           s.email as leader_email
+         FROM ${databricksConfig.catalog}.sessions.student_groups sg
+         JOIN ${databricksConfig.catalog}.users.students s ON sg.leader_id = s.id
+         WHERE sg.session_id = ? AND s.display_name = ?`,
+        [session.id, safeDisplayName]
+      );
+    }
+
+    let assignedGroupId: string | null = null;
+    let assignedGroup: { id: string; name: string; leader_id: string } | null = null;
+    let studentIdFromRoster: string | null = null;
+
+    if (groupLeaderAssignment && groupLeaderAssignment.length > 0) {
+      const assignment = groupLeaderAssignment[0];
+      assignedGroupId = assignment.group_id;
+      studentIdFromRoster = assignment.leader_id;
+      assignedGroup = {
+        id: assignment.group_id,
+        name: assignment.group_name,
+        leader_id: assignment.leader_id
+      };
+      
+      // Use the roster display name and email since we found them
+      safeDisplayName = assignment.leader_name;
+      rosterEmail = assignment.leader_email;
+      console.log(`✅ Group leader found: ${assignment.leader_name} (${assignment.leader_email}) leading "${assignment.group_name}"`);
+    } else {
+      // Student not found as a group leader for this session
+      const identifier = email ? `email: ${email}` : `name: ${safeDisplayName}`;
+      console.warn(`Student (${identifier}) not found as group leader for session ${session.id}`);
+      
+      // For now, allow them to join without a group assignment
+      // Teacher can manually assign them in the frontend
+    }
+
+    // Insert participant record for the session
+    const participantData = {
       id: studentId,
       session_id: session.id,
+      group_id: assignedGroupId,
+      student_id: studentIdFromRoster, // Use roster ID if found, null if not
+      anonymous_id: studentIdFromRoster ? null : studentId, // Only use anonymous ID if not in roster
       display_name: safeDisplayName,
-      avatar: avatar || null,
-      status: 'active',
-      joined_at: new Date()
-    });
+      join_time: new Date(),
+      leave_time: null,
+      is_active: true,
+      device_type: null,
+      browser_info: null,
+      connection_quality: null,
+      can_speak: true,
+      can_hear: true,
+      is_muted: false,
+      total_speaking_time_seconds: null,
+      message_count: null,
+      interaction_count: null,
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    await databricksService.query(
+      `INSERT INTO ${databricksConfig.catalog}.sessions.participants 
+       (id, session_id, group_id, student_id, anonymous_id, display_name, join_time, leave_time, 
+        is_active, device_type, browser_info, connection_quality, can_speak, can_hear, is_muted, 
+        total_speaking_time_seconds, message_count, interaction_count, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        participantData.id, participantData.session_id, participantData.group_id,
+        participantData.student_id, participantData.anonymous_id, participantData.display_name,
+        participantData.join_time, participantData.leave_time, participantData.is_active,
+        participantData.device_type, participantData.browser_info, participantData.connection_quality,
+        participantData.can_speak, participantData.can_hear, participantData.is_muted,
+        participantData.total_speaking_time_seconds, participantData.message_count,
+        participantData.interaction_count, participantData.created_at, participantData.updated_at
+      ]
+    );
 
     // Store simple age cache if provided
     if (dateOfBirth && (redisService as any).set) {
@@ -200,8 +294,20 @@ export async function joinSession(req: Request, res: Response): Promise<Response
 
     return res.json({
       token: `student_${studentId}`,
-      student: { id: studentId, displayName: safeDisplayName },
-      session: { id: session.id }
+      student: { 
+        id: studentIdFromRoster || studentId, // Use roster ID if available
+        displayName: safeDisplayName,
+        email: rosterEmail, // Include email for auto-population
+        isGroupLeader: !!assignedGroup,
+        rosterId: studentIdFromRoster, // Include roster ID for reference
+        isFromRoster: !!studentIdFromRoster // Indicates if details were auto-populated
+      },
+      session: { id: session.id },
+      group: assignedGroup ? {
+        id: assignedGroup.id,
+        name: assignedGroup.name,
+        leaderId: assignedGroup.leader_id
+      } : null
     });
   } catch (error) {
     console.error('Error joining session:', error);
@@ -227,9 +333,9 @@ export async function getSessionParticipants(req: Request, res: Response): Promi
       return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: 'Session not found' });
     }
 
-    // Fetch students and groups
-    const students = await databricksService.query(
-      `SELECT id, display_name, avatar, status, group_id FROM ${databricksConfig.catalog}.users.students WHERE session_id = ?`,
+    // Fetch participants and groups
+    const participants = await databricksService.query(
+      `SELECT id, display_name, group_id, is_active, join_time, device_type FROM ${databricksConfig.catalog}.sessions.participants WHERE session_id = ? AND is_active = true`,
       [sessionId]
     );
     const groups = await databricksService.query(
@@ -240,17 +346,18 @@ export async function getSessionParticipants(req: Request, res: Response): Promi
     const groupById = new Map<string, any>();
     for (const g of groups) groupById.set(g.id, g);
 
-    const participants = (students || []).map((s: any) => ({
-      id: s.id,
-      display_name: s.display_name,
-      avatar: s.avatar,
-      status: s.status,
-      group: s.group_id ? groupById.get(s.group_id) || null : null,
+    const participantList = (participants || []).map((p: any) => ({
+      id: p.id,
+      display_name: p.display_name,
+      status: p.is_active ? 'active' : 'inactive',
+      join_time: p.join_time,
+      device_type: p.device_type,
+      group: p.group_id ? groupById.get(p.group_id) || null : null,
     }));
 
     return res.json({
-      participants,
-      count: participants.length,
+      participants: participantList,
+      count: participantList.length,
       groups,
     });
   } catch (error) {

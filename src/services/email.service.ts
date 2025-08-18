@@ -149,6 +149,7 @@ export class EmailService {
           data: {
             ...sessionData,
             recipientName: recipient.name,
+            recipientEmail: encodeURIComponent(recipient.email),
             groupName: recipient.groupName,
             groupId: recipient.groupId,
           },
@@ -476,7 +477,7 @@ export class EmailService {
       </div>
 
       <div style="text-align: center;">
-        <a href="{{joinUrl}}" class="join-button">Join as Group Leader</a>
+        <a href="{{joinUrl}}?email={{recipientEmail}}" class="join-button">Join as Group Leader</a>
       </div>
 
       <h4>How to Join as Group Leader:</h4>

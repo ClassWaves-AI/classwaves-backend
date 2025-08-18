@@ -472,6 +472,17 @@ export class DatabricksService {
       VALUES (${placeholders})
     `;
     
+    // DEBUG: Log the exact SQL and table info for session creation issues
+    if (table === 'classroom_sessions') {
+      console.log('🔍 DEBUG SESSION INSERT:');
+      console.log(`  Table: ${table}`);
+      console.log(`  Schema: ${schema}`);
+      console.log(`  Full table path: ${databricksConfig.catalog}.${schema}.${table}`);
+      console.log(`  Columns (${columns.length}): ${columns.join(', ')}`);
+      console.log(`  SQL: ${sql.trim()}`);
+      console.log(`  Contains engagement_score: ${columns.includes('engagement_score')}`);
+    }
+    
     await this.query(sql, values);
     return data.id || this.generateId();
   }
