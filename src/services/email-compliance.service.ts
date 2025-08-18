@@ -53,19 +53,40 @@ export class EmailComplianceService {
 
   /**
    * Record email audit trail for compliance
+   * Gracefully handles missing email_audit table
    */
   async recordEmailAudit(auditData: Partial<EmailAuditRecord>): Promise<void> {
-    const completeAuditData = {
-      ...auditData,
-      retention_date: new Date(Date.now() + (7 * 365 * 24 * 60 * 60 * 1000)), // 7 years
-      created_at: new Date(),
-    };
+    try {
+      const completeAuditData = {
+        ...auditData,
+        retention_date: new Date(Date.now() + (7 * 365 * 24 * 60 * 60 * 1000)), // 7 years
+        created_at: new Date(),
+      };
 
-    await databricksService.insert('compliance.email_audit', completeAuditData);
+      await databricksService.insert('compliance.email_audit', completeAuditData);
+      console.log(`✅ Email compliance audit record created`);
+    } catch (auditError: any) {
+      const errorMessage = auditError?.message || String(auditError);
+      
+      if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND') || errorMessage.includes('email_audit')) {
+        console.warn(`⚠️ Email audit table missing - compliance audit skipped:`, {
+          error: 'compliance.email_audit table not found',
+          suggestion: 'Run: npx ts-node src/scripts/add-email-fields.ts to create missing table'
+        });
+      } else {
+        console.error(`❌ Failed to record email compliance audit (non-critical):`, {
+          error: errorMessage,
+          auditError
+        });
+      }
+      
+      // Don't throw - audit failure should not block email operations
+    }
   }
 
   /**
    * Get email delivery statistics for monitoring
+   * Gracefully handles missing email_audit table
    */
   async getEmailDeliveryStats(timeframe: '24h' | '7d' | '30d' = '24h'): Promise<{
     totalSent: number;
@@ -73,51 +94,83 @@ export class EmailComplianceService {
     deliveryRate: number;
     recentFailures: any[];
   }> {
-    const intervalMap = {
-      '24h': '24 HOUR',
-      '7d': '7 DAY', 
-      '30d': '30 DAY'
-    };
+    try {
+      const intervalMap = {
+        '24h': '24 HOUR',
+        '7d': '7 DAY', 
+        '30d': '30 DAY'
+      };
 
-    const interval = intervalMap[timeframe];
+      const interval = intervalMap[timeframe];
 
-    // Get overall stats
-    const stats = await databricksService.queryOne(`
-      SELECT 
-        COUNT(CASE WHEN delivery_status = 'sent' THEN 1 END) as total_sent,
-        COUNT(CASE WHEN delivery_status = 'failed' THEN 1 END) as total_failed,
-        COUNT(*) as total_emails
-      FROM classwaves.compliance.email_audit
-      WHERE created_at > CURRENT_TIMESTAMP - INTERVAL ${interval}
-    `);
+      // Get overall stats
+      const stats = await databricksService.queryOne(`
+        SELECT 
+          COUNT(CASE WHEN delivery_status = 'sent' THEN 1 END) as total_sent,
+          COUNT(CASE WHEN delivery_status = 'failed' THEN 1 END) as total_failed,
+          COUNT(*) as total_emails
+        FROM classwaves.compliance.email_audit
+        WHERE created_at > CURRENT_TIMESTAMP - INTERVAL ${interval}
+      `);
 
-    // Get recent failures for investigation
-    const recentFailures = await databricksService.query(`
-      SELECT 
-        id,
-        recipient_email,
-        session_id,
-        failure_reason,
-        created_at as failed_at
-      FROM classwaves.compliance.email_audit
-      WHERE delivery_status = 'failed'
-        AND created_at > CURRENT_TIMESTAMP - INTERVAL ${interval}
-      ORDER BY created_at DESC
-      LIMIT 10
-    `);
+      // Get recent failures for investigation
+      const recentFailures = await databricksService.query(`
+        SELECT 
+          id,
+          recipient_email,
+          session_id,
+          failure_reason,
+          created_at as failed_at
+        FROM classwaves.compliance.email_audit
+        WHERE delivery_status = 'failed'
+          AND created_at > CURRENT_TIMESTAMP - INTERVAL ${interval}
+        ORDER BY created_at DESC
+        LIMIT 10
+      `);
 
-    const totalSent = stats?.total_sent || 0;
-    const totalFailed = stats?.total_failed || 0;
-    const totalEmails = stats?.total_emails || 0;
-    
-    const deliveryRate = totalEmails > 0 ? (totalSent / totalEmails) * 100 : 0;
+      const totalSent = stats?.total_sent || 0;
+      const totalFailed = stats?.total_failed || 0;
+      const totalEmails = stats?.total_emails || 0;
+      
+      const deliveryRate = totalEmails > 0 ? (totalSent / totalEmails) * 100 : 0;
 
-    return {
-      totalSent,
-      totalFailed,
-      deliveryRate: Math.round(deliveryRate * 100) / 100, // Round to 2 decimal places
-      recentFailures
-    };
+      return {
+        totalSent,
+        totalFailed,
+        deliveryRate: Math.round(deliveryRate * 100) / 100, // Round to 2 decimal places
+        recentFailures
+      };
+    } catch (statsError: any) {
+      const errorMessage = statsError?.message || String(statsError);
+      
+      if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND') || errorMessage.includes('email_audit')) {
+        console.warn(`⚠️ Email audit table missing - returning empty stats:`, {
+          error: 'compliance.email_audit table not found',
+          suggestion: 'Run: npx ts-node src/scripts/add-email-fields.ts to create missing table'
+        });
+        
+        // Return empty stats instead of failing
+        return {
+          totalSent: 0,
+          totalFailed: 0,
+          deliveryRate: 0,
+          recentFailures: []
+        };
+      } else {
+        console.error(`❌ Failed to get email delivery stats:`, {
+          error: errorMessage,
+          statsError
+        });
+        
+        // Return empty stats for any other error
+        return {
+          totalSent: 0,
+          totalFailed: 0,
+          deliveryRate: 0,
+          recentFailures: []
+        };
+      }
+    }
   }
 
   /**

@@ -7,6 +7,7 @@
 
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 import { analyticsLogger } from '../utils/analytics-logger';
 
 interface SessionMetricsCache {
@@ -444,17 +445,17 @@ export class RealTimeAnalyticsCacheService {
 
   private async fetchAndCacheSessionMetrics(sessionId: string): Promise<SessionMetricsCache | null> {
     try {
-      // Fetch from Databricks
+      // Fetch from existing session_analytics_cache table in users schema
       const analytics = await databricksService.queryOne(`
         SELECT 
-          sa.total_participants,
-          sa.active_participants as active_groups,
-          sa.overall_engagement_score,
-          sa.participation_rate,
-          sa.analysis_timestamp
-        FROM session_analytics sa
-        WHERE sa.session_id = ? AND sa.analysis_type = 'real_time'
-        ORDER BY sa.analysis_timestamp DESC
+          session_overall_score,
+          participation_rate,
+          total_participants, 
+          avg_engagement_score,
+          actual_groups,
+          cached_at
+        FROM ${databricksConfig.catalog}.users.session_analytics_cache
+        WHERE session_id = ?
         LIMIT 1
       `, [sessionId]);
 
@@ -464,14 +465,14 @@ export class RealTimeAnalyticsCacheService {
 
       const metrics: SessionMetricsCache = {
         sessionId,
-        activeGroups: analytics.active_groups || 0,
-        readyGroups: 0, // Will be calculated from group data
+        activeGroups: analytics.actual_groups || 0,
+        readyGroups: 0, // Would need to query groups separately
         totalParticipants: analytics.total_participants || 0,
-        averageEngagement: analytics.overall_engagement_score || 0,
+        averageEngagement: analytics.avg_engagement_score || 0,
         averageParticipation: analytics.participation_rate || 0,
         alertsActive: [], // Will be populated by real-time events
         lastUpdate: new Date().toISOString(),
-        calculatedAt: analytics.analysis_timestamp || new Date().toISOString()
+        calculatedAt: analytics.cached_at || new Date().toISOString()
       };
 
       // Cache the fetched data

@@ -410,14 +410,14 @@ export class DatabricksService {
       'groups': 'sessions', // Alias
       'transcriptions': 'sessions',
       
-      // Analytics schema
-      'session_metrics': 'analytics',
-      'group_metrics': 'analytics',
-      'student_metrics': 'analytics',
-      'educational_metrics': 'analytics',
-      'session_analytics': 'analytics', // Alias
-      'group_analytics': 'analytics', // Alias
-      'student_analytics': 'analytics', // Alias
+      // Analytics data stored in users schema (cache tables)
+      'session_analytics_cache': 'users',
+      'teacher_analytics_summary': 'users', 
+      'dashboard_metrics_hourly': 'users',
+      
+      // Legacy analytics table names - redirect to cache table
+      'session_analytics': 'users', // → session_analytics_cache
+      'session_metrics': 'users',   // → session_analytics_cache
       
       // Compliance schema
       'audit_log': 'compliance',

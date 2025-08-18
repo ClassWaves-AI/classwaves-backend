@@ -355,6 +355,7 @@ export class EmailService {
 
   /**
    * Record email delivery for audit trail
+   * Gracefully handles missing email_audit table to prevent session creation failures
    */
   private async recordEmailDelivery(
     sessionId: string,
@@ -363,24 +364,50 @@ export class EmailService {
     status: 'sent' | 'failed',
     error?: string
   ): Promise<void> {
-    const auditRecord: Partial<EmailAuditRecord> = {
-      id: databricksService.generateId(),
-      session_id: sessionId,
-      recipient_email: recipient,
-      recipient_role: 'group_leader',
-      template_id: templateId,
-      subject: this.getSubjectForTemplate(templateId, { sessionTitle: 'Session' }),
-      delivery_status: status,
-      sent_at: status === 'sent' ? new Date() : undefined,
-      failure_reason: error || undefined,
-      parent_consent_verified: true, // Verified by compliance check
-      ferpa_compliant: true,
-      coppa_compliant: true,
-      retention_date: new Date(Date.now() + (7 * 365 * 24 * 60 * 60 * 1000)), // 7 years
-      created_at: new Date(),
-    };
+    try {
+      const auditRecord: Partial<EmailAuditRecord> = {
+        id: databricksService.generateId(),
+        session_id: sessionId,
+        recipient_email: recipient,
+        recipient_role: 'group_leader',
+        template_id: templateId,
+        subject: this.getSubjectForTemplate(templateId, { sessionTitle: 'Session' }),
+        delivery_status: status,
+        sent_at: status === 'sent' ? new Date() : undefined,
+        failure_reason: error || undefined,
+        parent_consent_verified: true, // Verified by compliance check
+        ferpa_compliant: true,
+        coppa_compliant: true,
+        retention_date: new Date(Date.now() + (7 * 365 * 24 * 60 * 60 * 1000)), // 7 years
+        created_at: new Date(),
+      };
 
-    await databricksService.insert('compliance.email_audit', auditRecord);
+      await databricksService.insert('compliance.email_audit', auditRecord);
+      console.log(`✅ Email audit record created for ${recipient} (${status})`);
+    } catch (auditError: any) {
+      // Graceful degradation: Log warning but don't fail email sending
+      const errorMessage = auditError?.message || String(auditError);
+      
+      if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND') || errorMessage.includes('email_audit')) {
+        console.warn(`⚠️ Email audit table missing - email sent but not logged to audit trail:`, {
+          sessionId,
+          recipient,
+          status,
+          error: 'compliance.email_audit table not found',
+          suggestion: 'Run: npx ts-node src/scripts/add-email-fields.ts to create missing table'
+        });
+      } else {
+        console.error(`❌ Failed to record email audit (non-critical):`, {
+          sessionId,
+          recipient,
+          status,
+          error: errorMessage,
+          auditError
+        });
+      }
+      
+      // Don't throw - email audit failure should not block email delivery or session creation
+    }
   }
 
   /**
