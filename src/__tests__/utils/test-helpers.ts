@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { jest } from '@jest/globals';
 import jwt from 'jsonwebtoken';
+import { JWTConfigService } from '../../config/jwt.config';
 
 // Extend Request interface to include user property
 declare module 'express' {
@@ -45,6 +46,8 @@ export const createMockNext = () => jest.fn();
 
 // Create authenticated request
 export const createAuthenticatedRequest = (user: any, overrides: Partial<Request> = {}) => {
+  // Use centralized JWT configuration for test consistency with production
+  const jwtConfig = JWTConfigService.getInstance();
   const token = jwt.sign(
     {
       userId: user.id,
@@ -54,8 +57,11 @@ export const createAuthenticatedRequest = (user: any, overrides: Partial<Request
       type: 'access',
       sessionId: 'test-session-123',
     },
-    process.env.JWT_SECRET || 'test-secret',
-    { expiresIn: '15m' }
+    jwtConfig.getSigningKey(),
+    { 
+      algorithm: jwtConfig.getAlgorithm(),
+      expiresIn: '15m' 
+    }
   );
 
   return createMockRequest({

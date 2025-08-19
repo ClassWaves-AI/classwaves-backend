@@ -149,8 +149,8 @@ static createDeviceFingerprint(req: Request): string {
       
       // Short-lived access token (15 minutes) - Use centralized JWT configuration
       console.log('🔧 DEBUG: Signing access token');
-      const accessSigningKey = this.jwtConfig.getSigningKey();
-      const accessAlgorithm = this.jwtConfig.getAlgorithm();
+      const accessSigningKey = SecureJWTService.jwtConfig.getSigningKey();
+      const accessAlgorithm = SecureJWTService.jwtConfig.getAlgorithm();
       console.log('🔧 DEBUG: Using algorithm:', accessAlgorithm);
       
       const accessToken = jwt.sign({
@@ -170,7 +170,7 @@ static createDeviceFingerprint(req: Request): string {
         type: 'refresh',
         exp: now + this.REFRESH_TOKEN_TTL,
         jti: refreshJti
-      }, jwtRefreshSecret || this.jwtConfig.getJWTSecret(), {
+      }, jwtRefreshSecret || SecureJWTService.jwtConfig.getJWTSecret(), {
         algorithm: 'HS256'
       });
       console.log('🔧 DEBUG: Refresh token signed successfully');
@@ -211,11 +211,18 @@ static createDeviceFingerprint(req: Request): string {
     tokenType: 'access' | 'refresh' = 'access'
   ): Promise<SecureJWTPayload | null> {
     try {
-      const secret = tokenType === 'access' 
-        ? process.env.JWT_SECRET! 
-        : process.env.JWT_REFRESH_SECRET!;
+      // Use centralized JWT configuration for verification
+      const verificationKey = tokenType === 'access' 
+        ? SecureJWTService.jwtConfig.getVerificationKey()
+        : (process.env.JWT_REFRESH_SECRET! || SecureJWTService.jwtConfig.getJWTSecret());
+      
+      const algorithm = tokenType === 'access'
+        ? SecureJWTService.jwtConfig.getAlgorithm()
+        : 'HS256'; // Refresh tokens always use HS256
         
-      const payload = jwt.verify(token, secret) as SecureJWTPayload;
+      const payload = jwt.verify(token, verificationKey, {
+        algorithms: [algorithm]
+      }) as SecureJWTPayload;
       
       // SECURITY 4: Verify token type matches expected
       if (payload.type !== tokenType) {
@@ -291,10 +298,10 @@ static createDeviceFingerprint(req: Request): string {
     // Generate token using centralized JWT configuration
     const accessToken = jwt.sign(
       { ...payload, jti },
-      this.jwtConfig.getSigningKey(),
+      SecureJWTService.jwtConfig.getSigningKey(),
       {
         expiresIn: this.ACCESS_TOKEN_TTL,
-        algorithm: this.jwtConfig.getAlgorithm(),
+        algorithm: SecureJWTService.jwtConfig.getAlgorithm(),
         // The 'iat' (issued at) claim is automatically added by the library
       }
     );
