@@ -292,8 +292,17 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       await (redisService as any).set(`student:age:${studentId}`, String(dateOfBirth), 60);
     }
 
+    // Generate proper JWT token for student WebSocket authentication
+    const { SecureJWTService } = await import('../services/secure-jwt.service');
+    const studentToken = await SecureJWTService.generateStudentToken(
+      studentIdFromRoster || studentId,
+      session.id,
+      assignedGroup?.id || '',
+      sessionCode
+    );
+
     return res.json({
-      token: `student_${studentId}`,
+      token: studentToken,
       student: { 
         id: studentIdFromRoster || studentId, // Use roster ID if available
         displayName: safeDisplayName,
