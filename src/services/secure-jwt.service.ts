@@ -276,16 +276,56 @@ static createDeviceFingerprint(req: Request): string {
       role: 'student',
     };
 
+    // Use same algorithm/key logic as jwt.utils.ts verifyToken
+    const { verifyToken, generateAccessToken } = await import('../utils/jwt.utils');
+    const { generateAccessToken: generateToken } = await import('../utils/jwt.utils');
+    
+    // Generate token using the same keys/algorithm as verification
     const accessToken = jwt.sign(
       { ...payload, jti },
-      process.env.JWT_SECRET!,
+      this.getSigningKey(),
       {
         expiresIn: this.ACCESS_TOKEN_TTL,
+        algorithm: this.getAlgorithm(),
         // The 'iat' (issued at) claim is automatically added by the library
       }
     );
 
     return accessToken;
+  }
+
+  private static getSigningKey(): string {
+    // Use same key logic as jwt.utils.ts
+    const fs = require('fs');
+    const path = require('path');
+    
+    let PRIVATE_KEY = '';
+    let USE_RS256 = false;
+    
+    try {
+      const privateKeyPath = path.join(process.cwd(), 'keys', 'private.pem');
+      PRIVATE_KEY = fs.readFileSync(privateKeyPath, 'utf8');
+      USE_RS256 = !!PRIVATE_KEY;
+    } catch (error) {
+      // Fallback to HS256 with secret
+      USE_RS256 = false;
+    }
+    
+    return USE_RS256 ? PRIVATE_KEY : (process.env.JWT_SECRET || 'classwaves-jwt-secret');
+  }
+
+  private static getAlgorithm(): jwt.Algorithm {
+    // Use same algorithm logic as jwt.utils.ts  
+    const fs = require('fs');
+    const path = require('path');
+    
+    try {
+      const privateKeyPath = path.join(process.cwd(), 'keys', 'private.pem');
+      fs.readFileSync(privateKeyPath, 'utf8');
+      return 'RS256';
+    } catch (error) {
+      return 'HS256';
+    }
   }
 
   // SECURITY 8: Token rotation for enhanced security
