@@ -30,6 +30,36 @@ import client from 'prom-client';
 
 const app = express();
 
+// CRITICAL DEBUG: Add request logging at the very top level before ANY middleware
+app.use((req, res, next) => {
+  console.log('🔧 DEBUG: TOP LEVEL - Request received:', {
+    method: req.method,
+    url: req.url,
+    path: req.path,
+    headers: {
+      'content-type': req.headers['content-type'],
+      'user-agent': req.headers['user-agent'],
+      'content-length': req.headers['content-length']
+    }
+  });
+  
+  // Add response error handling
+  const originalSend = res.send;
+  res.send = function(data) {
+    if (res.statusCode >= 400) {
+      console.error('🔧 DEBUG: Error response being sent:', {
+        statusCode: res.statusCode,
+        method: req.method,
+        path: req.path,
+        data: typeof data === 'string' ? data.substring(0, 200) : data
+      });
+    }
+    return originalSend.call(this, data);
+  };
+  
+  next();
+});
+
 /**
  * SECURITY HARDENING - Phase 2 Implementation
  * 
@@ -347,14 +377,25 @@ app.use((_req, res) => {
 });
 
 // Error handling middleware
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('Error:', err);
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('🔧 DEBUG: Error middleware triggered:', {
+    error: err,
+    message: err.message,
+    stack: err.stack,
+    method: req.method,
+    path: req.path,
+    headers: req.headers
+  });
+  
   const isDevelopment = process.env.NODE_ENV === 'development';
-  res.status(err.status || 500).json({
+  const response = {
     error: err.code || 'INTERNAL_ERROR',
     message: err.message || 'An unexpected error occurred',
     ...(isDevelopment && { stack: err.stack }),
-  });
+  };
+  
+  console.error('🔧 DEBUG: Sending error response:', response);
+  res.status(err.status || 500).json(response);
 });
 
 export default app;
