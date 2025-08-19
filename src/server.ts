@@ -28,8 +28,21 @@ async function startServer() {
       }
     }
     
-    // Create HTTP server
+    // Create HTTP server with debugging
     const httpServer = createServer(app);
+    
+    // CRITICAL DEBUG: Log all HTTP requests at server level BEFORE Express
+    httpServer.on('request', (req, res) => {
+      console.log('🔧 DEBUG: HTTP SERVER - Request received:', {
+        method: req.method,
+        url: req.url,
+        headers: {
+          'content-type': req.headers['content-type'],
+          'content-length': req.headers['content-length'],
+          'user-agent': req.headers['user-agent']
+        }
+      });
+    });
     
     // Initialize Namespaced WebSocket server (after Redis is ready)
     const wsService = initializeNamespacedWebSocket(httpServer);
