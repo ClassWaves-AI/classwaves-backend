@@ -43,9 +43,9 @@ export abstract class NamespaceBaseService {
             [decoded.userId]
           );
         } else if (decoded.role === 'student') {
-          // Verify student exists and is active  
+          // Verify student exists in active session participants
           user = await databricksService.queryOne(
-            `SELECT id, status FROM classwaves.users.students WHERE id = ? AND status = 'active'`,
+            `SELECT student_id as id, 'active' as status FROM classwaves.sessions.participants WHERE student_id = ? AND is_active = true`,
             [decoded.userId]
           );
           // Students don't have a role column, so use token role

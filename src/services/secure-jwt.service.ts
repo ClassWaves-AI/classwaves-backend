@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { Request } from 'express';
 import { Teacher, School } from '../types/auth.types';
 import { redisService } from './redis.service';
+import { JWTConfigService } from '../config/jwt.config';
 
 interface SecureJWTPayload {
   userId: string;
@@ -48,6 +49,9 @@ export class SecureJWTService {
   private static readonly REFRESH_TOKEN_TTL = 7 * 24 * 60 * 60; // 7 days
   private static readonly BLACKLIST_PREFIX = 'blacklist:';
   private static readonly BLACKLIST_CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+  
+  // Centralized JWT configuration service
+  private static readonly jwtConfig = JWTConfigService.getInstance();
   
     // SECURITY 1: Device fingerprinting to prevent token theft
 static createDeviceFingerprint(req: Request): string {
@@ -143,24 +147,32 @@ static createDeviceFingerprint(req: Request): string {
         throw new Error('JWT secrets not available');
       }
       
-      // Short-lived access token (15 minutes)
+      // Short-lived access token (15 minutes) - Use centralized JWT configuration
       console.log('🔧 DEBUG: Signing access token');
+      const accessSigningKey = this.jwtConfig.getSigningKey();
+      const accessAlgorithm = this.jwtConfig.getAlgorithm();
+      console.log('🔧 DEBUG: Using algorithm:', accessAlgorithm);
+      
       const accessToken = jwt.sign({
         ...basePayload,
         type: 'access',
         exp: now + this.ACCESS_TOKEN_TTL,
         jti: accessJti
-      }, jwtSecret);
+      }, accessSigningKey, {
+        algorithm: accessAlgorithm
+      });
       console.log('🔧 DEBUG: Access token signed successfully');
       
-      // Longer-lived refresh token (7 days)
+      // Longer-lived refresh token (7 days) - Use HS256 with refresh secret per auth design
       console.log('🔧 DEBUG: Signing refresh token');
       const refreshToken = jwt.sign({
         ...basePayload,
         type: 'refresh',
         exp: now + this.REFRESH_TOKEN_TTL,
         jti: refreshJti
-      }, jwtRefreshSecret);
+      }, jwtRefreshSecret || this.jwtConfig.getJWTSecret(), {
+        algorithm: 'HS256'
+      });
       console.log('🔧 DEBUG: Refresh token signed successfully');
       
       // Store token metadata for tracking and revocation
@@ -276,17 +288,13 @@ static createDeviceFingerprint(req: Request): string {
       role: 'student',
     };
 
-    // Use same algorithm/key logic as jwt.utils.ts verifyToken
-    const { verifyToken, generateAccessToken } = await import('../utils/jwt.utils');
-    const { generateAccessToken: generateToken } = await import('../utils/jwt.utils');
-    
-    // Generate token using the same keys/algorithm as verification
+    // Generate token using centralized JWT configuration
     const accessToken = jwt.sign(
       { ...payload, jti },
-      this.getSigningKey(),
+      this.jwtConfig.getSigningKey(),
       {
         expiresIn: this.ACCESS_TOKEN_TTL,
-        algorithm: this.getAlgorithm(),
+        algorithm: this.jwtConfig.getAlgorithm(),
         // The 'iat' (issued at) claim is automatically added by the library
       }
     );
@@ -294,39 +302,8 @@ static createDeviceFingerprint(req: Request): string {
     return accessToken;
   }
 
-  private static getSigningKey(): string {
-    // Use same key logic as jwt.utils.ts
-    const fs = require('fs');
-    const path = require('path');
-    
-    let PRIVATE_KEY = '';
-    let USE_RS256 = false;
-    
-    try {
-      const privateKeyPath = path.join(process.cwd(), 'keys', 'private.pem');
-      PRIVATE_KEY = fs.readFileSync(privateKeyPath, 'utf8');
-      USE_RS256 = !!PRIVATE_KEY;
-    } catch (error) {
-      // Fallback to HS256 with secret
-      USE_RS256 = false;
-    }
-    
-    return USE_RS256 ? PRIVATE_KEY : (process.env.JWT_SECRET || 'classwaves-jwt-secret');
-  }
-
-  private static getAlgorithm(): jwt.Algorithm {
-    // Use same algorithm logic as jwt.utils.ts  
-    const fs = require('fs');
-    const path = require('path');
-    
-    try {
-      const privateKeyPath = path.join(process.cwd(), 'keys', 'private.pem');
-      fs.readFileSync(privateKeyPath, 'utf8');
-      return 'RS256';
-    } catch (error) {
-      return 'HS256';
-    }
-  }
+  // REMOVED: getSigningKey() and getAlgorithm() methods
+  // Now using centralized JWTConfigService for consistent algorithm detection and key management
 
   // SECURITY 8: Token rotation for enhanced security
   static async rotateTokens(
