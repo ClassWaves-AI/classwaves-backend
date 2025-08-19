@@ -65,7 +65,13 @@ const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     // In dev, allow all origins for simplicity, but log violations
     if (process.env.NODE_ENV !== 'production') {
-      if (origin && !['http://localhost:3001', 'http://127.0.0.1:3001'].includes(origin)) {
+      const allowedDevOrigins = [
+        'http://localhost:3001',  // Frontend
+        'http://127.0.0.1:3001', // Frontend (alternative)
+        'http://localhost:3003',  // Student Portal
+        'http://127.0.0.1:3003'   // Student Portal (alternative)
+      ];
+      if (origin && !allowedDevOrigins.includes(origin)) {
         console.warn(`🚨 CORS VIOLATION: Origin ${origin} not in dev whitelist`);
       }
       callback(null, true);

@@ -17,6 +17,12 @@ interface SecureJWTPayload {
   jti: string; // JWT ID for anti-replay
 }
 
+interface StudentJWTPayload extends Omit<SecureJWTPayload, 'email' | 'schoolId' | 'fingerprint'> {
+  studentId: string;
+  groupId: string;
+  sessionCode: string;
+}
+
 interface TokenPair {
   accessToken: string;
   refreshToken: string;
@@ -162,8 +168,8 @@ export class SecureJWTService {
       }
       
       // Mark refresh token as used to prevent replay
-      if (tokenType === 'refresh') {
-        await redisService.set(replayKey, '1', this.REFRESH_TOKEN_TTL);
+      if (payload.type === 'refresh') {
+        await redisService.set(replayKey, 'used', this.ACCESS_TOKEN_TTL);
       }
       
       return payload;
@@ -175,7 +181,38 @@ export class SecureJWTService {
       return null;
     }
   }
-  
+
+  static async generateStudentToken(
+    studentId: string,
+    sessionId: string,
+    groupId: string,
+    sessionCode: string,
+  ): Promise<string> {
+    const jti = crypto.randomBytes(16).toString('hex');
+    const now = Math.floor(Date.now() / 1000);
+
+    const payload: Omit<StudentJWTPayload, 'iat' | 'exp' | 'jti'> = {
+      userId: studentId, // For consistency with teacher payload
+      studentId,
+      sessionId,
+      groupId,
+      sessionCode,
+      type: 'access',
+      role: 'student',
+    };
+
+    const accessToken = jwt.sign(
+      { ...payload, jti },
+      process.env.JWT_SECRET!,
+      {
+        expiresIn: this.ACCESS_TOKEN_TTL,
+        // The 'iat' (issued at) claim is automatically added by the library
+      }
+    );
+
+    return accessToken;
+  }
+
   // SECURITY 8: Token rotation for enhanced security
   static async rotateTokens(
     refreshToken: string,

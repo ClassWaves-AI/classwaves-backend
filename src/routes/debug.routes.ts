@@ -1,7 +1,121 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { databricksService } from '../services/databricks.service';
+import { SecureJWTService } from '../services/secure-jwt.service';
 
 const router = Router();
+
+// Middleware to protect test-only endpoints
+const requireTestSecret = (req: Request, res: Response, next: NextFunction) => {
+  if (process.env.NODE_ENV !== 'test' || req.header('E2E_TEST_SECRET') !== 'test') {
+    return res.status(403).json({ success: false, error: 'Forbidden: This endpoint is for testing only.' });
+  }
+  next();
+};
+
+/**
+ * Endpoint to generate a student token for E2E testing.
+ * Creates a test session, student, group, and group membership.
+ *
+ * @see /Users/rtaroncher/Documents/SandBoxAI/ClassWaves/checkpoints/WIP/Features/STUDENT_PORTAL_E2E_TESTING_SOW.md
+ */
+router.post('/generate-student-token', requireTestSecret, async (req, res) => {
+  try {
+    const { sessionCode, studentName, gradeLevel, isLeader, isUnderage } = req.body;
+    if (!sessionCode || !studentName || !gradeLevel) {
+      return res.status(400).json({ success: false, error: 'sessionCode, studentName, and gradeLevel are required.' });
+    }
+
+    // 1. Find or create the test session
+    let session = await databricksService.queryOne('SELECT * FROM classwaves.sessions.classroom_sessions WHERE access_code = ?', [sessionCode]);
+    if (!session) {
+      const newSession = await databricksService.createSession({
+        title: `E2E Test Session ${sessionCode}`,
+        description: 'An automated test session.',
+        teacherId: 'e2e-test-teacher',
+        schoolId: 'e2e-test-school',
+        access_code: sessionCode,
+        targetGroupSize: 4,
+        autoGroupEnabled: true,
+        scheduledStart: new Date(),
+        plannedDuration: 60,
+      });
+      session = { id: newSession.sessionId, ...newSession };
+    }
+    const sessionId = session.id;
+
+    // 2. Create the test student first to get an ID for the leader
+    const studentId = databricksService.generateId();
+    const student = {
+      id: studentId,
+      name: studentName,
+      grade_level: gradeLevel,
+      school_id: 'e2e-test-school',
+      email_consent: !isUnderage, // No consent by default if underage
+      coppa_compliant: !isUnderage,
+      teacher_verified_age: !isUnderage,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    await databricksService.insert('students', student);
+
+    // 3. Find or create the test group, now with leader information
+    let group = await databricksService.queryOne('SELECT * FROM classwaves.sessions.student_groups WHERE session_id = ? AND name = ?', [sessionId, 'E2E Test Group']);
+    const groupId = group ? group.id : databricksService.generateId();
+
+    if (!group) {
+        await databricksService.insert('student_groups', {
+            id: groupId,
+            session_id: sessionId,
+            name: 'E2E Test Group',
+            group_number: 1,
+            status: 'waiting',
+            is_ready: false,
+            leader_id: isLeader ? studentId : null,
+            // Add other required fields with default values
+            max_size: 4,
+            current_size: 0,
+            auto_managed: true,
+            created_at: new Date(),
+            updated_at: new Date(),
+        });
+    } else if (isLeader) {
+        // If the group exists and we need to set the leader, update it.
+        await databricksService.update('student_groups', groupId, { leader_id: studentId });
+    }
+    group = await databricksService.queryOne('SELECT * FROM classwaves.sessions.student_groups WHERE id = ?', [groupId]);
+
+    // 4. Create the group membership
+    await databricksService.insert('student_group_members', {
+      id: databricksService.generateId(),
+      session_id: sessionId,
+      group_id: groupId,
+      student_id: studentId,
+      created_at: new Date(),
+    });
+
+    // 5. Generate the student token
+    const token = await SecureJWTService.generateStudentToken(
+      studentId,
+      sessionId,
+      groupId,
+      sessionCode
+    );
+
+    res.json({
+      success: true,
+      token,
+      student,
+      session,
+      group,
+    });
+
+  } catch (error) {
+    console.error('❌ Generate student token error:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ success: false, error: errorMessage });
+  }
+});
+
 
 // Test database connection and table access
 router.get('/test-db', async (req, res) => {

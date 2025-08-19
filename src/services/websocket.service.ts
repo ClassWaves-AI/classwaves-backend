@@ -53,6 +53,9 @@ interface ClientToServerEvents {
   // Teacher dashboard session control (to match frontend client)
   'session:join': (data: { session_id?: string; sessionId?: string }) => void;
   'session:leave': (data: { session_id?: string; sessionId?: string }) => void;
+  
+  // Student session control
+  'student:session:join': (data: { sessionId: string }) => void;
   'session:update_status': (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => void;
 
   // Delivery confirmation events
@@ -67,6 +70,7 @@ interface ServerToClientEvents {
   'group:left': (data: { groupId: string }) => void;
   'group:status_changed': (data: { groupId: string; status: string; isReady?: boolean }) => void;
   'session:status_changed': (data: { sessionId: string; status: string }) => void;
+  'student:session:joined': (data: { sessionId: string; groupId: string; groupName: string }) => void;
   
   // Group-centric real-time events
   'transcription:group:new': (data: { 
@@ -150,7 +154,7 @@ export class WebSocketService {
       cors: {
         origin: process.env.NODE_ENV === 'production'
           ? ['https://classwaves.com', 'https://app.classwaves.com']
-          : ['http://localhost:3001'], // Frontend runs on 3001
+          : ['http://localhost:3001', 'http://localhost:3003'], // Frontend on 3001, Student Portal on 3003
         credentials: true,
       },
       transports: ['websocket', 'polling'],
@@ -283,6 +287,57 @@ export class WebSocketService {
           socket.emit('sessionLeft', { sessionCode: sessionId });
         } catch (err) {
           socket.emit('error', { code: 'SESSION_LEAVE_FAILED', message: 'Failed to leave session' });
+        }
+      });
+
+      // Student-specific session join handler
+      // Students need to join session rooms to receive group status updates
+      socket.on('student:session:join', async (data: { sessionId: string }) => {
+        try {
+          const { sessionId } = data;
+          if (!sessionId) {
+            socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'sessionId is required' });
+            return;
+          }
+
+          // Verify student is a participant in this session
+          const participant = await databricksService.queryOne(
+            `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
+             FROM classwaves.sessions.participants p 
+             LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
+             WHERE p.session_id = ? AND p.student_id = ?`,
+            [sessionId, socket.data.userId]
+          );
+          
+          if (!participant) {
+            socket.emit('error', { 
+              code: 'SESSION_ACCESS_DENIED', 
+              message: 'Student not enrolled in this session' 
+            });
+            return;
+          }
+
+          // Join session room to receive group status updates
+          await socket.join(`session:${sessionId}`);
+          
+          // Also join group-specific room if assigned
+          if (participant.group_id) {
+            await socket.join(`group:${participant.group_id}`);
+          }
+
+          socket.emit('student:session:joined', { 
+            sessionId,
+            groupId: participant.group_id,
+            groupName: participant.group_name
+          });
+          
+          console.log(`Student ${socket.data.userId} joined session ${sessionId} and group ${participant.group_id}`);
+        } catch (error) {
+          console.error('Student session join error:', error);
+          socket.emit('error', { 
+            code: 'STUDENT_SESSION_JOIN_FAILED', 
+            message: 'Failed to join session as student' 
+          });
         }
       });
 
