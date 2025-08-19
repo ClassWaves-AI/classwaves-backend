@@ -637,8 +637,7 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
     console.error('🔧 DEBUG: Error details:', {
       message: error instanceof Error ? error.message : 'Unknown error',
       stack: error instanceof Error ? error.stack : 'No stack trace',
-      name: error instanceof Error ? error.name : 'Unknown',
-      cause: error instanceof Error ? error.cause : undefined
+      name: error instanceof Error ? error.name : 'Unknown'
     });
     
     return res.status(500).json({
