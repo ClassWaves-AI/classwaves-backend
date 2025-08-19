@@ -123,7 +123,13 @@ export const rateLimitMiddleware = async (req: Request, res: Response, next: Fun
 
 // Stricter rate limiting for auth endpoints
 export const authRateLimitMiddleware = async (req: Request, res: Response, next: Function) => {
+  console.log('🔧 DEBUG: Auth rate limit middleware called');
+  console.log('🔧 DEBUG: NODE_ENV:', process.env.NODE_ENV);
+  console.log('🔧 DEBUG: Request path:', req.path);
+  console.log('🔧 DEBUG: Rate limiter initialized:', authRateLimiterInitialized);
+  
   if (process.env.NODE_ENV === 'test') {
+    console.log('🔧 DEBUG: Skipping auth rate limit in test environment');
     return next();
   }
   // If auth rate limiter hasn't been initialized yet, allow the request but log warning
@@ -134,6 +140,7 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
 
   try {
     const key = req.ip || 'unknown';
+    console.log('🔧 DEBUG: Auth rate limiter key:', key);
     
     // Add timeout to prevent Redis hanging
     const rateLimitPromise = authRateLimiter.consume(key);
@@ -141,14 +148,24 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
       setTimeout(() => reject(new Error('Auth rate limit timeout')), 2000)
     );
     
+    console.log('🔧 DEBUG: About to check auth rate limit');
     await Promise.race([rateLimitPromise, timeoutPromise]);
+    console.log('🔧 DEBUG: Auth rate limit check passed');
     next();
   } catch (rejRes: any) {
+    console.error('🔧 DEBUG: Auth rate limiter error:', rejRes);
+    
     if (rejRes.message === 'Auth rate limit timeout') {
       console.warn('⚠️  Auth rate limiter timeout, allowing request');
       return next();
     }
     
+    if (rejRes.message && rejRes.message.includes('timeout')) {
+      console.warn('⚠️  Auth rate limiter general timeout, allowing request');
+      return next();
+    }
+    
+    console.error('🔧 DEBUG: Rate limit exceeded, returning 429');
     res.status(429).json({
       error: 'AUTH_RATE_LIMIT_EXCEEDED',
       message: 'Too many authentication attempts, please try again later',
