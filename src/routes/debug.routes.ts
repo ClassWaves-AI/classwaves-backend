@@ -6,7 +6,7 @@ const router = Router();
 
 // Middleware to protect test-only endpoints
 const requireTestSecret = (req: Request, res: Response, next: NextFunction) => {
-  if (process.env.NODE_ENV !== 'test' || req.header('E2E_TEST_SECRET') !== 'test') {
+  if (process.env.NODE_ENV !== 'test' || req.header('e2e_test_secret') !== 'test') {
     return res.status(403).json({ success: false, error: 'Forbidden: This endpoint is for testing only.' });
   }
   next();
