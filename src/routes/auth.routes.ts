@@ -87,7 +87,15 @@ router.get('/csrf-token', authenticate, async (req, res) => {
 });
 
 // Generate test token for E2E testing (test environment only)
-router.post('/generate-test-token', validate(generateTestTokenSchema), generateTestTokenHandler);
+router.post('/generate-test-token', (req, res, next) => {
+  console.log('🔧 DEBUG: Route /generate-test-token hit');
+  console.log('🔧 DEBUG: Request method:', req.method);
+  console.log('🔧 DEBUG: Request headers:', req.headers);
+  console.log('🔧 DEBUG: Request body:', req.body);
+  console.log('🔧 DEBUG: NODE_ENV:', process.env.NODE_ENV);
+  console.log('🔧 DEBUG: E2E_TEST_SECRET:', process.env.E2E_TEST_SECRET);
+  next();
+}, validate(generateTestTokenSchema), generateTestTokenHandler);
 
 // ============================================================================
 // Health Monitoring Endpoints
