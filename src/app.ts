@@ -250,11 +250,16 @@ app.get('/api/v1/health', async (_req, res) => {
       checks.services.redis = 'unhealthy';
     }
 
-    try {
-      await databricksService.query('SELECT 1');
-      checks.services.databricks = 'healthy';
-    } catch {
-      checks.services.databricks = 'unhealthy';
+    // Skip Databricks health check in test mode
+    if (process.env.NODE_ENV === 'test' || process.env.DATABRICKS_ENABLED === 'false') {
+      checks.services.databricks = 'disabled';
+    } else {
+      try {
+        await databricksService.query('SELECT 1');
+        checks.services.databricks = 'healthy';
+      } catch {
+        checks.services.databricks = 'unhealthy';
+      }
     }
 
     try {
