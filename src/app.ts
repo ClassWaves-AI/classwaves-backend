@@ -30,6 +30,16 @@ import client from 'prom-client';
 
 const app = express();
 
+// CRITICAL DEBUG: Add global error handling to catch uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('🔧 DEBUG: Uncaught Exception:', error);
+  console.error('🔧 DEBUG: Stack:', error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔧 DEBUG: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // CRITICAL DEBUG: Add request logging at the very top level before ANY middleware
 app.use((req, res, next) => {
   console.log('🔧 DEBUG: TOP LEVEL - Request received:', {
@@ -250,8 +260,27 @@ app.use((req, res, next) => {
 app.use('/api/', rateLimitMiddleware);
 app.use('/api/v1/auth', authRateLimitMiddleware);
 
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
+// Body parsing middleware with debugging
+app.use((req, res, next) => {
+  console.log('🔧 DEBUG: About to parse JSON body for:', req.method, req.path);
+  next();
+});
+
+app.use(express.json({ 
+  limit: '10mb',
+  verify: (req: any, res, buf) => {
+    console.log('🔧 DEBUG: JSON parsing - body length:', buf.length);
+  }
+}));
+
+app.use((err: any, req: any, res: any, next: any) => {
+  if (err && err.type === 'entity.parse.failed') {
+    console.error('🔧 DEBUG: JSON parsing error:', err);
+    return res.status(400).json({ error: 'JSON_PARSE_ERROR', message: err.message });
+  }
+  next(err);
+});
+
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Cookie parsing middleware
