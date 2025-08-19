@@ -14,7 +14,7 @@ const requireTestSecret = (req: Request, res: Response, next: NextFunction) => {
 
 /**
  * Endpoint to generate a student token for E2E testing.
- * Creates a test session, student, group, and group membership.
+ * Creates mock test data without database operations for SQLite compatibility.
  *
  * @see /Users/rtaroncher/Documents/SandBoxAI/ClassWaves/checkpoints/WIP/Features/STUDENT_PORTAL_E2E_TESTING_SOW.md
  */
@@ -25,177 +25,26 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
       return res.status(400).json({ success: false, error: 'sessionCode, studentName, and gradeLevel are required.' });
     }
 
-    // 1. Find or create the test session
-    let session = await databricksService.queryOne('SELECT * FROM classwaves.sessions.classroom_sessions WHERE access_code = ?', [sessionCode]);
-    if (!session) {
-      const sessionId = (databricksService as any).generateId();
-      await databricksService.insert('classroom_sessions', {
-        id: sessionId,
-        title: `E2E Test Session ${sessionCode}`,
-        description: 'An automated test session.',
-        teacher_id: 'e2e-test-teacher',
-        school_id: 'e2e-test-school',
-        access_code: sessionCode,
-        target_group_size: 4,
-        auto_group_enabled: true,
-        scheduled_start: new Date(),
-        planned_duration_minutes: 60,
-        status: 'created',
-        recording_enabled: false,
-        transcription_enabled: true,
-        ai_analysis_enabled: true,
-        ferpa_compliant: true,
-        coppa_compliant: true,
-        recording_consent_obtained: false,
-        data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000),
-        total_groups: 0,
-        total_students: 0,
-        end_reason: '',
-        teacher_notes: '',
-        engagement_score: 0.0,
-        created_at: new Date(),
-        updated_at: new Date(),
-      });
-      session = { id: sessionId, access_code: sessionCode };
-    }
-    const sessionId = session.id;
+    console.log('🔧 Generating student token for E2E test:', { sessionCode, studentName, gradeLevel });
 
-    // 2. Create the test student first to get an ID for the leader
-    const studentId = databricksService.generateId();
-    const student = {
-      id: studentId,
-      name: studentName,
-      grade_level: gradeLevel,
-      school_id: 'e2e-test-school',
-      email_consent: !isUnderage, // No consent by default if underage
-      coppa_compliant: !isUnderage,
-      teacher_verified_age: !isUnderage,
-      created_at: new Date(),
-      updated_at: new Date(),
-    };
-    await databricksService.insert('students', student);
+    // For E2E testing, create mock IDs and data without database operations
+    const sessionId = `e2e-session-${sessionCode}`;
+    const studentId = `e2e-student-${Date.now()}`;
+    const groupId = `e2e-group-${Date.now()}`;
 
-    // 3. Find or create the test group, now with leader information
-    let group = await databricksService.queryOne('SELECT * FROM classwaves.sessions.student_groups WHERE session_id = ? AND name = ?', [sessionId, 'E2E Test Group']);
-    const groupId = group ? group.id : databricksService.generateId();
-
-    if (!group) {
-        await databricksService.insert('student_groups', {
-            id: groupId,
-            session_id: sessionId,
-            name: 'E2E Test Group',
-            group_number: 1,
-            status: 'waiting',
-            is_ready: false,
-            leader_id: isLeader ? studentId : null,
-            // Add other required fields with default values
-            max_size: 4,
-            current_size: 0,
-            auto_managed: true,
-            created_at: new Date(),
-            updated_at: new Date(),
-        });
-    } else if (isLeader) {
-        // If the group exists and we need to set the leader, update it.
-        await databricksService.update('student_groups', groupId, { leader_id: studentId });
-    }
-    group = await databricksService.queryOne('SELECT * FROM classwaves.sessions.student_groups WHERE id = ?', [groupId]);
-
-    // 4. Create the group membership
-    await databricksService.insert('student_group_members', {
-      id: databricksService.generateId(),
-      session_id: sessionId,
-      group_id: groupId,
-      student_id: studentId,
-      created_at: new Date(),
-    });
-
-    // 5. Generate the student token
-    const token = await SecureJWTService.generateStudentToken(
-      studentId,
-      sessionId,
-      groupId,
-      sessionCode
-    );
-
-    res.json({
-      success: true,
-      token,
-      student,
-      session,
-      group,
-    });
-
-  } catch (error) {
-    console.error('❌ Generate student token error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ success: false, error: errorMessage });
-  }
-});
-
-
-// Test database connection and table access
-router.get('/test-db', async (req, res) => {
-  try {
-    console.log('🔧 Testing database connection...');
-    
-    // Test basic connection
-    const result = await databricksService.query('SELECT 1 as test');
-    console.log('✅ Basic query successful:', result);
-    
-    // Test what tables exist in sessions schema
-    const tablesInSchema = await databricksService.query('SHOW TABLES IN classwaves.sessions');
-    console.log('✅ Tables in sessions schema:', tablesInSchema);
-    
-    // Test table access for existing tables only
-    const sessionTable = await databricksService.query('DESCRIBE classwaves.sessions.classroom_sessions');
-    
-    console.log('✅ Session table structure:', sessionTable);
-    
-    res.json({
-      success: true,
-      data: {
-        basicQuery: result,
-        tablesInSchema: tablesInSchema,
-        sessionTable: sessionTable
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Database test error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
-
-// Test minimal session creation
-router.post('/test-session-insert', async (req, res) => {
-  try {
-    console.log('🔧 Testing minimal session insert...');
-    
-    const sessionId = `test-${Date.now()}`;
-    const accessCode = Math.random().toString(36).slice(2, 8).toUpperCase();
-    
-    const sessionData = {
+    // Create mock entities for E2E testing (no database calls)
+    const session = {
       id: sessionId,
-      title: 'Debug Test Session',
-      description: 'Testing minimal session creation',
-      status: 'created',
-      scheduled_start: new Date(),
-      actual_duration_minutes: 0,
-      planned_duration_minutes: 45,
-      max_students: 999,
+      title: `E2E Test Session ${sessionCode}`,
+      description: 'An automated test session.',
+      teacher_id: 'e2e-test-teacher',
+      school_id: 'e2e-test-school',
+      access_code: sessionCode,
       target_group_size: 4,
-      auto_group_enabled: false,
-      teacher_id: 'test-teacher-123',
-      school_id: 'test-school-456',
+      auto_group_enabled: true,
+      scheduled_start: new Date(),
+      planned_duration_minutes: 60,
+      status: 'created',
       recording_enabled: false,
       transcription_enabled: true,
       ai_analysis_enabled: true,
@@ -204,8 +53,7 @@ router.post('/test-session-insert', async (req, res) => {
       recording_consent_obtained: false,
       data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000),
       total_groups: 1,
-      total_students: 2,
-      access_code: accessCode,
+      total_students: 1,
       end_reason: '',
       teacher_notes: '',
       engagement_score: 0.0,
@@ -213,337 +61,56 @@ router.post('/test-session-insert', async (req, res) => {
       updated_at: new Date(),
     };
 
-    console.log('📝 Attempting to insert session with data:', JSON.stringify(sessionData, null, 2));
-    
-    await databricksService.insert('classroom_sessions', sessionData);
-    
-    console.log('✅ Session insert successful!');
-    
-    res.json({
-      success: true,
-      data: {
-        sessionId,
-        accessCode,
-        message: 'Session created successfully'
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Session insert error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack,
-        type: typeof error,
-        constructor: error?.constructor?.name
-      }
-    });
-  }
-});
-
-// Check student_groups table structure
-router.get('/check-groups-table', async (req, res) => {
-  try {
-    const groupsTable = await databricksService.query('DESCRIBE classwaves.sessions.student_groups');
-    
-    res.json({
-      success: true,
-      data: {
-        groupsTable: groupsTable
-      }
-    });
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
-
-// Test group creation
-router.post('/test-group-insert', async (req, res) => {
-  try {
-    console.log('🔧 Testing group insert...');
-    
-    const sessionId = `test-session-${Date.now()}`;
-    const groupId = `test-group-${Date.now()}`;
-    
-    const groupData = {
-      id: groupId,
-      session_id: sessionId,
-      name: 'Debug Test Group',
-      group_number: 1,
-      status: 'created',
-      max_size: 4,
-      current_size: 2,
-      auto_managed: false,
-      start_time: new Date(),
-      end_time: new Date(),
-      total_speaking_time_seconds: 0,
-      collaboration_score: 0.0,
-      topic_focus_score: 0.0,
+    const student = {
+      id: studentId,
+      name: studentName,
+      grade_level: gradeLevel,
+      school_id: 'e2e-test-school',
+      email_consent: !isUnderage,
+      coppa_compliant: !isUnderage,
+      teacher_verified_age: !isUnderage,
       created_at: new Date(),
       updated_at: new Date(),
-      leader_id: 'test-leader-123',
-      is_ready: false,
-      topical_cohesion: 0.0,
-      argumentation_quality: 0.0,
-      sentiment_arc: '[]',
-      conceptual_density: 0.0,
     };
 
-    console.log('📝 Attempting to insert group with data:', JSON.stringify(groupData, null, 2));
-    
-    await databricksService.insert('student_groups', groupData);
-    
-    console.log('✅ Group insert successful!');
-    
-    res.json({
-      success: true,
-      data: {
-        groupId,
-        message: 'Group created successfully'
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Group insert error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack,
-        type: typeof error,
-        constructor: error?.constructor?.name
-      }
-    });
-  }
-});
+    const group = {
+      id: groupId,
+      session_id: sessionId,
+      name: 'E2E Test Group',
+      group_number: 1,
+      status: 'waiting',
+      is_ready: false,
+      leader_id: isLeader ? studentId : null,
+      max_size: 4,
+      current_size: 1,
+      auto_managed: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
 
-// Check session_analytics table structure
-router.get('/check-analytics-table', async (req, res) => {
-  try {
-    const analyticsTable = await databricksService.query('DESCRIBE classwaves.sessions.session_analytics');
-    
-    res.json({
-      success: true,
-      data: {
-        analyticsTable: analyticsTable
-      }
-    });
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
+    // Generate the student token
+    const token = await SecureJWTService.generateStudentToken(
+      studentId,
+      sessionId,
+      groupId,
+      sessionCode
+    );
 
-// Check what schemas exist in the catalog
-router.get('/check-schemas', async (req, res) => {
-  try {
-    const schemas = await databricksService.query('SHOW SCHEMAS IN classwaves');
-    
-    res.json({
-      success: true,
-      data: {
-        schemas: schemas
-      }
-    });
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
+    console.log('✅ E2E student token generated successfully');
 
-// Check what tables exist in analytics schema
-router.get('/check-analytics-schema', async (req, res) => {
-  try {
-    const tables = await databricksService.query('SHOW TABLES IN classwaves.analytics');
-    
     res.json({
       success: true,
-      data: {
-        analyticsSchemaTable: tables
-      }
+      token,
+      student,
+      session,
+      group,
+      message: 'E2E test token generated with mock data (no database operations)'
     });
-    
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
 
-// Check session_metrics table structure
-router.get('/check-session-metrics', async (req, res) => {
-  try {
-    const sessionMetrics = await databricksService.query('DESCRIBE classwaves.analytics.session_metrics');
-    
-    res.json({
-      success: true,
-      data: {
-        sessionMetrics: sessionMetrics
-      }
-    });
-    
   } catch (error) {
+    console.error('❌ Generate student token error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
-
-// Create missing student_group_members table
-router.post('/create-student-group-members-table', async (req, res) => {
-  try {
-    const createTableSQL = `
-      CREATE TABLE IF NOT EXISTS classwaves.sessions.student_group_members (
-        id STRING NOT NULL,
-        session_id STRING NOT NULL,
-        group_id STRING NOT NULL,
-        student_id STRING NOT NULL,
-        created_at TIMESTAMP NOT NULL,
-        PRIMARY KEY (id)
-      ) USING DELTA
-      TBLPROPERTIES (
-        'delta.columnMapping.mode' = 'name',
-        'delta.minReaderVersion' = '2',
-        'delta.minWriterVersion' = '5'
-      )
-    `;
-    
-    console.log('🔧 Creating student_group_members table...');
-    await databricksService.query(createTableSQL);
-    
-    console.log('✅ student_group_members table created successfully!');
-    
-    res.json({
-      success: true,
-      data: {
-        message: 'student_group_members table created successfully',
-        sql: createTableSQL
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Failed to create student_group_members table:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
-  }
-});
-
-// Test membership analytics directly
-router.get('/test-membership-analytics/:sessionId', async (req, res) => {
-  try {
-    const sessionId = req.params.sessionId;
-    
-    console.log('🔧 Testing membership analytics for session:', sessionId);
-    
-    // Test basic group data
-    const groups = await databricksService.query(`
-      SELECT 
-        sg.id,
-        sg.name,
-        sg.leader_id,
-        sg.current_size,
-        COUNT(sgm.student_id) as actual_member_count,
-        COUNT(CASE WHEN sg.leader_id = sgm.student_id THEN 1 END) as leader_present,
-        COUNT(CASE WHEN sg.leader_id != sgm.student_id THEN 1 END) as regular_members_count
-      FROM classwaves.sessions.student_groups sg
-      LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name, sg.leader_id, sg.current_size, sg.group_number
-      ORDER BY sg.group_number
-    `, [sessionId]);
-    
-    console.log('✅ Group data retrieved:', groups);
-    
-    // Test membership data
-    const membershipData = await databricksService.query(`
-      SELECT 
-        sgm.group_id,
-        sgm.student_id,
-        sgm.created_at
-      FROM classwaves.sessions.student_group_members sgm
-      INNER JOIN classwaves.sessions.student_groups sg ON sgm.group_id = sg.id
-      WHERE sg.session_id = ?
-      ORDER BY sgm.created_at
-    `, [sessionId]);
-    
-    console.log('✅ Membership data retrieved:', membershipData);
-    
-    res.json({
-      success: true,
-      data: {
-        sessionId,
-        groups: groups,
-        memberships: membershipData,
-        analytics: {
-          totalGroups: groups.length,
-          totalMembers: membershipData.length,
-          groupsWithLeaders: groups.filter((g: any) => g.leader_present > 0).length,
-        }
-      }
-    });
-    
-  } catch (error) {
-    console.error('❌ Membership analytics test error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    res.status(500).json({
-      success: false,
-      error: {
-        message: errorMessage,
-        stack: errorStack
-      }
-    });
+    res.status(500).json({ success: false, error: errorMessage });
   }
 });
 
