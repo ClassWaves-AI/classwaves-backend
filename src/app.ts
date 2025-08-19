@@ -52,13 +52,39 @@ const globalRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
+    console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
     // Skip rate limiting for health checks and internal monitoring
-    return req.path === '/api/v1/health' || req.path === '/metrics';
+    const shouldSkip = req.path === '/api/v1/health' || req.path === '/metrics';
+    console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
+    return shouldSkip;
+  },
+  handler: (req, res) => {
+    console.error('🔧 DEBUG: Global rate limit exceeded for path:', req.path);
+    res.status(429).json({
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests from this IP, please try again later.',
+      retryAfter: '15 minutes'
+    });
   }
   // Use default IP-based key generator (handles IPv6 correctly)
 });
 
-app.use(globalRateLimit);
+// Add debugging wrapper for global rate limit
+app.use((req, res, next) => {
+  console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
+  console.log('🔧 DEBUG: About to apply global rate limit');
+  globalRateLimit(req, res, (err) => {
+    if (err) {
+      console.error('🔧 DEBUG: Global rate limit error:', err);
+      return res.status(500).json({
+        error: 'RATE_LIMIT_ERROR', 
+        message: 'Rate limiting service error'
+      });
+    }
+    console.log('🔧 DEBUG: Global rate limit passed');
+    next();
+  });
+});
 
 // SECURITY 2: Enhanced CORS with strict origin validation
 const corsOptions = {
