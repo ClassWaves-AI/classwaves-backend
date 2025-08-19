@@ -40,16 +40,21 @@ class ServiceManager {
       allHealthy = false;
     }
 
-    // Initialize Databricks
-    try {
-      this.updateServiceStatus('databricks', 'initializing');
-      await databricksService.connect();
-      this.updateServiceStatus('databricks', 'healthy', undefined, new Date());
-      console.log('✅ Databricks service initialized');
-    } catch (error) {
-      console.error('❌ Databricks service initialization failed:', error);
-      this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
-      allHealthy = false;
+    // Initialize Databricks (skip in test environment)
+    if (process.env.NODE_ENV !== 'test' && process.env.DATABRICKS_ENABLED !== 'false') {
+      try {
+        this.updateServiceStatus('databricks', 'initializing');
+        await databricksService.connect();
+        this.updateServiceStatus('databricks', 'healthy', undefined, new Date());
+        console.log('✅ Databricks service initialized');
+      } catch (error) {
+        console.error('❌ Databricks service initialization failed:', error);
+        this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
+        allHealthy = false;
+      }
+    } else {
+      this.updateServiceStatus('databricks', 'healthy', 'Skipped in test environment');
+      console.log('⚠️ Databricks service skipped (test environment)');
     }
 
     // Initialize Email Service
