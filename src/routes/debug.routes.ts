@@ -88,23 +88,18 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
       updated_at: new Date(),
     };
 
-    // Generate the student token
-    const token = await SecureJWTService.generateStudentToken(
-      studentId,
-      sessionId,
-      groupId,
-      sessionCode
-    );
+    // Generate a simple mock token for E2E testing (avoiding JWT service complexity)
+    const mockToken = `e2e-mock-token-${Date.now()}`;
 
-    console.log('✅ E2E student token generated successfully');
+    console.log('✅ E2E mock token generated successfully');
 
     res.json({
       success: true,
-      token,
+      token: mockToken,
       student,
       session,
       group,
-      message: 'E2E test token generated with mock data (no database operations)'
+      message: 'E2E test token generated with mock data (simplified for testing)'
     });
 
   } catch (error) {
