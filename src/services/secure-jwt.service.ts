@@ -49,18 +49,43 @@ export class SecureJWTService {
   private static readonly BLACKLIST_PREFIX = 'blacklist:';
   private static readonly BLACKLIST_CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
   
-  // SECURITY 1: Device fingerprinting to prevent token theft
-  static createDeviceFingerprint(req: Request): string {
-    const components = [
-      req.headers['user-agent'] || '',
-      req.ip || '',
-    ];
+    // SECURITY 1: Device fingerprinting to prevent token theft
+static createDeviceFingerprint(req: Request): string {
+    console.log('🔧 DEBUG: Starting device fingerprint creation');
     
-    return crypto
+    const userAgent = req.headers['user-agent'] || '';
+    const ip = req.ip || '';
+    
+    console.log('🔧 DEBUG: Fingerprint components:', {
+      userAgent: userAgent,
+      ip: ip,
+      'x-forwarded-for': req.headers['x-forwarded-for'],
+      'x-real-ip': req.headers['x-real-ip']
+    });
+    
+    // Handle potential CI environment issues
+    if (!userAgent && !ip) {
+      console.log('🔧 DEBUG: WARNING - Both user-agent and IP are missing, using fallback');
+      const fallbackFingerprint = crypto
+        .createHash(this.FINGERPRINT_ALGORITHM)
+        .update('ci-environment-fallback')
+        .digest('hex')
+        .substring(0, 16);
+      console.log('🔧 DEBUG: Fallback fingerprint created:', fallbackFingerprint);
+      return fallbackFingerprint;
+    }
+    
+    const components = [userAgent, ip];
+    console.log('🔧 DEBUG: Components array:', components);
+    
+    const fingerprint = crypto
       .createHash(this.FINGERPRINT_ALGORITHM)
       .update(components.join('|'))
       .digest('hex')
       .substring(0, 16); // First 16 chars for storage efficiency
+      
+    console.log('🔧 DEBUG: Device fingerprint created:', fingerprint);
+    return fingerprint;
   }
   
   // SECURITY 2: Generate secure token pair with short-lived access tokens
@@ -70,51 +95,101 @@ export class SecureJWTService {
     sessionId: string, 
     req: Request
   ): Promise<TokenPair> {
-    const deviceFingerprint = this.createDeviceFingerprint(req);
-    const now = Math.floor(Date.now() / 1000);
-    
-    const basePayload = {
-      userId: teacher.id,
-      email: teacher.email,
+    console.log('🔧 DEBUG: Starting SecureJWTService.generateSecureTokens');
+    console.log('🔧 DEBUG: Input parameters:', {
+      teacherId: teacher.id,
       schoolId: school.id,
-      sessionId,
-      fingerprint: deviceFingerprint,
-      role: teacher.role,
-      iat: now
-    };
+      sessionId: sessionId,
+      requestHeaders: {
+        'user-agent': req.headers['user-agent'],
+        'x-forwarded-for': req.headers['x-forwarded-for'],
+        'ip': req.ip
+      }
+    });
     
-    // Generate unique JTIs for anti-replay protection
-    const accessJti = crypto.randomUUID();
-    const refreshJti = crypto.randomUUID();
-    
-    // Short-lived access token (15 minutes)
-    const accessToken = jwt.sign({
-      ...basePayload,
-      type: 'access',
-      exp: now + this.ACCESS_TOKEN_TTL,
-      jti: accessJti
-    }, process.env.JWT_SECRET!);
-    
-    // Longer-lived refresh token (7 days)
-    const refreshToken = jwt.sign({
-      ...basePayload,
-      type: 'refresh',
-      exp: now + this.REFRESH_TOKEN_TTL,
-      jti: refreshJti
-    }, process.env.JWT_REFRESH_SECRET!);
-    
-    // Store token metadata for tracking and revocation
-    await this.storeTokenMetadata(accessJti, refreshJti, teacher.id, sessionId);
-    
-    console.log(`🔐 Generated secure tokens for user ${teacher.id} - Access: ${this.ACCESS_TOKEN_TTL}s, Refresh: ${this.REFRESH_TOKEN_TTL}s`);
-    
-    return { 
-      accessToken, 
-      refreshToken, 
-      deviceFingerprint,
-      expiresIn: this.ACCESS_TOKEN_TTL,
-      refreshExpiresIn: this.REFRESH_TOKEN_TTL
-    };
+    try {
+      console.log('🔧 DEBUG: Creating device fingerprint');
+      const deviceFingerprint = this.createDeviceFingerprint(req);
+      console.log('🔧 DEBUG: Device fingerprint created:', deviceFingerprint);
+      
+      const now = Math.floor(Date.now() / 1000);
+      console.log('🔧 DEBUG: Current timestamp:', now);
+      
+      const basePayload = {
+        userId: teacher.id,
+        email: teacher.email,
+        schoolId: school.id,
+        sessionId,
+        fingerprint: deviceFingerprint,
+        role: teacher.role,
+        iat: now
+      };
+      console.log('🔧 DEBUG: Base payload created:', basePayload);
+      
+      // Generate unique JTIs for anti-replay protection
+      console.log('🔧 DEBUG: Generating JTIs');
+      const accessJti = crypto.randomUUID();
+      const refreshJti = crypto.randomUUID();
+      console.log('🔧 DEBUG: JTIs generated:', { accessJti, refreshJti });
+      
+      // Check JWT secrets
+      console.log('🔧 DEBUG: Checking JWT secrets availability');
+      const jwtSecret = process.env.JWT_SECRET;
+      const jwtRefreshSecret = process.env.JWT_REFRESH_SECRET;
+      console.log('🔧 DEBUG: JWT_SECRET present:', !!jwtSecret);
+      console.log('🔧 DEBUG: JWT_REFRESH_SECRET present:', !!jwtRefreshSecret);
+      
+      if (!jwtSecret || !jwtRefreshSecret) {
+        throw new Error('JWT secrets not available');
+      }
+      
+      // Short-lived access token (15 minutes)
+      console.log('🔧 DEBUG: Signing access token');
+      const accessToken = jwt.sign({
+        ...basePayload,
+        type: 'access',
+        exp: now + this.ACCESS_TOKEN_TTL,
+        jti: accessJti
+      }, jwtSecret);
+      console.log('🔧 DEBUG: Access token signed successfully');
+      
+      // Longer-lived refresh token (7 days)
+      console.log('🔧 DEBUG: Signing refresh token');
+      const refreshToken = jwt.sign({
+        ...basePayload,
+        type: 'refresh',
+        exp: now + this.REFRESH_TOKEN_TTL,
+        jti: refreshJti
+      }, jwtRefreshSecret);
+      console.log('🔧 DEBUG: Refresh token signed successfully');
+      
+      // Store token metadata for tracking and revocation
+      console.log('🔧 DEBUG: Storing token metadata');
+      await this.storeTokenMetadata(accessJti, refreshJti, teacher.id, sessionId);
+      console.log('🔧 DEBUG: Token metadata stored successfully');
+      
+      console.log(`🔐 Generated secure tokens for user ${teacher.id} - Access: ${this.ACCESS_TOKEN_TTL}s, Refresh: ${this.REFRESH_TOKEN_TTL}s`);
+      
+      const result = { 
+        accessToken, 
+        refreshToken, 
+        deviceFingerprint,
+        expiresIn: this.ACCESS_TOKEN_TTL,
+        refreshExpiresIn: this.REFRESH_TOKEN_TTL
+      };
+      
+      console.log('🔧 DEBUG: SecureJWTService.generateSecureTokens completed successfully');
+      return result;
+      
+    } catch (error) {
+      console.error('🔧 DEBUG: ERROR in SecureJWTService.generateSecureTokens:', error);
+      console.error('🔧 DEBUG: JWT Generation error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        name: error instanceof Error ? error.name : 'Unknown'
+      });
+      throw error;
+    }
   }
   
   // SECURITY 3: Comprehensive token verification

@@ -137,18 +137,34 @@ export class SecureSessionService {
     school: School, 
     req: Request
   ): Promise<void> {
+    console.log('🔧 DEBUG: Starting SecureSessionService.storeSecureSession');
+    console.log('🔧 DEBUG: Session storage input:', {
+      sessionId,
+      teacherId: teacher.id,
+      schoolId: school.id,
+      requestIP: req.ip,
+      userAgent: req.headers['user-agent']
+    });
+    
     const storeStart = performance.now();
     
     try {
       // SECURITY 4: Enforce concurrent session limits
+      console.log('🔧 DEBUG: Enforcing session limits');
       await this.enforceSessionLimits(teacher.id);
+      console.log('🔧 DEBUG: Session limits enforced successfully');
       
       // SECURITY 5: Track and analyze login patterns
+      console.log('🔧 DEBUG: Tracking login metrics');
       const isFirstLogin = await this.trackLoginMetrics(teacher.id, req.ip!);
+      console.log('🔧 DEBUG: Login metrics tracked - First login:', isFirstLogin);
       
       // SECURITY 6: Detect suspicious login patterns
+      console.log('🔧 DEBUG: Detecting suspicious activity');
       const isSuspicious = await this.detectSuspiciousActivity(teacher.id, req);
+      console.log('🔧 DEBUG: Suspicious activity check completed - Suspicious:', isSuspicious);
       
+      console.log('🔧 DEBUG: Creating session data object');
       const sessionData: SecureSessionData = {
         teacherId: teacher.id,
         teacher,
@@ -161,38 +177,60 @@ export class SecureSessionService {
         lastActivity: new Date(),
         isSuspicious
       };
+      console.log('🔧 DEBUG: Session data object created');
       
       // Add geographic information if available
       if (req.headers['cf-ipcountry']) {
+        console.log('🔧 DEBUG: Adding geographic information');
         sessionData.geoLocation = {
           country: req.headers['cf-ipcountry'] as string,
           region: req.headers['cf-ipregion'] as string,
           city: req.headers['cf-ipcity'] as string
         };
+      } else {
+        console.log('🔧 DEBUG: No geographic information available');
       }
       
+      console.log('🔧 DEBUG: Encrypting session data');
       const encryptedData = this.encryptSessionData(sessionData);
+      console.log('🔧 DEBUG: Session data encrypted successfully');
       
       // Store encrypted session with sliding expiration
+      console.log('🔧 DEBUG: Storing encrypted session in Redis');
       const sessionTTL = 24 * 60 * 60; // 24 hours
       await redisService.set(`secure_session:${sessionId}`, encryptedData, sessionTTL);
+      console.log('🔧 DEBUG: Encrypted session stored in Redis successfully');
       
       // Track active sessions for the teacher
+      console.log('🔧 DEBUG: Adding session to teacher active sessions set');
       await redisService.getClient().sadd(`teacher_sessions:${teacher.id}`, sessionId);
       await redisService.getClient().expire(`teacher_sessions:${teacher.id}`, 86400); // 24 hours
+      console.log('🔧 DEBUG: Session added to teacher active sessions set');
       
       // Store session metadata for monitoring
+      console.log('🔧 DEBUG: Storing session metadata');
       await this.storeSessionMetadata(sessionId, teacher.id, req);
+      console.log('🔧 DEBUG: Session metadata stored successfully');
       
       const storeTime = performance.now() - storeStart;
       console.log(`🔒 Secure session stored: ${sessionId} (${storeTime.toFixed(2)}ms) - Suspicious: ${isSuspicious}`);
       
       // Alert if suspicious activity detected
       if (isSuspicious) {
+        console.log('🔧 DEBUG: Alerting suspicious session');
         await this.alertSuspiciousSession(teacher.id, sessionId, req);
+        console.log('🔧 DEBUG: Suspicious session alert sent');
       }
       
+      console.log('🔧 DEBUG: SecureSessionService.storeSecureSession completed successfully');
+      
     } catch (error) {
+      console.error('🔧 DEBUG: ERROR in SecureSessionService.storeSecureSession:', error);
+      console.error('🔧 DEBUG: Session storage error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        name: error instanceof Error ? error.name : 'Unknown'
+      });
       console.error(`❌ Secure session storage failed for ${sessionId}:`, error);
       throw error;
     }

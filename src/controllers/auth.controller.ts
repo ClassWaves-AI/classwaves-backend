@@ -509,24 +509,33 @@ export async function secureLogout(req: Request, res: Response): Promise<Respons
 }
 
 export async function generateTestTokenHandler(req: Request, res: Response): Promise<Response> {
+  console.log('🔧 DEBUG: Starting generateTestTokenHandler');
+  
   // Only allow in test environment
   if (process.env.NODE_ENV !== 'test') {
+    console.log('🔧 DEBUG: Environment check failed - NODE_ENV:', process.env.NODE_ENV);
     return res.status(404).json({
       error: 'NOT_FOUND',
       message: 'Endpoint not available in this environment',
     });
   }
+  console.log('🔧 DEBUG: Environment check passed - NODE_ENV: test');
 
   try {
     const { secretKey } = req.body;
+    console.log('🔧 DEBUG: Request body received, secretKey present:', !!secretKey);
     
     // Verify secret key (simple validation for testing)
     if (secretKey !== process.env.E2E_TEST_SECRET) {
+      console.log('🔧 DEBUG: Secret key validation failed');
+      console.log('🔧 DEBUG: Expected:', process.env.E2E_TEST_SECRET);
+      console.log('🔧 DEBUG: Received:', secretKey);
       return res.status(401).json({
         error: 'INVALID_SECRET',
         message: 'Invalid secret key for test token generation',
       });
     }
+    console.log('🔧 DEBUG: Secret key validation passed');
 
     // Create a test teacher and school for the token
     const testTeacher = {
@@ -543,17 +552,30 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       domain: 'testschool.edu',
       subscription_tier: 'professional',
     };
+    console.log('🔧 DEBUG: Test teacher and school objects created');
 
     // Generate secure tokens for testing
+    console.log('🔧 DEBUG: Starting session ID generation');
     const sessionId = generateSessionId();
+    console.log('🔧 DEBUG: Session ID generated:', sessionId);
+    
+    console.log('🔧 DEBUG: Starting secure token generation');
+    console.log('🔧 DEBUG: Request headers for fingerprinting:', {
+      'user-agent': req.headers['user-agent'],
+      'ip': req.ip,
+      'x-forwarded-for': req.headers['x-forwarded-for']
+    });
+    
     const secureTokens = await SecureJWTService.generateSecureTokens(
       testTeacher as Teacher, 
       testSchool as School, 
       sessionId, 
       req
     );
+    console.log('🔧 DEBUG: Secure tokens generated successfully');
 
     // Store a secure session so cookie-based auth works in E2E
+    console.log('🔧 DEBUG: Starting secure session storage');
     try {
       await SecureSessionService.storeSecureSession(
         sessionId,
@@ -561,11 +583,17 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
         testSchool as School,
         req
       );
+      console.log('🔧 DEBUG: Secure session storage completed successfully');
     } catch (e) {
-      console.error('⚠️ Failed to store secure test session:', e);
+      console.error('🔧 DEBUG: Failed to store secure test session:', e);
+      console.error('🔧 DEBUG: Session storage error details:', {
+        message: e instanceof Error ? e.message : 'Unknown error',
+        stack: e instanceof Error ? e.stack : 'No stack trace'
+      });
     }
 
     // Set session cookie for convenience (Playwright also sets it, but this makes API usage consistent)
+    console.log('🔧 DEBUG: Setting session cookie');
     res.cookie('session_id', sessionId, {
       httpOnly: true,
       secure: false,
@@ -574,7 +602,8 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       path: '/',
     });
 
-    return res.json({
+    console.log('🔧 DEBUG: Preparing successful response');
+    const response = {
       success: true,
       teacher: {
         id: testTeacher.id,
@@ -598,13 +627,27 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
         deviceFingerprint: secureTokens.deviceFingerprint,
       },
       sessionId, // Include for test cleanup if needed
-    });
+    };
+    
+    console.log('🔧 DEBUG: generateTestTokenHandler completed successfully');
+    return res.json(response);
 
   } catch (error) {
-    console.error('Generate test token error:', error);
+    console.error('🔧 DEBUG: FATAL ERROR in generateTestTokenHandler:', error);
+    console.error('🔧 DEBUG: Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : 'No stack trace',
+      name: error instanceof Error ? error.name : 'Unknown',
+      cause: error instanceof Error ? error.cause : undefined
+    });
+    
     return res.status(500).json({
       error: 'TEST_TOKEN_GENERATION_FAILED',
       message: 'Failed to generate test authentication token',
+      debug: process.env.NODE_ENV === 'test' ? {
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        errorName: error instanceof Error ? error.name : 'Unknown'
+      } : undefined
     });
   }
 }
