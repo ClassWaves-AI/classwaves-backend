@@ -28,18 +28,35 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
     // 1. Find or create the test session
     let session = await databricksService.queryOne('SELECT * FROM classwaves.sessions.classroom_sessions WHERE access_code = ?', [sessionCode]);
     if (!session) {
-      const newSession = await databricksService.createSession({
+      const sessionId = (databricksService as any).generateId();
+      await databricksService.insert('classroom_sessions', {
+        id: sessionId,
         title: `E2E Test Session ${sessionCode}`,
         description: 'An automated test session.',
-        teacherId: 'e2e-test-teacher',
-        schoolId: 'e2e-test-school',
+        teacher_id: 'e2e-test-teacher',
+        school_id: 'e2e-test-school',
         access_code: sessionCode,
-        targetGroupSize: 4,
-        autoGroupEnabled: true,
-        scheduledStart: new Date(),
-        plannedDuration: 60,
+        target_group_size: 4,
+        auto_group_enabled: true,
+        scheduled_start: new Date(),
+        planned_duration_minutes: 60,
+        status: 'created',
+        recording_enabled: false,
+        transcription_enabled: true,
+        ai_analysis_enabled: true,
+        ferpa_compliant: true,
+        coppa_compliant: true,
+        recording_consent_obtained: false,
+        data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000),
+        total_groups: 0,
+        total_students: 0,
+        end_reason: '',
+        teacher_notes: '',
+        engagement_score: 0.0,
+        created_at: new Date(),
+        updated_at: new Date(),
       });
-      session = { id: newSession.sessionId, ...newSession };
+      session = { id: sessionId, access_code: sessionCode };
     }
     const sessionId = session.id;
 
