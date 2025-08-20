@@ -175,7 +175,7 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
 
     // Get the created school
     const createdSchool = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.schools WHERE id = ?
+      SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
     `, [schoolId]);
 
     // Log audit event
@@ -231,7 +231,7 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
 
     // Check if school exists
     const existingSchool = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.schools WHERE id = ?
+      SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
     `, [schoolId]);
 
     if (!existingSchool) {
@@ -313,7 +313,7 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
 
     // Get the updated school
     const updatedSchool = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.schools WHERE id = ?
+      SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
     `, [schoolId]);
 
     // Log audit event
@@ -488,7 +488,7 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
 
     // Check if teacher exists and get their school
     const existingTeacher = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.teachers WHERE id = ?
+      SELECT id, email, name, school_id, role, status, grade, subject FROM classwaves.users.teachers WHERE id = ?
     `, [teacherId]);
 
     if (!existingTeacher) {

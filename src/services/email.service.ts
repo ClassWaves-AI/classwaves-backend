@@ -224,7 +224,7 @@ export class EmailService {
     
     // Get group details
     const group = await databricksService.queryOne(
-      `SELECT * FROM classwaves.sessions.student_groups WHERE session_id = ? AND id = ?`,
+      `SELECT id, name, session_id, group_members, status FROM classwaves.sessions.student_groups WHERE session_id = ? AND id = ?`,
       [sessionId, groupId]
     );
     

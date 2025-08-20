@@ -150,7 +150,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     }
 
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
+      `SELECT id, teacher_id, school_id, topic, status, join_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
       [sessionCode]
     );
     if (!session) {
@@ -170,7 +170,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       if (ageYears < 13) {
         // Check parental consent (mocked by querying compliance table)
         const consent = await databricksService.query(
-          `SELECT * FROM ${databricksConfig.catalog}.compliance.parental_consents WHERE student_name = ?`,
+          `SELECT id, student_name, consent_given FROM ${databricksConfig.catalog}.compliance.parental_consents WHERE student_name = ?`,
           [displayName || studentName]
         );
         const hasConsent = (consent as any[])?.length > 0;
@@ -384,7 +384,7 @@ export async function getSessionAnalytics(req: Request, res: Response): Promise<
     const sessionId = req.params.sessionId || (req.params as any).id;
 
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     if (!session) {
@@ -804,7 +804,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
  */
 async function validateSessionOwnership(sessionId: string, teacherId: string): Promise<any> {
   return await databricksService.queryOne(
-    `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+    `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
     [sessionId, teacherId]
   );
 }
@@ -932,7 +932,7 @@ async function recordSessionStarted(
 async function getSessionWithGroups(sessionId: string, teacherId: string): Promise<Session> {
   // Get main session data
   const session = await databricksService.queryOne(
-    `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+    `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
     [sessionId, teacherId]
   );
 
@@ -1090,7 +1090,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1209,7 +1209,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1365,7 +1365,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1431,7 +1431,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     
     // Get updated session
     const updatedSession = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
       [sessionId]
     );
     
@@ -1464,7 +1464,7 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1534,7 +1534,7 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
     
     // Verify session belongs to teacher and is active
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ? AND status = ?`,
+      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ? AND status = ?`,
       [sessionId, teacher.id, 'active']
     );
     

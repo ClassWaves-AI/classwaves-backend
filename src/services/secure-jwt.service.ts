@@ -468,7 +468,7 @@ static createDeviceFingerprint(req: Request): string {
       // Import databricks service dynamically to avoid circular dependencies
       const { databricksService } = await import('./databricks.service');
       return await databricksService.queryOne<Teacher>(
-        `SELECT * FROM classwaves.users.teachers WHERE id = ? AND status = 'active'`,
+        `SELECT id, email, name, school_id, role, status FROM classwaves.users.teachers WHERE id = ? AND status = 'active'`,
         [teacherId]
       );
     } catch (error) {
@@ -481,7 +481,7 @@ static createDeviceFingerprint(req: Request): string {
     try {
       const { databricksService } = await import('./databricks.service');
       return await databricksService.queryOne<School>(
-        `SELECT * FROM classwaves.users.schools WHERE id = ? AND subscription_status IN ('active', 'trial')`,
+        `SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant FROM classwaves.users.schools WHERE id = ? AND subscription_status IN ('active', 'trial')`,
         [schoolId]
       );
     } catch (error) {
