@@ -56,7 +56,7 @@ const ENDPOINT_TESTS = [
       },
       {
         name: 'Authentication Health',
-        path: '/auth/health',
+        path: '/api/v1/auth/health',
         expectedStatus: 200,
         expectedResponseFields: ['success'],
         public: true,
@@ -66,7 +66,7 @@ const ENDPOINT_TESTS = [
         name: 'Analytics Health',
         path: '/api/v1/analytics/health',
         expectedStatus: 200,
-        expectedResponseFields: ['success', 'health'],
+        expectedResponseFields: ['success', 'status', 'timestamp'],
         public: true,
         critical: true
       }

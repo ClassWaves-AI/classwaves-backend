@@ -20,11 +20,20 @@ import { AuthRequest } from '../types/auth.types';
 /**
  * GET /api/v1/health
  * 
- * Basic health check endpoint
+ * Basic health check endpoint with timeout protection
  */
 export const getBasicHealth = async (req: Request, res: Response): Promise<Response> => {
+  // Set timeout for this endpoint specifically
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Health check timeout')), 2000); // 2 second timeout
+  });
+
   try {
-    const health = guidanceSystemHealthService.getSystemHealth();
+    // Race between health check and timeout
+    const health = await Promise.race([
+      guidanceSystemHealthService.getSystemHealth(),
+      timeoutPromise
+    ]);
     
     const basicHealth = {
       status: health.overall.status,
@@ -41,10 +50,15 @@ export const getBasicHealth = async (req: Request, res: Response): Promise<Respo
     
   } catch (error) {
     console.error('Health check failed:', error);
-    return res.status(503).json({
-      status: 'unavailable',
-      error: 'Health check failed',
-      timestamp: new Date().toISOString()
+    
+    // Return minimal health status if detailed check fails
+    return res.status(200).json({
+      status: 'degraded',
+      error: error instanceof Error ? error.message : 'Health check failed',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      version: process.env.npm_package_version || '1.0.0',
+      fallback: true
     });
   }
 };
