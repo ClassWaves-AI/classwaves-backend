@@ -320,6 +320,100 @@ E2E_TEST_SECRET=test npm run e2e
 
 ---
 
+## 🔍 **Environment Parity Validation**
+
+### **Automated Environment Comparison**
+
+The ClassWaves platform includes an automated environment parity validator to ensure consistency between production and test environments, preventing integration test failures due to configuration drift.
+
+**Script Location:** `src/scripts/environment-parity-validator.ts`  
+**Execution:** `npm run validate-env-parity`  
+**Performance Target:** <30 seconds execution time
+
+### **Validation Components**
+
+The validator performs comprehensive comparison across 5 critical components:
+
+1. **Database Access**
+   - Validates Databricks connection status and enablement logic
+   - Compares schema availability and accessibility
+   - Reports intentional disablement vs configuration errors
+
+2. **Redis Access** 
+   - Tests Redis connectivity and keyspace availability
+   - Compares keyspace counts (allows small differences for active systems)
+   - Validates connection configuration consistency
+
+3. **Database Schemas**
+   - Compares schema structure between environments
+   - Reports missing or extra schemas
+   - Validates schema accessibility permissions
+
+4. **Database Tables**
+   - Validates table structure parity within schemas
+   - Reports table-level drift across environments
+   - Ensures migration consistency
+
+5. **Environment Variables**
+   - Compares critical configuration variables
+   - Reports configuration drift that affects functionality
+   - Validates environment-specific settings
+
+### **Health Endpoint Integration**
+
+The validator integrates with the system health endpoint (`/api/v1/health`) to understand actual runtime environment context rather than just .env file values. This ensures validation against the running system state.
+
+**Key Features:**
+- Recognizes when Databricks is intentionally disabled vs misconfigured
+- Validates against actual system behavior, not just configuration files
+- Provides actionable recommendations for any detected drift
+
+### **Output and Reporting**
+
+**Success Scenario:**
+```
+🎯 Overall Status: ✅ PASS
+📊 Component Matching: 5/5 (100%)
+⏱️  Execution Time: 40ms
+🚀 Integration Tests: UNBLOCKED
+```
+
+**Drift Detection:**
+- Detailed component-by-component analysis
+- Specific drift items with actionable recommendations  
+- Critical issue identification blocking integration tests
+- Clear next steps for remediation
+
+### **Integration with Testing Pipeline**
+
+Environment parity validation is a **critical path requirement** for integration test execution:
+
+- **Prerequisite:** Must pass before Task 2.2b integration test execution
+- **Blocking:** Integration tests remain blocked until parity achieved
+- **Automation:** Can be integrated into CI/CD pipeline for continuous validation
+- **Performance:** Fast execution (40ms) allows frequent validation
+
+### **Usage Guidelines**
+
+**Pre-Integration Testing:**
+```bash
+npm run validate-env-parity
+```
+
+**Expected Workflow:**
+1. Validate environment parity
+2. Address any reported drift items
+3. Re-run validation until PASS status achieved
+4. Execute integration test suite
+
+**Maintenance:**
+- Run after environment configuration changes
+- Include in post-deployment validation
+- Execute before major test suite runs
+- Monitor for configuration drift over time
+
+---
+
 **Document Status:** ✅ **APPROVED** for Phase 1 Stabilization completion  
 **Next Review:** Post Phase 6 completion or Databricks Staging workspace availability  
 **Owner:** ClassWaves Engineering Team  
