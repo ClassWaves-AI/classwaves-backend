@@ -1,9 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { databricksService } from '../services/databricks.service';
 import jwt from 'jsonwebtoken';
+import { JWTConfigService } from '../config/jwt.config';
 
-// This would be in a more secure config/env file in a real app
-const KIOSK_JWT_SECRET = process.env.KIOSK_JWT_SECRET || 'a-very-secret-key-for-kiosks';
+// Use centralized JWT configuration for consistent algorithm handling
+const jwtConfig = JWTConfigService.getInstance();
 
 interface KioskTokenPayload {
   groupId: string;
@@ -32,7 +33,12 @@ export async function authenticateKiosk(req: KioskAuthRequest, res: Response, ne
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, KIOSK_JWT_SECRET) as KioskTokenPayload;
+    // Use centralized JWT configuration for consistent algorithm verification
+    const decoded = jwt.verify(
+      token,
+      jwtConfig.getVerificationKey(),
+      { algorithms: [jwtConfig.getAlgorithm()] }
+    ) as KioskTokenPayload;
 
     // 1. Basic payload validation
     if (!decoded.groupId || !decoded.sessionId) {

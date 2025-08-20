@@ -32,20 +32,36 @@ export abstract class NamespaceBaseService {
           return next(new Error('Invalid authentication token'));
         }
 
-        // Verify user exists and is active
-        const user = await databricksService.queryOne(
-          `SELECT id, role, status FROM classwaves.users.teachers WHERE id = ? AND status = 'active'`,
-          [decoded.userId]
-        );
+        // Support both teachers and students
+        let user = null;
+        let userRole = decoded.role; // Use role from token
+
+        if (decoded.role === 'teacher' || decoded.role === 'admin') {
+          // Verify teacher exists and is active
+          user = await databricksService.queryOne(
+            `SELECT id, role, status FROM classwaves.users.teachers WHERE id = ? AND status = 'active'`,
+            [decoded.userId]
+          );
+        } else if (decoded.role === 'student') {
+          // Verify student exists in active session participants
+          user = await databricksService.queryOne(
+            `SELECT student_id as id, 'active' as status FROM classwaves.sessions.participants WHERE student_id = ? AND is_active = true`,
+            [decoded.userId]
+          );
+          // Students don't have a role column, so use token role
+          if (user) {
+            user.role = 'student';
+          }
+        }
 
         if (!user) {
-          return next(new Error('User not found or inactive'));
+          return next(new Error(`User not found or inactive (role: ${decoded.role})`));
         }
 
         // Set socket data
         socket.data = {
           userId: decoded.userId,
-          role: user.role,
+          role: userRole,
           connectedAt: new Date(),
         } as NamespaceSocketData;
 
