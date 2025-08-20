@@ -611,7 +611,7 @@ export class DatabricksService {
   async upsertTeacher(teacherData: Partial<Teacher>): Promise<Teacher> {
     // Existence check
     const existingTeacher = await this.queryOne<Teacher>(
-      `SELECT * FROM ${databricksConfig.catalog}.users.teachers 
+      `SELECT id, email, name, school_id, role, status, google_id FROM ${databricksConfig.catalog}.users.teachers 
        WHERE google_id = ? AND status = 'active'`,
       [teacherData.google_id]
     );

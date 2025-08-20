@@ -531,7 +531,7 @@ export class AnalyticsComputationService {
 
   private async fetchSessionData(sessionId: string): Promise<any> {
     return await databricksService.queryOne(`
-      SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?
+      SELECT id, teacher_id, school_id, topic, status, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?
     `, [sessionId]);
   }
 

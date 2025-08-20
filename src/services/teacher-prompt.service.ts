@@ -255,7 +255,7 @@ export class TeacherPromptService {
       let dbPrompts: TeacherPrompt[] = [];
       try {
         const dbResults = await databricksService.query(
-          `SELECT * FROM classwaves.ai_insights.teacher_guidance_metrics 
+          `SELECT id, session_id, prompt_id, prompt_text, priority_level, effectiveness_score, generated_at, expires_at FROM classwaves.ai_insights.teacher_guidance_metrics 
            WHERE session_id = ? 
            AND generated_at >= ?
            ${!options?.includeExpired ? 'AND expires_at > ?' : ''}

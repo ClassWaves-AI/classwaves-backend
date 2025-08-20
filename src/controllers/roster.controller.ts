@@ -296,7 +296,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -429,7 +429,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -531,7 +531,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -641,7 +641,7 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
