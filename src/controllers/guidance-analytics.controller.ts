@@ -1347,17 +1347,17 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
         const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
         
         if (computedAnalytics) {
-          // ✅ Use the new interface structure
+          // ✅ Use the new interface structure with nested objects
           const sessionOverview = computedAnalytics.sessionAnalyticsOverview;
           membershipSummary = {
-            totalConfiguredMembers: sessionOverview.totalStudents,
-            totalActualMembers: sessionOverview.activeStudents,
-            groupsWithLeadersPresent: sessionOverview.groupCount,
-            groupsAtFullCapacity: sessionOverview.actualGroups,
-            averageMembershipAdherence: sessionOverview.memberAdherence / 100,
+            totalConfiguredMembers: sessionOverview.membershipSummary.totalConfiguredMembers,
+            totalActualMembers: sessionOverview.membershipSummary.totalActualMembers,
+            groupsWithLeadersPresent: sessionOverview.membershipSummary.groupsWithLeadersPresent,
+            groupsAtFullCapacity: sessionOverview.membershipSummary.groupsAtFullCapacity,
+            averageMembershipAdherence: sessionOverview.membershipSummary.averageMembershipAdherence,
             membershipFormationTime: {
-              avgFormationTime: null,
-              fastestGroup: null
+              avgFormationTime: sessionOverview.membershipSummary.membershipFormationTime.avgFormationTime,
+              fastestGroup: sessionOverview.membershipSummary.membershipFormationTime.fastestGroup
             }
           };
         } else {
