@@ -3,9 +3,6 @@
  * 
  * Robust, idempotent service for computing comprehensive session analytics.
  * Follows the implementation plan for zero-polling, event-driven architecture.
- * 
- * Platform Stabilization P1 3.1: Enhanced with circuit breakers and distributed locking
- * to prevent duplicate triggers and provide graceful degradation under load.
  */
 
 import { databricksService } from './databricks.service';
@@ -13,8 +10,6 @@ import { websocketService } from './websocket.service';
 import { realTimeAnalyticsCacheService } from './real-time-analytics-cache.service';
 import { databricksConfig } from '../config/databricks.config';
 import { analyticsLogger } from '../utils/analytics-logger';
-import { analyticsComputationCircuitBreaker } from './analytics-computation-circuit-breaker.service';
-import { analyticsComputationLockService } from './analytics-computation-lock.service';
 import { 
   SessionMembershipSummary, 
   SessionAnalyticsOverviewComplete,
@@ -37,38 +32,13 @@ interface ComputedAnalytics {
 
 export class AnalyticsComputationService {
   private readonly ANALYTICS_VERSION = '2.0';
-  private readonly COMPUTATION_TIMEOUT = 180000; // 3 minutes (increased for complex analytics)
+  private readonly COMPUTATION_TIMEOUT = 30000; // 30 seconds
   
   /**
-   * Main method: Compute comprehensive session analytics with circuit breaker and distributed locking
-   * This method is idempotent and prevents duplicate computation triggers
+   * Main method: Compute comprehensive session analytics
+   * This method is idempotent - safe to call multiple times
    */
   async computeSessionAnalytics(sessionId: string): Promise<ComputedAnalytics | null> {
-    console.log(`🎯 Analytics computation requested for session ${sessionId}`);
-    
-    // Execute with circuit breaker protection and distributed locking
-    return await analyticsComputationCircuitBreaker.execute(
-      async () => {
-        return await analyticsComputationLockService.executeWithLock(
-          sessionId,
-          () => this.performAnalyticsComputation(sessionId),
-          {
-            ttl: 900, // 15 minutes lock TTL for complex computations
-            lockExtensionInterval: 300000, // Extend every 5 minutes
-            maxExecutionTime: this.COMPUTATION_TIMEOUT
-          }
-        );
-      },
-      `analytics-computation-${sessionId}`,
-      { sessionId, version: this.ANALYTICS_VERSION }
-    );
-  }
-
-  /**
-   * Internal method: Perform the actual analytics computation
-   * Protected by circuit breaker and distributed lock
-   */
-  private async performAnalyticsComputation(sessionId: string): Promise<ComputedAnalytics | null> {
     const startTime = Date.now();
     const computationId = `analytics_${sessionId}_${startTime}`;
     
@@ -80,9 +50,9 @@ export class AnalyticsComputationService {
         return existingAnalytics;
       }
 
-      console.log(`🚀 Starting protected analytics computation for session ${sessionId}`);
+      console.log(`🚀 Starting analytics computation for session ${sessionId}`);
       
-      // Mark computation as in progress with enhanced status tracking
+      // Mark computation as in progress
       console.log(`📝 Marking computation as in progress...`);
       await this.markComputationInProgress(sessionId, computationId);
       console.log(`✅ Computation marked as in progress`);
@@ -101,10 +71,38 @@ export class AnalyticsComputationService {
         totalStudents: sessionData.total_students
       });
 
-      // Compute analytics components in parallel for performance with timeout protection
+      // Compute analytics components in parallel for performance
       console.log(`🔄 Computing analytics components in parallel...`);
-      const computationPromise = this.computeAnalyticsComponents(sessionData);
-      const [membershipSummary, engagementMetrics, timelineAnalysis, groupPerformance] = await computationPromise;
+      const [membershipSummary, engagementMetrics, timelineAnalysis, groupPerformance] = await Promise.all([
+        this.computeMembershipSummary(sessionId, sessionData).then(result => {
+          console.log(`✅ Membership summary computed:`, result);
+          return result;
+        }).catch(error => {
+          console.error(`❌ Membership summary failed:`, error);
+          throw error;
+        }),
+        this.computeEngagementMetrics(sessionId, sessionData).then(result => {
+          console.log(`✅ Engagement metrics computed:`, result);
+          return result;
+        }).catch(error => {
+          console.error(`❌ Engagement metrics failed:`, error);
+          throw error;
+        }),
+        this.computeTimelineAnalysis(sessionId, sessionData).then(result => {
+          console.log(`✅ Timeline analysis computed:`, result);
+          return result;
+        }).catch(error => {
+          console.error(`❌ Timeline analysis failed:`, error);
+          throw error;
+        }),
+        this.computeGroupPerformance(sessionId, sessionData).then(result => {
+          console.log(`✅ Group performance computed, groups:`, result.length);
+          return result;
+        }).catch(error => {
+          console.error(`❌ Group performance failed:`, error);
+          throw error;
+        })
+      ]);
       console.log(`✅ All analytics components computed successfully`);
 
       const computedAt = new Date().toISOString();
@@ -162,129 +160,17 @@ export class AnalyticsComputationService {
       return computedAnalytics;
 
     } catch (error) {
-      console.error(`❌ Protected analytics computation failed for session ${sessionId}:`, error);
+      const processingTime = Date.now() - startTime;
       
-      // Mark computation as failed with enhanced error tracking
-      await this.markComputationFailed(sessionId, computationId, error instanceof Error ? error.message : 'Unknown error');
+      console.error(`💥 ANALYTICS COMPUTATION ERROR for session ${sessionId}:`, {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        processingTime
+      });
       
-      // Re-throw to trigger circuit breaker failure handling
-      throw error;
-    }
-  }
-
-  /**
-   * Compute all analytics components with parallel processing and error resilience
-   */
-  private async computeAnalyticsComponents(sessionData: any): Promise<[any, any, any, any]> {
-    const componentPromises = [
-      this.computeMembershipSummary(sessionData.id, sessionData),
-      this.computeEngagementMetrics(sessionData.id, sessionData),
-      this.computeTimelineAnalysis(sessionData.id, sessionData),
-      this.computeGroupPerformance(sessionData.id, sessionData)
-    ];
-
-    // Execute with individual component error handling
-    const results = await Promise.allSettled(componentPromises);
-    
-    const [membershipResult, engagementResult, timelineResult, groupResult] = results;
-
-    // Extract successful results or use fallback
-    const membershipSummary = membershipResult.status === 'fulfilled' 
-      ? membershipResult.value 
-      : this.createFallbackMembershipSummary(sessionData);
-      
-    const engagementMetrics = engagementResult.status === 'fulfilled' 
-      ? engagementResult.value 
-      : this.createFallbackEngagementMetrics(sessionData);
-      
-    const timelineAnalysis = timelineResult.status === 'fulfilled' 
-      ? timelineResult.value 
-      : this.createFallbackTimelineAnalysis(sessionData);
-      
-    const groupPerformance = groupResult.status === 'fulfilled' 
-      ? groupResult.value 
-      : this.createFallbackGroupPerformance(sessionData);
-
-    // Log any component failures
-    results.forEach((result, index) => {
-      const componentNames = ['membership', 'engagement', 'timeline', 'group'];
-      if (result.status === 'rejected') {
-        console.warn(`⚠️ Analytics component ${componentNames[index]} failed, using fallback:`, result.reason);
-      }
-    });
-
-    return [membershipSummary, engagementMetrics, timelineAnalysis, groupPerformance];
-  }
-
-  /**
-   * Create fallback membership summary when computation fails
-   */
-  private createFallbackMembershipSummary(sessionData: any): any {
-    console.log('📊 Creating fallback membership summary');
-    return {
-      totalEnrolled: sessionData.total_students || 0,
-      totalParticipated: 0,
-      participationRate: 0,
-      groupDistribution: [],
-      sessionOverview: {
-        sessionId: sessionData.id,
-        status: sessionData.status,
-        duration: 0
-      }
-    };
-  }
-
-  /**
-   * Create fallback engagement metrics when computation fails
-   */
-  private createFallbackEngagementMetrics(sessionData: any): any {
-    console.log('📊 Creating fallback engagement metrics');
-    return {
-      overallEngagement: 0,
-      participationBalance: 0,
-      qualityScore: 0,
-      trendAnalysis: {
-        direction: 'stable',
-        strength: 0
-      }
-    };
-  }
-
-  /**
-   * Create fallback timeline analysis when computation fails
-   */
-  private createFallbackTimelineAnalysis(sessionData: any): any {
-    console.log('📊 Creating fallback timeline analysis');
-    return {
-      keyMilestones: [],
-      phaseAnalysis: [],
-      engagementFlow: []
-    };
-  }
-
-  /**
-   * Create fallback group performance when computation fails
-   */
-  private createFallbackGroupPerformance(sessionData: any): any {
-    console.log('📊 Creating fallback group performance');
-    return [];
-  }
-
-  /**
-   * Handle original error processing logic
-   */
-  private async handleComputationError(sessionId: string, computationId: string, error: any, startTime: number): Promise<void> {
-    const processingTime = Date.now() - startTime;
-    
-    console.error(`💥 ANALYTICS COMPUTATION ERROR for session ${sessionId}:`, {
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      processingTime
-    });
-    
-    // Log error
-    analyticsLogger.logOperation(
-      'analytics_computation_failed',
+      // Log error
+      analyticsLogger.logOperation(
+        'analytics_computation_failed',
         'session_analytics',
         startTime,
         false,

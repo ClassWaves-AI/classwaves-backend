@@ -140,7 +140,7 @@ export class WebSocketHealthChecker {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.WEBSOCKET_TIMEOUT);
       
-      const response = await fetch(`http://localhost:${this.BACKEND_PORT}/health`, {
+      const response = await fetch(`http://localhost:${this.BACKEND_PORT}/api/v1/health`, {
         method: 'GET',
         signal: controller.signal
       });

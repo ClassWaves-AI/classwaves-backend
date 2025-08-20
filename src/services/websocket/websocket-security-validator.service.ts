@@ -191,7 +191,7 @@ export class WebSocketSecurityValidator {
       }
 
       // Increment connection count with expiration
-      await redisService.setex(connectionKey, 3600, (connectionCount + 1).toString()); // 1 hour TTL
+      await redisService.set(connectionKey, (connectionCount + 1).toString(), 3600); // 1 hour TTL
       return { allowed: true };
 
     } catch (error) {
@@ -230,9 +230,9 @@ export class WebSocketSecurityValidator {
 
       // Increment request count
       if (requestCount === 0) {
-        await redisService.setex(rateLimitKey, config.rateLimitWindow, '1');
+        await redisService.set(rateLimitKey, '1', config.rateLimitWindow);
       } else {
-        await redisService.incr(rateLimitKey);
+        await redisService.getClient().incr(rateLimitKey);
       }
 
       return { allowed: true };
@@ -394,7 +394,7 @@ export class WebSocketSecurityValidator {
 
       // Also store in Redis for real-time monitoring
       const redisKey = `websocket_security_events:${eventType}:${securityContext.userId}`;
-      await redisService.setex(redisKey, 86400, JSON.stringify(securityEvent)); // 24 hour TTL
+      await redisService.set(redisKey, JSON.stringify(securityEvent), 86400); // 24 hour TTL
 
     } catch (error) {
       console.error('Error logging WebSocket security event:', error);
@@ -422,9 +422,9 @@ export class WebSocketSecurityValidator {
       const connectionCount = currentConnections ? parseInt(currentConnections, 10) : 0;
       
       if (connectionCount > 1) {
-        await redisService.setex(connectionKey, 3600, (connectionCount - 1).toString());
+        await redisService.set(connectionKey, (connectionCount - 1).toString(), 3600);
       } else {
-        await redisService.del(connectionKey);
+        await redisService.getClient().del(connectionKey);
       }
 
       await this.logSecurityEvent(

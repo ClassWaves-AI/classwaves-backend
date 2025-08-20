@@ -75,7 +75,7 @@ export abstract class NamespaceBaseService {
         // Create security context for validation
         const securityContext: SecurityContext = {
           userId: decoded.userId,
-          role: userRole,
+          role: userRole as 'teacher' | 'student' | 'admin',
           schoolId,
           sessionId: decoded.sessionId,
           authenticatedAt: new Date(),
