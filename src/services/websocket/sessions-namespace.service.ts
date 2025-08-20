@@ -374,7 +374,6 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Update group readiness status
       await databricksService.update('student_groups', data.groupId, {
         is_ready: data.ready,
-        updated_at: new Date(),
       });
       
       // Broadcast group status change to all session participants (including teacher dashboard)
