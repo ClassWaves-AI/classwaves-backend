@@ -384,20 +384,29 @@ export async function rotateTokens(req: Request, res: Response): Promise<Respons
     
     console.log('🔍 Validating refresh token for rotation');
     
-    // Use SecureJWTService for token rotation
+    // ATOMIC OPERATION: Rotate tokens and update session
+    console.log('🔄 Starting atomic token rotation...');
     const newTokens = await SecureJWTService.rotateTokens(refreshToken, req);
     
     if (!newTokens) {
+      const rotationTime = performance.now() - rotationStart;
+      console.log(`❌ TOKEN ROTATION FAILED - Time: ${rotationTime.toFixed(2)}ms`);
       return res.status(401).json({
         error: 'INVALID_REFRESH_TOKEN',
         message: 'Invalid or expired refresh token',
+        performance: {
+          rotationTime: rotationTime,
+          timestamp: new Date().toISOString(),
+        }
       });
     }
     
     const rotationTime = performance.now() - rotationStart;
     console.log(`🎉 TOKEN ROTATION COMPLETE - Time: ${rotationTime.toFixed(2)}ms`);
     
-    // Set new session cookie
+    // CRITICAL: Set new session cookie atomically with token generation
+    // This ensures the session cookie matches the device fingerprint in Redis
+    console.log('🍪 Setting updated session cookie with new device fingerprint');
     res.cookie('session_id', newTokens.deviceFingerprint, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -405,6 +414,8 @@ export async function rotateTokens(req: Request, res: Response): Promise<Respons
       maxAge: newTokens.expiresIn * 1000,
       path: '/'
     });
+    
+    console.log('✅ Session cookie updated successfully');
     
     return res.json({
       success: true,
