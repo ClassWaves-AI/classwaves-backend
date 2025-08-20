@@ -1,0 +1,23 @@
+{
+  "timestamp": "2025-08-20T12:55:08.374Z",
+  "totalIssues": 2,
+  "criticalIssues": 0,
+  "issues": [
+    {
+      "type": "UNEXPECTED_STATUS",
+      "severity": "MEDIUM",
+      "endpoint": "/api/v1/ai/status",
+      "method": "GET",
+      "actualCode": 401,
+      "expectedCodes": [
+        200
+      ],
+      "issue": "Unexpected status code"
+    },
+    {
+      "type": "NO_MIGRATION_TRACKING",
+      "severity": "HIGH",
+      "issue": "No migration tracking table found - cannot verify which migrations have been applied"
+    }
+  ]
+}
