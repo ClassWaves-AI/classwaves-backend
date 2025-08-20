@@ -155,13 +155,63 @@ const statusLimiter = rateLimit({
 });
 
 // ============================================================================
+// Security Middleware Configuration
+// ============================================================================
+
+/**
+ * Selective authentication middleware for AI routes
+ * Implements tiered security model:
+ * - Public: Status endpoints (safe aggregate information)
+ * - Protected: All other AI analysis and guidance endpoints
+ */
+const aiSecurityMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // Define public status endpoints that don't require authentication
+  const publicPaths = ['/status', '/tier1/status', '/tier2/status'];
+  const requestPath = req.path;
+  
+  // Allow public access to status endpoints
+  if (publicPaths.includes(requestPath)) {
+    console.log(`🔓 AI Status endpoint accessed publicly: ${requestPath}`);
+    return next();
+  }
+  
+  // Require authentication for all other AI endpoints
+  console.log(`🔐 AI endpoint requires authentication: ${requestPath}`);
+  return authenticate(req, res, next);
+};
+
+// ============================================================================
+// Response Filtering Utilities
+// ============================================================================
+
+/**
+ * Filters sensitive information from AI status responses for public endpoints
+ * Returns only safe, aggregate information suitable for monitoring systems
+ */
+const getPublicStatusResponse = (fullStatus: any) => ({
+  success: true,
+  system: 'ClassWaves AI Analysis',
+  status: fullStatus.status || 'unknown',
+  timestamp: new Date().toISOString(),
+  services: {
+    tier1: { 
+      status: fullStatus.services?.databricksAI?.status === 'online' ? 'healthy' : 'degraded'
+    },
+    tier2: { 
+      status: fullStatus.services?.databricksAI?.status === 'online' ? 'healthy' : 'degraded'
+    }
+  },
+  uptime: Math.floor(process.uptime())
+});
+
+// ============================================================================
 // Router Setup
 // ============================================================================
 
 const router = express.Router();
 
-// ✅ SECURITY: All routes require authentication
-router.use(authenticate);
+// ✅ SECURITY: Selective authentication - public status, protected analysis
+router.use(aiSecurityMiddleware);
 
 // ============================================================================
 // Core AI Analysis Endpoints
@@ -392,7 +442,8 @@ router.get('/status',
       const configValidation = databricksAIService.validateConfiguration();
       const bufferStats = aiAnalysisBufferService.getBufferStats();
 
-      res.json({
+      // Build complete status response
+      const fullStatus = {
         success: true,
         system: 'ClassWaves AI Analysis',
         status: configValidation.valid ? 'healthy' : 'degraded',
@@ -420,7 +471,10 @@ router.get('/status',
           tier2WindowMs: databricksConfig.tier2?.timeout || 5000,
           uptime: process.uptime()
         }
-      });
+      };
+
+      // Return filtered response for public access
+      res.json(getPublicStatusResponse(fullStatus));
     } catch (error) {
       console.error('Status check failed:', error);
       res.status(500).json({
@@ -447,22 +501,13 @@ router.get('/tier1/status',
       const config = databricksAIService.getConfiguration();
       const bufferStats = aiAnalysisBufferService.getBufferStats();
 
+      // Return safe public information only
       res.json({
         success: true,
         tier: 'tier1',
         status: 'online',
-        endpoint: config.tier1?.endpoint || 'not_configured',
-        timeout: config.tier1?.timeout || 2000,
-        windowSeconds: 30,
-        buffers: {
-          total: bufferStats.tier1.totalBuffers,
-          transcripts: bufferStats.tier1.totalTranscripts,
-          memoryUsage: bufferStats.tier1.memoryUsageBytes,
-          oldestBuffer: bufferStats.tier1.oldestBuffer,
-          newestBuffer: bufferStats.tier1.newestBuffer
-        },
-        features: ['topical_cohesion', 'conceptual_density'],
-        lastCheck: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime())
       });
     } catch (error) {
       console.error('Tier 1 status check failed:', error);
@@ -490,22 +535,13 @@ router.get('/tier2/status',
       const config = databricksAIService.getConfiguration();
       const bufferStats = aiAnalysisBufferService.getBufferStats();
 
+      // Return safe public information only
       res.json({
         success: true,
         tier: 'tier2',
         status: 'online',
-        endpoint: config.tier2?.endpoint || 'not_configured',
-        timeout: config.tier2?.timeout || 5000,
-        windowMinutes: 3,
-        buffers: {
-          total: bufferStats.tier2.totalBuffers,
-          transcripts: bufferStats.tier2.totalTranscripts,
-          memoryUsage: bufferStats.tier2.memoryUsageBytes,
-          oldestBuffer: bufferStats.tier2.oldestBuffer,
-          newestBuffer: bufferStats.tier2.newestBuffer
-        },
-        features: ['argumentation_quality', 'emotional_arc', 'collaboration_patterns', 'learning_signals'],
-        lastCheck: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime())
       });
     } catch (error) {
       console.error('Tier 2 status check failed:', error);
