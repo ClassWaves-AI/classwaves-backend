@@ -1,0 +1,342 @@
+{
+  "timestamp": "2025-08-20T13:37:24.019Z",
+  "serverUrl": "http://localhost:3000",
+  "summary": {
+    "totalTests": 9,
+    "passed": 9,
+    "failed": 0,
+    "errors": 0
+  },
+  "endpoints": [
+    {
+      "category": "Public Health Endpoints",
+      "description": "Basic system health endpoints - should be publicly accessible",
+      "tests": [
+        {
+          "name": "Basic Health Check",
+          "path": "/api/v1/health",
+          "expectedStatus": 200,
+          "public": true,
+          "critical": true,
+          "timestamp": "2025-08-20T13:37:24.024Z",
+          "success": true,
+          "actualStatus": 200,
+          "responseTime": 751,
+          "response": {
+            "status": "healthy",
+            "timestamp": "2025-08-20T13:37:24.047Z",
+            "services": {
+              "api": "healthy",
+              "redis": "healthy",
+              "databricks": "healthy",
+              "openai_whisper": "healthy"
+            },
+            "version": "1.0.0",
+            "environment": "development"
+          },
+          "error": null,
+          "fieldValidation": {
+            "success": false,
+            "timestamp": true
+          },
+          "securityValidation": {
+            "endpoint": "SAFE",
+            "buffer": "SAFE",
+            "error": "SAFE",
+            "internal": "SAFE",
+            "databricks": "SENSITIVE_DETECTED",
+            "config": "SAFE"
+          }
+        },
+        {
+          "name": "Authentication Health",
+          "path": "/api/v1/auth/health",
+          "expectedStatus": 200,
+          "public": true,
+          "critical": true,
+          "timestamp": "2025-08-20T13:37:24.876Z",
+          "success": true,
+          "actualStatus": 200,
+          "responseTime": 236,
+          "response": {
+            "success": true,
+            "data": {
+              "overall": "healthy",
+              "checks": {
+                "googleOAuth": "healthy",
+                "database": "healthy",
+                "redis": "healthy",
+                "rateLimiting": "healthy",
+                "circuitBreakers": "healthy"
+              },
+              "metrics": {
+                "current": {
+                  "authAttempts": 0,
+                  "authSuccesses": 0,
+                  "authFailures": 0,
+                  "avgResponseTime": 0,
+                  "circuitBreakerTrips": 0,
+                  "retryAttempts": 0,
+                  "cacheHitRate": 85
+                },
+                "last24Hours": {
+                  "totalLogins": 2,
+                  "failureRate": 0,
+                  "avgLoginTime": 17010.5,
+                  "peakConcurrency": 0,
+                  "slowestOperation": "database_query",
+                  "mostFailedOperation": "google_oauth_verification"
+                },
+                "realTime": {
+                  "activeAuthRequests": 0,
+                  "queuedRequests": 0,
+                  "errorRate": 0,
+                  "responseTime95thPercentile": 0
+                }
+              },
+              "alerts": [],
+              "timestamp": "2025-08-20T13:37:25.110Z",
+              "uptime": 27
+            }
+          },
+          "error": null,
+          "fieldValidation": {
+            "success": true
+          },
+          "securityValidation": {
+            "endpoint": "SAFE",
+            "buffer": "SAFE",
+            "error": "SENSITIVE_DETECTED",
+            "internal": "SAFE",
+            "databricks": "SAFE",
+            "config": "SAFE"
+          }
+        },
+        {
+          "name": "Analytics Health",
+          "path": "/api/v1/analytics/health",
+          "expectedStatus": 200,
+          "public": true,
+          "critical": true,
+          "timestamp": "2025-08-20T13:37:25.213Z",
+          "success": true,
+          "actualStatus": 200,
+          "responseTime": 4,
+          "response": {
+            "success": true,
+            "status": "healthy",
+            "timestamp": "2025-08-20T13:37:25.216Z",
+            "services": {
+              "analytics": "healthy",
+              "database": "healthy"
+            },
+            "uptime": 29
+          },
+          "error": null,
+          "fieldValidation": {
+            "success": true,
+            "status": true,
+            "timestamp": true
+          },
+          "securityValidation": {
+            "endpoint": "SAFE",
+            "buffer": "SAFE",
+            "error": "SAFE",
+            "internal": "SAFE",
+            "databricks": "SAFE",
+            "config": "SAFE"
+          }
+        }
+      ]
+    },
+    {
+      "category": "AI Status Endpoints (NEW - Public Access)",
+      "description": "AI system status endpoints - UPDATED to be publicly accessible with filtered responses",
+      "tests": [
+        {
+          "name": "AI System Status (Main)",
+          "path": "/api/v1/ai/status",
+          "expectedStatus": 200,
+          "public": true,
+          "critical": true,
+          "securityNote": "Should return filtered public information only",
+          "timestamp": "2025-08-20T13:37:25.318Z",
+          "success": true,
+          "actualStatus": 200,
+          "responseTime": 5,
+          "response": {
+            "success": true,
+            "system": "ClassWaves AI Analysis",
+            "status": "healthy",
+            "timestamp": "2025-08-20T13:37:25.322Z",
+            "services": {
+              "tier1": {
+                "status": "healthy"
+              },
+              "tier2": {
+                "status": "healthy"
+              }
+            },
+            "uptime": 29
+          },
+          "error": null,
+          "fieldValidation": {
+            "success": true,
+            "system": true,
+            "status": true,
+            "timestamp": true,
+            "services": true,
+            "uptime": true
+          },
+          "securityValidation": {
+            "endpoint": "SAFE",
+            "buffer": "SAFE",
+            "error": "SAFE",
+            "internal": "SAFE",
+            "databricks": "SAFE",
+            "config": "SAFE"
+          }
+        },
+        {
+          "name": "AI Tier 1 Status",
+          "path": "/api/v1/ai/tier1/status",
+          "expectedStatus": 200,
+          "public": true,
+          "critical": true,
+          "securityNote": "Should return filtered public information only",
+          "timestamp": "2025-08-20T13:37:25.424Z",
+          "success": true,
+          "actualStatus": 200,
+          "responseTime": 4,
+          "response": {
+            "success": true,
+            "tier": "tier1",
+            "status": "online",
+            "timestamp": "2025-08-20T13:37:25.427Z",
+            "uptime": 30
+          },
+          "error": null,
+          "fieldValidation": {
+            "success": true,
+            "tier": true,
+            "status": true,
+            "timestamp": true,
+            "uptime": true
+          },
+          "securityValidation": {
+            "endpoint": "SAFE",
+            "buffer": "SAFE",
+            "error": "SAFE",
+            "internal": "SAFE",
+            "databricks": "SAFE",
+            "config": "SAFE"
+          }
+        },
+        {
+          "name": "AI Tier 2 Status",
+          "path": "/api/v1/ai/tier2/status",
+          "expectedStatus": 200,
+          "public": true,
+          "critical": true,
+          "securityNote": "Should return filtered public information only",
+          "timestamp": "2025-08-20T13:37:25.530Z",
+          "success": true,
+          "actualStatus": 200,
+          "responseTime": 6,
+          "response": {
+            "success": true,
+            "tier": "tier2",
+            "status": "online",
+            "timestamp": "2025-08-20T13:37:25.535Z",
+            "uptime": 30
+          },
+          "error": null,
+          "fieldValidation": {
+            "success": true,
+            "tier": true,
+            "status": true,
+            "timestamp": true,
+            "uptime": true
+          },
+          "securityValidation": {
+            "endpoint": "SAFE",
+            "buffer": "SAFE",
+            "error": "SAFE",
+            "internal": "SAFE",
+            "databricks": "SAFE",
+            "config": "SAFE"
+          }
+        }
+      ]
+    },
+    {
+      "category": "Protected Endpoints (Authentication Required)",
+      "description": "Endpoints that should require authentication - testing security",
+      "tests": [
+        {
+          "name": "Teacher Analytics",
+          "path": "/api/v1/analytics/teacher",
+          "expectedStatus": 401,
+          "public": false,
+          "critical": true,
+          "securityNote": "Should require authentication",
+          "timestamp": "2025-08-20T13:37:25.637Z",
+          "success": true,
+          "actualStatus": 401,
+          "responseTime": 4,
+          "response": {
+            "error": "UNAUTHORIZED",
+            "message": "No valid authorization token provided"
+          },
+          "error": null,
+          "fieldValidation": {
+            "error": true
+          },
+          "securityValidation": {}
+        },
+        {
+          "name": "Session Analytics",
+          "path": "/api/v1/analytics/session/test-session-id",
+          "expectedStatus": 401,
+          "public": false,
+          "critical": true,
+          "securityNote": "Should require authentication",
+          "timestamp": "2025-08-20T13:37:25.742Z",
+          "success": true,
+          "actualStatus": 401,
+          "responseTime": 3,
+          "response": {
+            "error": "UNAUTHORIZED",
+            "message": "No valid authorization token provided"
+          },
+          "error": null,
+          "fieldValidation": {
+            "error": true
+          },
+          "securityValidation": {}
+        },
+        {
+          "name": "AI Insights",
+          "path": "/api/v1/ai/insights/test-session-id",
+          "expectedStatus": 401,
+          "public": false,
+          "critical": true,
+          "securityNote": "Should require authentication",
+          "timestamp": "2025-08-20T13:37:25.846Z",
+          "success": true,
+          "actualStatus": 401,
+          "responseTime": 4,
+          "response": {
+            "error": "UNAUTHORIZED",
+            "message": "No valid authorization token provided"
+          },
+          "error": null,
+          "fieldValidation": {
+            "error": true
+          },
+          "securityValidation": {}
+        }
+      ]
+    }
+  ]
+}

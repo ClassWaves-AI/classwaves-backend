@@ -482,7 +482,8 @@ router.get('/status',
       const configValidation = databricksAIService.validateConfiguration();
       const bufferStats = aiAnalysisBufferService.getBufferStats();
 
-      res.json({
+      // Build complete status response
+      const fullStatus = {
         success: true,
         system: 'ClassWaves AI Analysis',
         status: configValidation.valid ? 'healthy' : 'degraded',
@@ -510,7 +511,10 @@ router.get('/status',
           tier2WindowMs: databricksConfig.tier2?.timeout || 5000,
           uptime: process.uptime()
         }
-      });
+      };
+
+      // Return filtered response for public access
+      res.json(getPublicStatusResponse(fullStatus));
     } catch (error) {
       console.error('Status check failed:', error);
       res.status(500).json({
@@ -537,22 +541,13 @@ router.get('/tier1/status',
       const config = databricksAIService.getConfiguration();
       const bufferStats = aiAnalysisBufferService.getBufferStats();
 
+      // Return safe public information only
       res.json({
         success: true,
         tier: 'tier1',
         status: 'online',
-        endpoint: config.tier1?.endpoint || 'not_configured',
-        timeout: config.tier1?.timeout || 2000,
-        windowSeconds: 30,
-        buffers: {
-          total: bufferStats.tier1.totalBuffers,
-          transcripts: bufferStats.tier1.totalTranscripts,
-          memoryUsage: bufferStats.tier1.memoryUsageBytes,
-          oldestBuffer: bufferStats.tier1.oldestBuffer,
-          newestBuffer: bufferStats.tier1.newestBuffer
-        },
-        features: ['topical_cohesion', 'conceptual_density'],
-        lastCheck: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime())
       });
     } catch (error) {
       console.error('Tier 1 status check failed:', error);
@@ -580,22 +575,13 @@ router.get('/tier2/status',
       const config = databricksAIService.getConfiguration();
       const bufferStats = aiAnalysisBufferService.getBufferStats();
 
+      // Return safe public information only
       res.json({
         success: true,
         tier: 'tier2',
         status: 'online',
-        endpoint: config.tier2?.endpoint || 'not_configured',
-        timeout: config.tier2?.timeout || 5000,
-        windowMinutes: 3,
-        buffers: {
-          total: bufferStats.tier2.totalBuffers,
-          transcripts: bufferStats.tier2.totalTranscripts,
-          memoryUsage: bufferStats.tier2.memoryUsageBytes,
-          oldestBuffer: bufferStats.tier2.oldestBuffer,
-          newestBuffer: bufferStats.tier2.newestBuffer
-        },
-        features: ['argumentation_quality', 'emotional_arc', 'collaboration_patterns', 'learning_signals'],
-        lastCheck: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime())
       });
     } catch (error) {
       console.error('Tier 2 status check failed:', error);

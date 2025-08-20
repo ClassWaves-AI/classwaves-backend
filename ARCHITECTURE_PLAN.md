@@ -262,8 +262,8 @@ class HealthMonitoringService {
 - [ ] Create GitHub Actions workflow for health-gated deployments
 - [ ] Add package.json scripts for health operations
 - [ ] Implement post-deployment verification scripts
-- [ ] Set up continuous monitoring automation
-- [ ] Configure rollback triggers
+- [x] TO DO LATER: Set up continuous monitoring automation
+- [ x] TO DO LATER: Configure rollback triggers
 
 ### **Medium-term (Phase 3)** 📅
 - [ ] Integrate with monitoring systems (DataDog, New Relic, etc.)

@@ -1,4 +1,127 @@
 {
+  "timestamp": "2025-08-20T13:18:23.684Z",
+  "summary": {
+    "critical": 9,
+    "warning": 0,
+    "info": 0,
+    "passed": 0,
+    "total": 9,
+    "healthScore": 0,
+    "status": "CRITICAL"
+  },
+  "checks": [
+    {
+      "category": "API_HEALTH",
+      "name": "Basic health endpoint",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/health",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.702Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "AI system status (PUBLIC)",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/ai/status",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.703Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "Tier 1 AI status (PUBLIC)",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/ai/tier1/status",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.704Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "Tier 2 AI status (PUBLIC)",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/ai/tier2/status",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.705Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "Authentication system health",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/auth/health",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.705Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "Analytics system health",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/analytics/health",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.706Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "Teacher analytics (requires auth)",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/analytics/teacher",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.706Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "Session analytics (requires auth)",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/analytics/session/test-session-id",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.707Z"
+    },
+    {
+      "category": "API_HEALTH",
+      "name": "AI insights (requires auth)",
+      "status": "CRITICAL",
+      "message": "CRITICAL: Cannot connect to API endpoint",
+      "details": {
+        "error": "",
+        "endpoint": "/api/v1/ai/insights/test-session-id",
+        "suggestion": "Ensure backend server is running"
+      },
+      "timestamp": "2025-08-20T13:18:23.708Z"
+    }
+  ],
+  "recommendations": [
+    "Start the backend server: cd classwaves-backend && npm run dev"
+=======
   "timestamp": "2025-08-20T12:55:08.374Z",
   "totalIssues": 2,
   "criticalIssues": 0,
