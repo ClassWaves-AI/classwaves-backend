@@ -155,13 +155,63 @@ const statusLimiter = rateLimit({
 });
 
 // ============================================================================
+// Security Middleware Configuration
+// ============================================================================
+
+/**
+ * Selective authentication middleware for AI routes
+ * Implements tiered security model:
+ * - Public: Status endpoints (safe aggregate information)
+ * - Protected: All other AI analysis and guidance endpoints
+ */
+const aiSecurityMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // Define public status endpoints that don't require authentication
+  const publicPaths = ['/status', '/tier1/status', '/tier2/status'];
+  const requestPath = req.path;
+  
+  // Allow public access to status endpoints
+  if (publicPaths.includes(requestPath)) {
+    console.log(`🔓 AI Status endpoint accessed publicly: ${requestPath}`);
+    return next();
+  }
+  
+  // Require authentication for all other AI endpoints
+  console.log(`🔐 AI endpoint requires authentication: ${requestPath}`);
+  return authenticate(req, res, next);
+};
+
+// ============================================================================
+// Response Filtering Utilities
+// ============================================================================
+
+/**
+ * Filters sensitive information from AI status responses for public endpoints
+ * Returns only safe, aggregate information suitable for monitoring systems
+ */
+const getPublicStatusResponse = (fullStatus: any) => ({
+  success: true,
+  system: 'ClassWaves AI Analysis',
+  status: fullStatus.status || 'unknown',
+  timestamp: new Date().toISOString(),
+  services: {
+    tier1: { 
+      status: fullStatus.services?.databricksAI?.status === 'online' ? 'healthy' : 'degraded'
+    },
+    tier2: { 
+      status: fullStatus.services?.databricksAI?.status === 'online' ? 'healthy' : 'degraded'
+    }
+  },
+  uptime: Math.floor(process.uptime())
+});
+
+// ============================================================================
 // Router Setup
 // ============================================================================
 
 const router = express.Router();
 
-// ✅ SECURITY: All routes require authentication
-router.use(authenticate);
+// ✅ SECURITY: Selective authentication - public status, protected analysis
+router.use(aiSecurityMiddleware);
 
 // ============================================================================
 // Core AI Analysis Endpoints
