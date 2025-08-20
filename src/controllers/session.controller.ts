@@ -150,7 +150,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     }
 
     const session = await databricksService.queryOne(
-      `SELECT * FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
+      `SELECT id, teacher_id, school_id, topic, status, join_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
       [sessionCode]
     );
     if (!session) {
@@ -170,7 +170,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       if (ageYears < 13) {
         // Check parental consent (mocked by querying compliance table)
         const consent = await databricksService.query(
-          `SELECT * FROM ${databricksConfig.catalog}.compliance.parental_consents WHERE student_name = ?`,
+          `SELECT id, student_name, consent_given FROM ${databricksConfig.catalog}.compliance.parental_consents WHERE student_name = ?`,
           [displayName || studentName]
         );
         const hasConsent = (consent as any[])?.length > 0;
