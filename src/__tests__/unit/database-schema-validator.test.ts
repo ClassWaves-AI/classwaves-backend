@@ -48,92 +48,108 @@ describe('DatabaseSchemaValidator', () => {
       // Mock successful connection test
       mockQuery
         .mockResolvedValueOnce([{ connection_test: 1 }]) // Connection test
-        .mockResolvedValueOnce([]) // USE CATALOG
-        .mockResolvedValueOnce([ // SHOW SCHEMAS
-          { schema_name: 'users' },
-          { schema_name: 'sessions' },
-          { schema_name: 'analytics' },
-          { schema_name: 'compliance' },
-          { schema_name: 'ai_insights' }
-        ]);
-
-      // Mock SHOW TABLES for each schema
-      const mockTables = {
-        users: [
-          { tableName: 'schools' },
-          { tableName: 'teachers' },
-          { tableName: 'students' }
-        ],
-        sessions: [
-          { tableName: 'classroom_sessions' },
-          { tableName: 'student_groups' },
-          { tableName: 'participants' }
-        ],
-        analytics: [
-          { tableName: 'session_metrics' },
-          { tableName: 'group_metrics' }
-        ],
-        compliance: [
-          { tableName: 'audit_log' }
-        ],
-        ai_insights: [
-          { tableName: 'analysis_results' }
-        ]
-      };
-
-      // Queue up SHOW TABLES responses
-      Object.values(mockTables).forEach(tables => {
-        mockQuery.mockResolvedValueOnce(tables);
-      });
-
-      // Mock DESCRIBE TABLE responses for each table with proper required columns
-      const mockSchoolColumns = [
-        { col_name: 'id' }, { col_name: 'name' }, { col_name: 'domain' }, { col_name: 'subscription_status' }
-      ];
-      const mockTeacherColumns = [
-        { col_name: 'id' }, { col_name: 'email' }, { col_name: 'school_id' }, { col_name: 'google_id' }
-      ];
-      const mockStudentColumns = [
-        { col_name: 'id' }, { col_name: 'name' }, { col_name: 'email' }, { col_name: 'session_id' }
-      ];
-      const mockSessionColumns = [
-        { col_name: 'id' }, { col_name: 'teacher_id' }, { col_name: 'title' }, { col_name: 'status' }, { col_name: 'access_code' }
-      ];
-      const mockGroupColumns = [
-        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'name' }, { col_name: 'leader_id' }
-      ];
-      const mockParticipantColumns = [
-        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'group_id' }, { col_name: 'student_id' }
-      ];
-      const mockMetricsColumns = [
-        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'metric_type' }, { col_name: 'value' }
-      ];
-      const mockGroupMetricsColumns = [
-        { col_name: 'id' }, { col_name: 'group_id' }, { col_name: 'metric_type' }, { col_name: 'value' }
-      ];
-      const mockAuditColumns = [
-        { col_name: 'id' }, { col_name: 'event_type' }, { col_name: 'actor_id' }, { col_name: 'created_at' }
-      ];
-      const mockAnalysisColumns = [
-        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'analysis_type' }, { col_name: 'result_data' }
+        .mockResolvedValueOnce([]); // USE CATALOG
+        
+      // The validator calls SHOW SCHEMAS separately for each schema validation
+      // Mock SHOW SCHEMAS 5 times (once per schema: users, sessions, analytics, compliance, ai_insights)
+      const allSchemas = [
+        { schema_name: 'users' },
+        { schema_name: 'sessions' },
+        { schema_name: 'analytics' },
+        { schema_name: 'compliance' },
+        { schema_name: 'ai_insights' }
       ];
       
-      // Mock DESCRIBE TABLE calls in order
-      mockQuery.mockResolvedValueOnce(mockSchoolColumns); // schools
-      mockQuery.mockResolvedValueOnce(mockTeacherColumns); // teachers  
-      mockQuery.mockResolvedValueOnce(mockStudentColumns); // students
-      mockQuery.mockResolvedValueOnce(mockSessionColumns); // classroom_sessions
-      mockQuery.mockResolvedValueOnce(mockGroupColumns); // student_groups
-      mockQuery.mockResolvedValueOnce(mockParticipantColumns); // participants
-      mockQuery.mockResolvedValueOnce(mockMetricsColumns); // session_metrics
-      mockQuery.mockResolvedValueOnce(mockGroupMetricsColumns); // group_metrics
-      mockQuery.mockResolvedValueOnce(mockAuditColumns); // audit_log
-      mockQuery.mockResolvedValueOnce(mockAnalysisColumns); // analysis_results
+      for (let i = 0; i < 5; i++) {
+        mockQuery.mockResolvedValueOnce(allSchemas);
+      }
+
+      // Mock SHOW TABLES IN {catalog}.{schema} for each schema
+      // The validator calls this for each valid schema: users, sessions, analytics, compliance, ai_insights
+      
+      // SHOW TABLES IN classwaves.users
+      mockQuery.mockResolvedValueOnce([
+        { tableName: 'schools', table_name: 'schools' },
+        { tableName: 'teachers', table_name: 'teachers' },
+        { tableName: 'students', table_name: 'students' }
+      ]);
+      
+      // SHOW TABLES IN classwaves.sessions  
+      mockQuery.mockResolvedValueOnce([
+        { tableName: 'classroom_sessions', table_name: 'classroom_sessions' },
+        { tableName: 'student_groups', table_name: 'student_groups' },
+        { tableName: 'participants', table_name: 'participants' }
+      ]);
+      
+      // SHOW TABLES IN classwaves.analytics
+      mockQuery.mockResolvedValueOnce([
+        { tableName: 'session_metrics', table_name: 'session_metrics' },
+        { tableName: 'group_metrics', table_name: 'group_metrics' }
+      ]);
+      
+      // SHOW TABLES IN classwaves.compliance  
+      mockQuery.mockResolvedValueOnce([
+        { tableName: 'audit_log', table_name: 'audit_log' }
+      ]);
+      
+      // SHOW TABLES IN classwaves.ai_insights
+      mockQuery.mockResolvedValueOnce([
+        { tableName: 'analysis_results', table_name: 'analysis_results' }
+      ]);
+
+      // Mock DESCRIBE TABLE responses for each table
+      // The validator calls DESCRIBE TABLE for each table, so we need to mock each call
+      // Order: users.schools, users.teachers, users.students, sessions.classroom_sessions, sessions.student_groups, sessions.participants, analytics.session_metrics, analytics.group_metrics, compliance.audit_log, ai_insights.analysis_results
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'name' }, { col_name: 'domain' }, { col_name: 'subscription_status' }
+      ]); // users.schools
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'email' }, { col_name: 'school_id' }, { col_name: 'google_id' }
+      ]); // users.teachers
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'name' }, { col_name: 'email' }, { col_name: 'session_id' }
+      ]); // users.students
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'teacher_id' }, { col_name: 'title' }, { col_name: 'status' }, { col_name: 'access_code' }
+      ]); // sessions.classroom_sessions
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'name' }, { col_name: 'leader_id' }
+      ]); // sessions.student_groups
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'group_id' }, { col_name: 'student_id' }
+      ]); // sessions.participants
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'metric_type' }, { col_name: 'value' }
+      ]); // analytics.session_metrics
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'group_id' }, { col_name: 'metric_type' }, { col_name: 'value' }
+      ]); // analytics.group_metrics
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'event_type' }, { col_name: 'actor_id' }, { col_name: 'created_at' }
+      ]); // compliance.audit_log
+      
+      mockQuery.mockResolvedValueOnce([
+        { col_name: 'id' }, { col_name: 'session_id' }, { col_name: 'analysis_type' }, { col_name: 'result_data' }
+      ]); // ai_insights.analysis_results
 
       // Mock current catalog check
       mockQuery.mockResolvedValueOnce([{ catalog: 'classwaves' }]);
 
       const result = await validator.validateSchema();
+
+      // Debug: Show what's actually happening if test fails
+      if (!result.success) {
+        throw new Error(`Test Debug - Critical Errors: ${JSON.stringify(result.criticalErrors)} | Summary: validSchemas=${result.summary.validSchemas}/${result.summary.totalSchemas}, validTables=${result.summary.validTables}/${result.summary.totalTables}, criticalIssues=${result.summary.criticalIssues}`);
+      }
 
       expect(result.success).toBe(true);
       expect(result.criticalErrors).toHaveLength(0);
@@ -267,8 +283,8 @@ describe('DatabaseSchemaValidator', () => {
       mockQuery
         .mockResolvedValueOnce([{ connection_test: 1 }]) // Connection test
         .mockResolvedValueOnce([]) // USE CATALOG
-        .mockResolvedValueOnce([]) // SHOW SCHEMAS - empty (no schemas found)
-        .mockResolvedValueOnce([{ catalog: 'different_catalog' }]); // Wrong catalog
+        .mockResolvedValueOnce([]) // SHOW SCHEMAS - empty (no schemas found, but validation continues)
+        .mockResolvedValueOnce([{ catalog: 'different_catalog' }]); // Wrong catalog for test data isolation
 
       const result = await validator.validateSchema();
 

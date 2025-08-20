@@ -356,10 +356,15 @@ class DatabaseSchemaValidator {
     try {
       // Check we're using proper catalog isolation
       const currentCatalog = await this.databricksService.query('SELECT current_catalog() as catalog');
-      const catalog = currentCatalog[0]?.catalog;
       
-      if (catalog !== databricksConfig.catalog) {
-        report.warnings.push(`Using catalog '${catalog}' instead of expected '${databricksConfig.catalog}'`);
+      if (!currentCatalog || !Array.isArray(currentCatalog) || currentCatalog.length === 0) {
+        report.warnings.push('Could not determine current catalog for test data isolation check');
+      } else {
+        const catalog = currentCatalog[0]?.catalog;
+        
+        if (catalog !== databricksConfig.catalog) {
+          report.warnings.push(`Using catalog '${catalog}' instead of expected '${databricksConfig.catalog}'`);
+        }
       }
 
       // Verify we have sandbox/test schema targeting capability
