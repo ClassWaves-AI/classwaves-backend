@@ -256,11 +256,25 @@ npm test
 ### AI Analysis System
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|
-| `POST` | `/api/v1/ai/analyze-discussion` | Tier 1 group analysis | Teacher |
-| `POST` | `/api/v1/ai/generate-insights` | Tier 2 deep analysis | Teacher |
-| `GET` | `/api/v1/ai/insights/:sessionId` | Retrieve insights | Teacher |
+| `POST` | `/api/v1/ai/analyze-discussion` | **Tier 1 group analysis (Frontend-Compatible)** | Teacher |
+| `POST` | `/api/v1/ai/generate-insights` | **Tier 2 deep analysis (Frontend-Compatible)** | Teacher |
+| `GET` | `/api/v1/ai/insights/:sessionId` | **Retrieve session insights (Frontend-Compatible)** | Teacher |
 | `GET` | `/api/v1/ai/tier1/status` | Tier 1 system status | Teacher |
 | `GET` | `/api/v1/ai/tier2/status` | Tier 2 system status | Teacher |
+
+#### Route Standardization (December 2024)
+**Frontend-Compatible Routes**: The above endpoints are standardized for seamless frontend integration. 
+
+**Backward Compatibility**: Legacy routes are maintained for existing integrations:
+- `POST /api/v1/ai/sessions/:sessionId/analyze-discussion`
+- `POST /api/v1/ai/sessions/:sessionId/generate-insights` 
+- `GET /api/v1/ai/sessions/:sessionId/insights`
+
+**Migration Benefits**:
+- ✅ Zero breaking changes for existing code
+- ✅ Simplified frontend API client patterns
+- ✅ Consistent route structure across all AI endpoints
+- ✅ Enhanced error logging and debugging capabilities
 
 ### Analytics & Monitoring
 | Method | Endpoint | Description | Auth Required |
