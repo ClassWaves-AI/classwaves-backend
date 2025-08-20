@@ -66,15 +66,15 @@ export const getEffectivenessReportSchema = z.object({
  */
 export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Promise<Response> => {
   const startTime = Date.now();
+  const teacher = req.user!;
+  const school = req.school!;
+  const { teacherId } = req.params;
+  
+  // ✅ SECURITY: Teachers can only view their own analytics unless admin
+  const targetTeacherId = teacherId || teacher.id;
   
   try {
-    const teacher = req.user!;
-    const school = req.school!;
-    const { teacherId } = req.params;
     const query = req.query as any;
-    
-    // ✅ SECURITY: Teachers can only view their own analytics unless admin
-    const targetTeacherId = teacherId || teacher.id;
     if (targetTeacherId !== teacher.id && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
       return res.status(403).json({
         success: false,
@@ -197,14 +197,25 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       processingTime
     });
 
-  } catch (error) {
+  } catch (error: any) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ Teacher analytics retrieval failed:', error);
+    
+    // ✅ Enhanced error logging for debugging network issues
+    console.error('❌ Teacher analytics retrieval failed:', {
+      error: error?.message || String(error),
+      stack: error?.stack,
+      teacherId: targetTeacherId,
+      route: req.route?.path,
+      method: req.method,
+      query: req.query,
+      processingTime
+    });
     
     return res.status(500).json({
       success: false,
       error: 'ANALYTICS_RETRIEVAL_FAILED',
-      message: 'Failed to retrieve teacher analytics'
+      message: 'Failed to retrieve teacher analytics',
+      processingTime
     });
   }
 };

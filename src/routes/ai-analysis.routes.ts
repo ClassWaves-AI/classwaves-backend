@@ -181,6 +181,19 @@ router.post('/sessions/:sessionId/analyze-discussion',
 );
 
 /**
+ * POST /ai/analyze-discussion
+ * 
+ * Frontend-compatible route for group discussion analysis (Tier 1)
+ * Matches frontend expectation: /api/v1/ai/analyze-discussion
+ * Rate limited: 100 requests per 15 minutes
+ */
+router.post('/analyze-discussion',
+  aiAnalysisLimiter,
+  validate(analyzeDiscussionSchema),
+  aiController.analyzeGroupDiscussion as any
+);
+
+/**
  * POST /ai/sessions/:sessionId/generate-insights
  * 
  * Generates deep educational insights (Tier 2)
@@ -194,12 +207,39 @@ router.post('/sessions/:sessionId/generate-insights',
 );
 
 /**
+ * POST /ai/generate-insights
+ * 
+ * Frontend-compatible route for deep insights generation (Tier 2)
+ * Matches frontend expectation: /api/v1/ai/generate-insights
+ * Rate limited: 100 requests per 15 minutes
+ */
+router.post('/generate-insights',
+  aiAnalysisLimiter,
+  validate(generateInsightsSchema),
+  aiController.generateDeepInsights as any
+);
+
+/**
  * GET /ai/sessions/:sessionId/insights
  * 
  * Retrieves AI insights for a session
  * Query params: includeHistory, groupIds, tier, limit
  */
 router.get('/sessions/:sessionId/insights',
+  aiAnalysisLimiter,
+  validateParams(sessionParamsSchema),
+  validateQuery(sessionInsightsQuerySchema),
+  aiController.getSessionInsights as any
+);
+
+/**
+ * GET /ai/insights/:sessionId
+ * 
+ * Frontend-compatible route for AI insights retrieval
+ * Matches frontend expectation: /api/v1/ai/insights/{sessionId}
+ * Query params: includeHistory, groupIds, tier, limit
+ */
+router.get('/insights/:sessionId',
   aiAnalysisLimiter,
   validateParams(sessionParamsSchema),
   validateQuery(sessionInsightsQuerySchema),

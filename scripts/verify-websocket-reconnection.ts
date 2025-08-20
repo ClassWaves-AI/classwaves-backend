@@ -33,7 +33,7 @@ class WebSocketReconnectionVerifier {
   private results: TestResult[] = [];
 
   constructor() {
-    this.wsUrl = process.env.WEBSOCKET_URL || 'http://localhost:3001';
+    this.wsUrl = process.env.WEBSOCKET_URL || 'http://localhost:3000';
   }
 
   private generateTestToken(userId: string, role: 'teacher' | 'student' = 'teacher'): string {

@@ -59,6 +59,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       await this.handleGroupStatusUpdate(socket, data);
     });
 
+    // Group leader ready signal
+    socket.on('group:leader_ready', async (data: { sessionId: string; groupId: string; ready: boolean }) => {
+      await this.handleGroupLeaderReady(socket, data);
+    });
+
     // Audio streaming events
     socket.on('audio:start_stream', async (data: { groupId: string }) => {
       await this.handleAudioStreamStart(socket, data);
@@ -319,7 +324,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
   }) {
     try {
       // Update group status in database
-      await databricksService.update('groups', data.groupId, {
+      await databricksService.update('student_groups', data.groupId, {
         status: data.status,
         is_ready: data.isReady !== undefined ? data.isReady : null
       });
@@ -345,6 +350,45 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       socket.emit('error', { 
         code: 'GROUP_UPDATE_FAILED', 
         message: 'Failed to update group status' 
+      });
+    }
+  }
+
+  private async handleGroupLeaderReady(socket: Socket, data: { sessionId: string; groupId: string; ready: boolean }) {
+    try {
+      // Validate that group exists and belongs to session
+      const group = await databricksService.queryOne(`
+        SELECT leader_id, session_id, name 
+        FROM classwaves.sessions.student_groups 
+        WHERE id = ? AND session_id = ?
+      `, [data.groupId, data.sessionId]);
+      
+      if (!group) {
+        socket.emit('error', {
+          code: 'GROUP_NOT_FOUND',
+          message: 'Group not found',
+        });
+        return;
+      }
+
+      // Update group readiness status
+      await databricksService.update('student_groups', data.groupId, {
+        is_ready: data.ready,
+      });
+      
+      // Broadcast group status change to all session participants (including teacher dashboard)
+      this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', {
+        groupId: data.groupId,
+        status: data.ready ? 'ready' : 'waiting',
+        isReady: data.ready
+      });
+      
+      console.log(`Sessions namespace: Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
+    } catch (error) {
+      console.error('Sessions namespace: Group leader ready error:', error);
+      socket.emit('error', {
+        code: 'LEADER_READY_FAILED',
+        message: 'Failed to update leader readiness',
       });
     }
   }

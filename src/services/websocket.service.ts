@@ -401,7 +401,6 @@ export class WebSocketService {
           // Update group readiness status
           await databricksService.update('student_groups', data.groupId, {
             is_ready: data.ready,
-            updated_at: new Date(),
           });
           
           // Record analytics for leader readiness
