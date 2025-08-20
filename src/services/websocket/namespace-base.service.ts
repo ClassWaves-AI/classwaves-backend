@@ -1,11 +1,13 @@
 import { Namespace, Socket } from 'socket.io';
 import { verifyToken } from '../../utils/jwt.utils';
 import { databricksService } from '../databricks.service';
+import { webSocketSecurityValidator, SecurityContext } from './websocket-security-validator.service';
 
 export interface NamespaceSocketData {
   userId: string;
   sessionId?: string;
-  role: 'teacher' | 'student';
+  role: 'teacher' | 'student' | 'admin';
+  schoolId?: string;
   connectedAt: Date;
 }
 
@@ -21,6 +23,8 @@ export abstract class NamespaceBaseService {
 
   private setupMiddleware() {
     this.namespace.use(async (socket, next) => {
+      const startTime = Date.now();
+      
       try {
         const token = socket.handshake.auth.token as string;
         if (!token) {
@@ -32,25 +36,35 @@ export abstract class NamespaceBaseService {
           return next(new Error('Invalid authentication token'));
         }
 
-        // Support both teachers and students
+        // Enhanced user verification with school context
         let user = null;
-        let userRole = decoded.role; // Use role from token
+        let userRole = decoded.role;
+        let schoolId = null;
 
         if (decoded.role === 'teacher' || decoded.role === 'admin') {
-          // Verify teacher exists and is active
+          // Verify teacher exists and is active with school context
           user = await databricksService.queryOne(
-            `SELECT id, role, status FROM classwaves.users.teachers WHERE id = ? AND status = 'active'`,
+            `SELECT t.id, t.role, t.status, t.school_id, s.subscription_status 
+             FROM classwaves.users.teachers t
+             JOIN classwaves.users.schools s ON t.school_id = s.id
+             WHERE t.id = ? AND t.status = 'active' AND s.subscription_status = 'active'`,
             [decoded.userId]
           );
+          schoolId = user?.school_id;
         } else if (decoded.role === 'student') {
-          // Verify student exists in active session participants
+          // Verify student exists in active session participants with session context
           user = await databricksService.queryOne(
-            `SELECT student_id as id, 'active' as status FROM classwaves.sessions.participants WHERE student_id = ? AND is_active = true`,
+            `SELECT p.student_id as id, 'active' as status, cs.school_id
+             FROM classwaves.sessions.participants p
+             JOIN classwaves.sessions.classroom_sessions cs ON p.session_id = cs.id
+             WHERE p.student_id = ? AND p.is_active = true
+             ORDER BY p.join_time DESC
+             LIMIT 1`,
             [decoded.userId]
           );
-          // Students don't have a role column, so use token role
           if (user) {
             user.role = 'student';
+            schoolId = user.school_id;
           }
         }
 
@@ -58,16 +72,53 @@ export abstract class NamespaceBaseService {
           return next(new Error(`User not found or inactive (role: ${decoded.role})`));
         }
 
-        // Set socket data
+        // Create security context for validation
+        const securityContext: SecurityContext = {
+          userId: decoded.userId,
+          role: userRole,
+          schoolId,
+          sessionId: decoded.sessionId,
+          authenticatedAt: new Date(),
+          ipAddress: socket.handshake.address || 'unknown',
+          userAgent: socket.handshake.headers['user-agent'] || 'unknown'
+        };
+
+        // Enhanced namespace security validation
+        const validationResult = await webSocketSecurityValidator.validateNamespaceAccess(
+          socket,
+          this.getNamespaceName(),
+          securityContext
+        );
+
+        if (!validationResult.allowed) {
+          const errorMessage = `Access denied to ${this.getNamespaceName()}: ${validationResult.reason}`;
+          console.warn(`🚫 WebSocket Security: ${errorMessage}`, {
+            userId: decoded.userId,
+            role: userRole,
+            namespace: this.getNamespaceName(),
+            errorCode: validationResult.errorCode,
+            ipAddress: securityContext.ipAddress
+          });
+          return next(new Error(errorMessage));
+        }
+
+        // Set enhanced socket data
         socket.data = {
           userId: decoded.userId,
           role: userRole,
+          schoolId,
+          sessionId: decoded.sessionId,
           connectedAt: new Date(),
-        } as NamespaceSocketData;
+          securityContext
+        } as NamespaceSocketData & { securityContext: SecurityContext };
+
+        const authDuration = Date.now() - startTime;
+        console.log(`✅ ${this.getNamespaceName()} security validation passed for ${userRole} ${decoded.userId} in ${authDuration}ms`);
 
         next();
       } catch (error) {
-        console.error(`${this.getNamespaceName()} auth error:`, error);
+        const authDuration = Date.now() - startTime;
+        console.error(`❌ ${this.getNamespaceName()} enhanced auth error after ${authDuration}ms:`, error);
         next(new Error('Authentication failed'));
       }
     });
