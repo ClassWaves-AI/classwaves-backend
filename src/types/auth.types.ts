@@ -58,5 +58,6 @@ import { Request } from 'express';
 export interface AuthRequest extends Request {
   user?: Teacher & { schoolId?: string }; // Adding schoolId alias for compatibility
   school?: School;
+  targetSchool?: School; // For school-specific middleware operations
   sessionId?: string;
 }

@@ -28,6 +28,7 @@
     "db:integrity-audit": "ts-node src/scripts/data-integrity-audit.ts",
     "db:performance-baseline": "ts-node src/scripts/performance-baseline.ts",
     "validate-test-schema": "ts-node src/scripts/database-schema-validator.ts",
+    "validate-integration-infrastructure": "ts-node src/scripts/validate-integration-infrastructure.ts",
     "architecture-scan": "node scripts/architecture-scan.js",
     "feature-scan": "node ../scripts/feature-scan.js",
     "redis:monitor": "./scripts/redis-monitor.sh",
