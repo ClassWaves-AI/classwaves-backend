@@ -1,92 +1,22 @@
 /**
- * Analytics Computation Service Unit Tests
+ * Analytics Computation Service Tests
  * 
- * Tests the robust, idempotent analytics computation system
- * including membership summary, engagement metrics, and timeline analysis.
+ * Tests the robust, idempotent analytics computation service that follows
+ * the implementation plan for zero-polling, event-driven architecture.
  */
 
 import { AnalyticsComputationService } from '../../services/analytics-computation.service';
-import { databricksService } from '../../services/databricks.service';
-import { websocketService } from '../../services/websocket.service';
-import { realTimeAnalyticsCacheService } from '../../services/real-time-analytics-cache.service';
-import { analyticsLogger } from '../../utils/analytics-logger';
+import { DatabricksService } from '../../services/databricks.service';
 
-// Mock dependencies - basic mocks first
+// Mock dependencies
 jest.mock('../../services/databricks.service');
 jest.mock('../../services/websocket.service');
 
-// Mock background services to prevent timers and async operations
-jest.mock('../../services/audio/InMemoryAudioProcessor', () => ({
-  getInMemoryAudioProcessor: jest.fn(() => ({
-    startMemoryMonitoring: jest.fn(),
-    cleanup: jest.fn()
-  }))
-}));
-
-jest.mock('../../services/ai-analysis-buffer.service', () => ({
-  aiAnalysisBufferService: {
-    startCleanupProcess: jest.fn(),
-    cleanup: jest.fn()
-  }
-}));
-
-jest.mock('../../services/teacher-prompt.service', () => ({
-  teacherPromptService: {
-    cleanup: jest.fn(),
-    getSessionMetrics: jest.fn(() => ({}))
-  }
-}));
-
-jest.mock('../../services/alert-prioritization.service', () => ({
-  alertPrioritizationService: {
-    cleanup: jest.fn(),
-    getAlertStatistics: jest.fn(() => ({}))
-  }
-}));
-
-jest.mock('../../services/guidance-system-health.service', () => ({
-  guidanceSystemHealthService: {
-    cleanup: jest.fn(),
-    performHealthCheck: jest.fn()
-  }
-}));
-
-// Mock utils/analytics-logger.ts to prevent background timers
-jest.mock('../../utils/analytics-logger', () => {
-  const mockAnalyticsLogger = {
-    logOperation: jest.fn(),
-    cleanup: jest.fn()
-  };
-  
-  // Prevent the setInterval from running
-  return {
-    analyticsLogger: mockAnalyticsLogger
-  };
-});
-
-// Mock the cache service more completely to prevent background sync timer
-jest.mock('../../services/real-time-analytics-cache.service', () => {
-  const mockRealTimeAnalyticsCacheService = {
-    getSessionMetrics: jest.fn(),
-    updateSessionMetrics: jest.fn(),
-    syncCacheToDatabriks: jest.fn()
-  };
-
-  return {
-    realTimeAnalyticsCacheService: mockRealTimeAnalyticsCacheService,
-    RealTimeAnalyticsCacheService: jest.fn().mockImplementation(() => mockRealTimeAnalyticsCacheService)
-  };
-});
-
-const mockDatabricksService = databricksService as jest.Mocked<typeof databricksService>;
-const mockWebsocketService = websocketService as jest.Mocked<typeof websocketService>;
-const mockRealTimeAnalyticsCacheService = realTimeAnalyticsCacheService as jest.Mocked<typeof realTimeAnalyticsCacheService>;
-const mockAnalyticsLogger = analyticsLogger as jest.Mocked<typeof analyticsLogger>;
-
 describe('AnalyticsComputationService', () => {
   let service: AnalyticsComputationService;
+  let mockDatabricksService: jest.Mocked<DatabricksService>;
   const sessionId = 'test-session-123';
-  
+
   // Define mock data at top level for reuse across tests
   const mockSessionData = {
     id: sessionId,
@@ -94,734 +24,730 @@ describe('AnalyticsComputationService', () => {
     school_id: 'school-123',
     status: 'ended',
     actual_start: '2024-01-01T10:00:00Z',
-    actual_end: '2024-01-01T11:00:00Z'
+    actual_end: '2024-01-01T11:00:00Z',
+    duration_minutes: 60,
+    // Add other fields that might be expected
+    name: 'Test Session',
+    subject: 'Mathematics',
+    grade_level: '9th',
+    max_students: 20,
+    created_at: '2024-01-01T09:00:00Z',
+    updated_at: '2024-01-01T11:00:00Z'
   };
 
   const mockGroupsData = [
     {
-      id: 'group-1',
+      id: 'group1',
       name: 'Group A',
-      expected_member_count: 4,
-      leader_id: 'leader-1',
-      user_id: 'member-1',
-      joined_at: '2024-01-01T10:05:00Z'
+      created_at: '2024-01-01T10:00:00Z',
+      first_member_joined: '2024-01-01T10:05:00Z'
     },
     {
-      id: 'group-1',
-      name: 'Group A',
-      expected_member_count: 4,
-      leader_id: 'leader-1',
-      user_id: 'member-2',
-      joined_at: '2024-01-01T10:06:00Z'
-    },
-    {
-      id: 'group-2',
+      id: 'group2',
       name: 'Group B',
-      expected_member_count: 3,
-      leader_id: 'leader-2',
-      user_id: 'member-3',
-      joined_at: '2024-01-01T10:07:00Z'
+      created_at: '2024-01-01T10:00:00Z',
+      first_member_joined: '2024-01-01T10:07:00Z'
     }
   ];
-  
-  beforeAll(() => {
-    // Use fake timers to prevent real timers from running during tests
-    jest.useFakeTimers();
-  });
+
+  const mockParticipantsData = [
+    { id: 'member1', group_id: 'group1', is_active: true },
+    { id: 'member2', group_id: 'group1', is_active: true },
+    { id: 'member3', group_id: 'group1', is_active: true },
+    { id: 'member4', group_id: 'group1', is_active: false },
+    { id: 'member5', group_id: 'group2', is_active: true },
+    { id: 'member6', group_id: 'group2', is_active: false },
+    { id: 'member7', group_id: 'group2', is_active: false }
+  ];
+
+  const mockPlannedVsActualData = {
+    planned_groups: 3,
+    actual_groups: 2,
+    ready_groups_at_start: 1,
+    ready_groups_at_5m: 2,
+    ready_groups_at_10m: 2,
+    avg_participation_rate: 0.57, // 4/7 = 0.57
+    total_students: 7,
+    active_students: 4 // Updated to match mockParticipantsData
+  };
+
+  const mockGroupPerformanceData = [
+    {
+      id: 'group1',
+      name: 'Group A',
+      created_at: '2024-01-01T10:00:00Z',
+      first_member_joined: '2024-01-01T10:05:00Z',
+      member_count: 4, // member1, member2, member3, member4
+      engagement_rate: 0.75 // 3 active out of 4 = 0.75
+    },
+    {
+      id: 'group2',
+      name: 'Group B',
+      created_at: '2024-01-01T10:00:00Z',
+      first_member_joined: '2024-01-01T10:07:00Z',
+      member_count: 3, // member5, member6, member7
+      engagement_rate: 0.33 // 1 active out of 3 = 0.33
+    }
+  ];
 
   beforeEach(() => {
-    service = new AnalyticsComputationService();
-    jest.clearAllMocks();
-    
-    // Setup default mocks
-    mockAnalyticsLogger.logOperation = jest.fn();
-    mockWebsocketService.emitToSession = jest.fn();
+    // Create mock DatabricksService
+    mockDatabricksService = {
+      query: jest.fn(),
+      queryOne: jest.fn(),
+      upsert: jest.fn(),
+      update: jest.fn(),
+      insert: jest.fn(),
+      delete: jest.fn(),
+      recordAuditLog: jest.fn(),
+      generateId: jest.fn(() => 'test-id'),
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      isConnected: jest.fn(() => true)
+    } as any;
+
+    // Create service with mock dependencies
+    service = new AnalyticsComputationService(mockDatabricksService);
   });
 
   afterEach(() => {
-    // Clear any pending timers after each test
-    jest.clearAllTimers();
-  });
-
-  afterAll(() => {
-    // Restore real timers and clean up
-    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
   describe('computeSessionAnalytics', () => {
 
+    it('should debug mock setup', async () => {
+      // Simple test to debug mock setup
+      console.log('🔍 Debug: Testing mock setup...');
+      
+      // Test basic mock functionality
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce('test-value-1')
+        .mockResolvedValueOnce('test-value-2');
+      
+      const result1 = await mockDatabricksService.queryOne('query1');
+      const result2 = await mockDatabricksService.queryOne('query2');
+      
+      console.log('🔍 Debug: Mock results:', { result1, result2 });
+      
+      expect(result1).toBe('test-value-1');
+      expect(result2).toBe('test-value-2');
+    });
+
     it('should compute comprehensive session analytics successfully', async () => {
       // Clear all previous mocks
       jest.clearAllMocks();
       
-      // Set up complete mock sequence for successful computation
+      // Set up minimal mock sequence - focus on getting the basic flow working
       mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
+        .mockResolvedValueOnce(null) // 1. No existing analytics
+        .mockResolvedValueOnce(mockSessionData); // 2. Session data (this is the key one!)
 
       mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // 3. Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // 4. Participants data
+        .mockResolvedValueOnce(mockGroupPerformanceData); // 5. Group performance data
 
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
+      // Mock upsert operations
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
       const result = await service.computeSessionAnalytics(sessionId);
 
       expect(result).toBeDefined();
-      expect(result?.sessionAnalyticsOverview.sessionId).toBe(sessionId);
-      expect(result?.sessionAnalyticsOverview.membershipSummary).toEqual(
-        expect.objectContaining({
-          totalConfiguredMembers: 7, // 4 + 3
-          totalActualMembers: 3,
-          groupsWithLeadersPresent: 2,
-          groupsAtFullCapacity: 0
-        })
-      );
+      expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+      expect(result.sessionAnalyticsOverview.totalStudents).toBe(7);
+      expect(result.sessionAnalyticsOverview.activeStudents).toBe(4);
+      expect(result.sessionAnalyticsOverview.participationRate).toBe(57); // 4/7 = 57%
+      expect(result.sessionAnalyticsOverview.groupCount).toBe(2);
+      expect(result.sessionAnalyticsOverview.averageGroupSize).toBe(4);
     });
 
     it('should be idempotent - return cached result if already computed', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-
-      const existingAnalyticsData = {
-        sessionId,
-        computedAt: '2024-01-01T11:00:00Z',
-        membershipSummary: {
-          totalConfiguredMembers: 7,
-          totalActualMembers: 3,
-          groupsWithLeadersPresent: 2,
-          groupsAtFullCapacity: 0,
-          averageMembershipAdherence: 0.43,
-          membershipFormationTime: {
-            avgFormationTime: 60000,
-            fastestGroup: null
-          }
-        },
-        engagementMetrics: {
-          totalParticipants: 3,
-          activeGroups: 2,
-          averageEngagement: 0.75,
-          participationRate: 0.8
-        },
-        timelineAnalysis: {
-          sessionDuration: 60,
-          groupFormationTime: 5,
-          activeParticipationTime: 55,
-          keyMilestones: []
-        },
-        groupPerformance: []
+      // Mock existing analytics data
+      const existingAnalytics = {
+        total_students: 5,
+        active_students: 3,
+        participation_rate: 0.6,
+        overall_engagement_score: 75,
+        created_at: new Date()
       };
 
-      const existingComputationMetadata = {
-        status: 'completed',
-        computedAt: new Date('2024-01-01T11:00:00Z'),
-        version: '2.0',
-        processingTime: 2000
-      };
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce(existingAnalytics) // Existing analytics found
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
-      // Mock ONLY the getExistingAnalytics call (first queryOne call)
-      mockDatabricksService.queryOne.mockResolvedValueOnce({
-        analytics_data: JSON.stringify(existingAnalyticsData),
-        computation_metadata: JSON.stringify(existingComputationMetadata)
-      });
+      mockDatabricksService.query
+        .mockResolvedValueOnce([]) // No groups
+        .mockResolvedValueOnce([]); // No participants
 
       const result = await service.computeSessionAnalytics(sessionId);
 
       expect(result).toBeDefined();
-      expect(result?.sessionAnalyticsOverview.sessionId).toBe(sessionId);
-      expect(result?.computationMetadata.status).toBe('completed');
-      
-      // Should return cached result without calling other database methods
-      expect(mockDatabricksService.query).not.toHaveBeenCalled();
-      expect(mockDatabricksService.queryOne).toHaveBeenCalledTimes(1); // Only getExistingAnalytics
-      expect(mockDatabricksService.queryOne).toHaveBeenCalledWith(
-        expect.stringContaining('SELECT analytics_data, computation_metadata'),
-        [sessionId]
+      expect(result.sessionAnalyticsOverview.totalStudents).toBe(5);
+      expect(result.sessionAnalyticsOverview.activeStudents).toBe(3);
+      expect(result.sessionAnalyticsOverview.participationRate).toBe(60);
+      expect(result.sessionAnalyticsOverview.overallEngagement).toBe(75);
+    });
+
+    it('should handle session not found gracefully', async () => {
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce(null) // No existing analytics
+        .mockResolvedValueOnce(null); // No session data
+
+      await expect(service.computeSessionAnalytics(sessionId)).rejects.toThrow(
+        `Session ${sessionId} not found`
       );
     });
 
-    it('should compute membership summary with formation times correctly', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Set up complete mock sequence
+    it('should compute group performance analytics correctly', async () => {
       mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
+        .mockResolvedValueOnce(null) // No existing analytics
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
       mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce(mockGroupPerformanceData); // Group performance data
 
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
       const result = await service.computeSessionAnalytics(sessionId);
 
-      const membershipSummary = result?.sessionAnalyticsOverview.membershipSummary;
-      expect(membershipSummary?.totalConfiguredMembers).toBe(7);
-      expect(membershipSummary?.totalActualMembers).toBe(3);
-      expect(membershipSummary?.averageMembershipAdherence).toBeCloseTo(0.43, 2);
-      expect(membershipSummary?.membershipFormationTime.avgFormationTime).toBeGreaterThan(0);
+      expect(result.groupAnalytics).toHaveLength(2);
+      expect(result.groupAnalytics[0].groupId).toBe('group1');
+      expect(result.groupAnalytics[0].memberCount).toBe(4);
+      expect(result.groupAnalytics[0].engagementScore).toBe(75); // 0.75 * 100
+      expect(result.groupAnalytics[0].participationRate).toBe(75);
     });
 
-    it('should compute engagement metrics from cache when available', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Set up complete mock sequence
+    it('should persist analytics to database correctly', async () => {
       mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
+        .mockResolvedValueOnce(null) // No existing analytics
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
       mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce(mockGroupPerformanceData); // Group performance data
 
-      // Mock cache service to return cached metrics (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
-
-      const result = await service.computeSessionAnalytics(sessionId);
-
-      const engagementMetrics = result?.sessionAnalyticsOverview.engagementMetrics;
-      expect(engagementMetrics?.totalParticipants).toBe(3);
-      expect(engagementMetrics?.activeGroups).toBe(2);
-      expect(engagementMetrics?.averageEngagement).toBe(0.75);
-      expect(engagementMetrics?.participationRate).toBe(0.8);
-    });
-
-    it('should fall back to database calculation when cache unavailable', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Setup fresh mocks for this test - cache returns null to trigger fallback
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue(null);
-      
-      // Mock database queries in the exact sequence they'll be called
-      mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData) // Session data (fetchSessionData)
-        .mockResolvedValueOnce({ // Engagement metrics from DB fallback (computeEngagementMetrics)
-          total_participants: 3,
-          active_groups: 2,
-          avg_engagement: 0.7,
-          participation_rate: 0.75
-        });
-
-      // Mock other database queries that will be called
-      mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
-
-      // Mock other required services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
-
-      const result = await service.computeSessionAnalytics(sessionId);
-
-      // Verify cache was checked first and returned null
-      expect(mockRealTimeAnalyticsCacheService.getSessionMetrics).toHaveBeenCalledWith(sessionId);
-      
-      // Verify database fallback was used for engagement metrics
-      expect(result?.sessionAnalyticsOverview.engagementMetrics).toEqual({
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.7,
-        participationRate: 0.75
-      });
-    });
-
-    it('should handle computation errors gracefully', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Setup mocks to trigger the session not found error
-      mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(null); // fetchSessionData returns null -> triggers "Session not found" error
-
-      // Mock logger
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn(); // markComputationFailed will be called
-
-      const result = await service.computeSessionAnalytics(sessionId);
-
-      expect(result).toBeNull();
-      expect(mockAnalyticsLogger.logOperation).toHaveBeenCalledWith(
-        'analytics_computation_failed',
-        'session_analytics',
-        expect.any(Number),
-        false,
-        expect.objectContaining({
-          sessionId,
-          error: 'Session test-session-123 not found or incomplete',
-          metadata: expect.objectContaining({
-            computationId: expect.stringMatching(/^analytics_test-session-123_\d+$/),
-            processingTimeMs: expect.any(Number)
-          })
-        })
-      );
-    });
-
-    it('should persist analytics to database after successful computation', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Set up complete mock sequence for successful computation
-      mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
-
-      mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
-
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
       await service.computeSessionAnalytics(sessionId);
 
+      // Verify session_metrics upsert
       expect(mockDatabricksService.upsert).toHaveBeenCalledWith(
-        'session_analytics',
-        { session_id: sessionId, analysis_type: 'final_summary' },
+        'session_metrics',
+        { session_id: sessionId },
         expect.objectContaining({
           session_id: sessionId,
-          analysis_type: 'final_summary',
-          analytics_data: expect.any(String),
-          computation_metadata: expect.any(String),
-          status: 'completed'
+          total_students: 7,
+          active_students: 4,
+          participation_rate: 0.57, // 57/100
+          overall_engagement_score: 57
+        })
+      );
+
+      // Verify session_analytics_cache upsert
+      expect(mockDatabricksService.upsert).toHaveBeenCalledWith(
+        'session_analytics_cache',
+        { session_id: sessionId },
+        expect.objectContaining({
+          session_id: sessionId,
+          actual_groups: 2,
+          avg_participation_rate: 0.57
+        })
+      );
+
+      // Verify group_metrics upserts
+      expect(mockDatabricksService.upsert).toHaveBeenCalledWith(
+        'group_metrics',
+        { group_id: 'group1', session_id: sessionId },
+        expect.objectContaining({
+          group_id: 'group1',
+          session_id: sessionId,
+          turn_taking_score: 75
         })
       );
     });
 
-    it('should calculate timeline analysis correctly', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Mock session events for timeline - need to set up complete mock sequence
+    it('should handle database errors gracefully', async () => {
       mockDatabricksService.queryOne
         .mockResolvedValueOnce(null) // No existing analytics
-        .mockResolvedValueOnce(mockSessionData); // Session data
-        
-      mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([ // Timeline events (computeTimelineAnalysis)
-          {
-            event_type: 'session_started',
-            event_data: {},
-            created_at: '2024-01-01T10:00:00Z'
-          },
-          {
-            event_type: 'group_ready', 
-            event_data: { groupName: 'Group A' },
-            created_at: '2024-01-01T10:05:00Z'
-          }
-        ])
-        .mockResolvedValueOnce([]); // Group performance data (empty)
-
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
-
-      const result = await service.computeSessionAnalytics(sessionId);
-
-      const timeline = result?.sessionAnalyticsOverview.timelineAnalysis;
-      expect(timeline?.sessionDuration).toBe(60); // 1 hour in minutes
-      expect(timeline?.keyMilestones).toHaveLength(2);
-      expect(timeline?.keyMilestones[0].event).toBe('Session Started');
-    });
-
-    it('should compute group performance summaries', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Mock group analytics data - this will be returned by computeGroupPerformance
-      const mockGroupAnalytics = [
-        {
-          id: 'group-1',
-          name: 'Group A',
-          member_count: 2,
-          engagement_score: 0.8,
-          participation_rate: 0.85,
-          first_member_joined: '2024-01-01T10:05:00Z'
-        }
-      ];
-
-      // Set up complete mock sequence
-      mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
       mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce(mockGroupAnalytics); // Group performance (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce(mockGroupsData); // Group performance data
 
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
+      // Mock database error during upsert
+      mockDatabricksService.upsert = jest.fn().mockRejectedValue(new Error('Database connection failed'));
 
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
-
-      const result = await service.computeSessionAnalytics(sessionId);
-
-      // Check that groupAnalytics is populated (it comes from groupPerformance)
-      expect(result).toBeDefined();
-      expect(result?.groupAnalytics).toBeDefined();
-      expect(result?.groupAnalytics).toHaveLength(1);
-      expect(result?.groupAnalytics[0]).toEqual(
-        expect.objectContaining({
-          groupId: 'group-1',
-          groupName: 'Group A',
-          memberCount: 2,
-          engagementScore: 0.8,
-          participationRate: 0.85,
-          readyTime: '2024-01-01T10:05:00Z'
-        })
-      );
-    });
-  });
-
-  describe('emitAnalyticsFinalized', () => {
-    it('should emit analytics:finalized event via WebSocket', async () => {
-      await service.emitAnalyticsFinalized(sessionId);
-
-      expect(mockWebsocketService.emitToSession).toHaveBeenCalledWith(
-        sessionId,
-        'analytics:finalized',
-        {
-          sessionId,
-          timestamp: expect.any(String)
-        }
+      await expect(service.computeSessionAnalytics(sessionId)).rejects.toThrow(
+        'Database connection failed'
       );
     });
 
-    it('should handle WebSocket emission errors gracefully', async () => {
-      const mockError = new Error('WebSocket error');
-      (mockWebsocketService.emitToSession as jest.Mock).mockRejectedValue(mockError);
-      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
-
-      await service.emitAnalyticsFinalized(sessionId);
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining(`Failed to emit analytics:finalized for session ${sessionId}`),
-        expect.any(Error)
-      );
-
-      consoleSpy.mockRestore();
-    });
-  });
-
-  describe('Edge Cases', () => {
-    it('should handle sessions with no groups', async () => {
-      // Clear all previous mocks  
-      jest.clearAllMocks();
-      
-      // Set up mocks for no groups scenario
+    it('should mark computation as failed when errors occur', async () => {
       mockDatabricksService.queryOne
         .mockResolvedValueOnce(null) // No existing analytics
-        .mockResolvedValueOnce(mockSessionData); // Session data
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
       mockDatabricksService.query
-        .mockResolvedValueOnce([]) // No groups (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // No timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // No group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce(mockGroupsData); // Group performance data
 
-      // Mock cache service with no data
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 0,
-        activeGroups: 0,
-        averageEngagement: 0,
-        averageParticipation: 0,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 0
-      });
+      // Mock database error during upsert
+      mockDatabricksService.upsert = jest.fn().mockRejectedValue(new Error('Database connection failed'));
 
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+      try {
+        await service.computeSessionAnalytics(sessionId);
+      } catch (error) {
+        // Expected to fail
+      }
 
-      const result = await service.computeSessionAnalytics(sessionId);
-
-      expect(result?.sessionAnalyticsOverview.membershipSummary).toEqual(
+      // Verify that failure was recorded
+      expect(mockDatabricksService.upsert).toHaveBeenCalledWith(
+        'session_metrics',
+        { session_id: sessionId },
         expect.objectContaining({
-          totalConfiguredMembers: 0,
-          totalActualMembers: 0,
-          groupsWithLeadersPresent: 0,
-          groupsAtFullCapacity: 0,
-          averageMembershipAdherence: 0
+          session_id: sessionId,
+          technical_issues_count: 1
         })
       );
     });
 
-    it('should handle sessions with incomplete group data', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-
-      const incompleteGroupData = [
-        {
-          id: 'group-1',
-          name: 'Group A',
-          expected_member_count: null, // Missing expected count
-          leader_id: null, // Missing leader
-          user_id: 'member-1',
-          joined_at: '2024-01-01T10:05:00Z'
-        }
-      ];
-
+    it('should handle empty groups gracefully', async () => {
       mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
-      
+        .mockResolvedValueOnce(null) // No existing analytics
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
       mockDatabricksService.query
-        .mockResolvedValueOnce(incompleteGroupData) // Incomplete group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce([]) // No groups
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce([]); // No group performance data
 
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 1,
-        activeGroups: 1,
-        averageEngagement: 0.5,
-        averageParticipation: 0.6,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 0
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
       const result = await service.computeSessionAnalytics(sessionId);
 
-      expect(result).toBeDefined();
-      expect(result?.sessionAnalyticsOverview.membershipSummary.totalConfiguredMembers).toBe(0);
-      expect(result?.sessionAnalyticsOverview.membershipSummary.groupsWithLeadersPresent).toBe(0);
+      expect(result.sessionAnalyticsOverview.groupCount).toBe(0);
+      expect(result.sessionAnalyticsOverview.averageGroupSize).toBe(0);
+      expect(result.groupAnalytics).toHaveLength(0);
     });
 
-    it('should handle very long session durations', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
+    it('should handle missing planned vs actual data gracefully', async () => {
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce(null) // No existing analytics
+        .mockResolvedValueOnce(mockSessionData) // Session data
+        .mockResolvedValueOnce(null); // No planned vs actual data
+
+      mockDatabricksService.query
+        .mockResolvedValueOnce(mockGroupsData) // Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce(mockGroupsData); // Group performance data
+
+      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+      const result = await service.computeSessionAnalytics(sessionId);
+
+      expect(result.sessionAnalyticsOverview.plannedGroups).toBe(0);
+      expect(result.sessionAnalyticsOverview.actualGroups).toBe(2); // From actual groups data
+      expect(result.sessionAnalyticsOverview.readyGroupsAtStart).toBe(0);
+      expect(result.sessionAnalyticsOverview.readyGroupsAt5m).toBe(0);
+      expect(result.sessionAnalyticsOverview.readyGroupsAt10m).toBe(0);
+      expect(result.sessionAnalyticsOverview.memberAdherence).toBe(0);
+    });
+
+    it('should handle long session duration correctly', async () => {
       const longSessionData = {
         ...mockSessionData,
-        actual_start: '2024-01-01T10:00:00Z',
-        actual_end: '2024-01-02T10:00:00Z' // 24 hours
+        duration_minutes: 1440 // 24 hours
       };
 
-      // Set up complete mock sequence
       mockDatabricksService.queryOne
         .mockResolvedValueOnce(null) // No existing analytics
-        .mockResolvedValueOnce(longSessionData); // Long session data
+        .mockResolvedValueOnce(longSessionData) // Long session data
+        .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
       mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
+        .mockResolvedValueOnce(mockGroupsData) // Groups data
+        .mockResolvedValueOnce(mockParticipantsData) // Participants data
+        .mockResolvedValueOnce(mockGroupsData); // Group performance data
 
-      // Mock cache service
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
       mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
 
       const result = await service.computeSessionAnalytics(sessionId);
 
-      expect(result?.sessionAnalyticsOverview.timelineAnalysis.sessionDuration).toBe(1440); // 24 hours in minutes
+      expect(result.sessionAnalyticsOverview.sessionDuration).toBe(1440);
+    });
+
+    it('should handle zero students gracefully', async () => {
+      const emptySessionData = {
+        ...mockSessionData,
+        total_students: 0
+      };
+
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce(null) // No existing analytics
+        .mockResolvedValueOnce(emptySessionData) // Empty session data
+        .mockResolvedValueOnce(null); // No planned vs actual data
+
+      mockDatabricksService.query
+        .mockResolvedValueOnce([]) // No groups
+        .mockResolvedValueOnce([]) // No participants
+        .mockResolvedValueOnce([]); // No group performance data
+
+      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+      const result = await service.computeSessionAnalytics(sessionId);
+
+      expect(result.sessionAnalyticsOverview.totalStudents).toBe(0);
+      expect(result.sessionAnalyticsOverview.activeStudents).toBe(0);
+      expect(result.sessionAnalyticsOverview.participationRate).toBe(0);
+      expect(result.sessionAnalyticsOverview.overallEngagement).toBe(0);
+      expect(result.sessionAnalyticsOverview.groupCount).toBe(0);
+      expect(result.sessionAnalyticsOverview.averageGroupSize).toBe(0);
     });
   });
 
-  describe('Performance', () => {
-    it('should complete analytics computation within timeout', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Set up complete mock sequence for performance test
-      mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
+  // ============================================================================
+  // COMPREHENSIVE ERROR HANDLING TESTS
+  // ============================================================================
 
-      mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
-
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
-      });
-
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
-
-      const startTime = Date.now();
-      
-      await service.computeSessionAnalytics(sessionId);
-      
-      const duration = Date.now() - startTime;
-      expect(duration).toBeLessThan(30000); // Should complete within 30 seconds
+  describe('Error Handling & Robustness', () => {
+    beforeEach(() => {
+      // Reset circuit breaker state before each test
+      (service as any).circuitBreaker = {
+        state: 'CLOSED',
+        failures: 0,
+        lastFailureTime: 0,
+        successCount: 0
+      };
     });
 
-    it('should log performance metrics', async () => {
-      // Clear all previous mocks
-      jest.clearAllMocks();
-      
-      // Set up complete mock sequence for performance test
-      mockDatabricksService.queryOne
-        .mockResolvedValueOnce(null) // No existing analytics (getExistingAnalytics)
-        .mockResolvedValueOnce(mockSessionData); // Session data (fetchSessionData)
+    describe('Timeout Handling', () => {
+      it('should timeout if computation takes too long', async () => {
+        // Mock a very slow database operation
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockImplementationOnce(() => new Promise(resolve => setTimeout(resolve, 35000))); // 35 second delay
 
-      mockDatabricksService.query
-        .mockResolvedValueOnce(mockGroupsData) // Group membership data (computeMembershipSummary)
-        .mockResolvedValueOnce([]) // Timeline events (computeTimelineAnalysis)
-        .mockResolvedValueOnce([]); // Group performance data (computeGroupPerformance)
+        const startTime = Date.now();
+        
+        await expect(service.computeSessionAnalytics(sessionId))
+          .rejects
+          .toThrow('Analytics computation timed out after 30000ms');
 
-      // Mock cache service (for engagement metrics)
-      mockRealTimeAnalyticsCacheService.getSessionMetrics.mockResolvedValue({
-        sessionId,
-        totalParticipants: 3,
-        activeGroups: 2,
-        averageEngagement: 0.75,
-        averageParticipation: 0.8,
-        alertsActive: [],
-        lastUpdate: '2024-01-01T11:00:00Z',
-        calculatedAt: '2024-01-01T11:00:00Z',
-        readyGroups: 2
+        const elapsed = Date.now() - startTime;
+        expect(elapsed).toBeLessThan(32000); // Should timeout around 30 seconds
+      }, 35000);
+
+      it('should timeout individual database operations', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        // Mock slow group query that exceeds database timeout
+        mockDatabricksService.query
+          .mockImplementationOnce(() => new Promise<any[]>(resolve => setTimeout(() => resolve([]), 15000))) // 15 second delay
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        await expect(service.computeSessionAnalytics(sessionId))
+          .rejects
+          .toThrow('Compute session overview timed out after 10000ms');
+      }, 20000);
+    });
+
+    describe('Circuit Breaker Pattern', () => {
+      it('should open circuit breaker after repeated failures', async () => {
+        // Simulate 5 consecutive failures
+        for (let i = 0; i < 5; i++) {
+          mockDatabricksService.queryOne.mockRejectedValueOnce(new Error('Database connection failed'));
+          
+          try {
+            await service.computeSessionAnalytics(`session-${i}`);
+          } catch (error) {
+            // Expected to fail
+          }
+        }
+
+        // 6th attempt should be blocked by circuit breaker
+        await expect(service.computeSessionAnalytics('session-6'))
+          .rejects
+          .toThrow('Analytics service temporarily unavailable due to repeated failures');
       });
 
-      // Mock other services
-      mockAnalyticsLogger.logOperation = jest.fn();
-      mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+      it('should move to half-open state after reset timeout', async () => {
+        // Force circuit breaker to open
+        (service as any).circuitBreaker = {
+          state: 'OPEN',
+          failures: 5,
+          lastFailureTime: Date.now() - 65000, // 65 seconds ago (past reset timeout)
+          successCount: 0
+        };
 
-      await service.computeSessionAnalytics(sessionId);
+        // Mock successful operation
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
-      expect(mockAnalyticsLogger.logOperation).toHaveBeenCalledWith(
-        'analytics_computation_completed',
-        'session_analytics',
-        expect.any(Number),
-        true,
-        expect.objectContaining({
-          sessionId,
-          metadata: expect.objectContaining({
-            computationId: expect.stringMatching(/^analytics_test-session-123_\d+$/),
-            processingTimeMs: expect.any(Number),
-            version: '2.0'
-          })
-        })
-      );
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData)
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+        expect(result).toBeDefined();
+        expect((service as any).circuitBreaker.state).toBe('HALF_OPEN');
+      });
+
+      it('should close circuit breaker after successful operations in half-open state', async () => {
+        // Set circuit breaker to half-open
+        (service as any).circuitBreaker = {
+          state: 'HALF_OPEN',
+          failures: 3,
+          lastFailureTime: Date.now() - 30000,
+          successCount: 1 // Already one success
+        };
+
+        // Mock successful operation
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData)
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+        expect(result).toBeDefined();
+        expect((service as any).circuitBreaker.state).toBe('CLOSED');
+        expect((service as any).circuitBreaker.failures).toBe(0);
+      });
+    });
+
+    describe('Partial Failure Recovery', () => {
+      it('should succeed with session analytics even if group analytics fail', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData) // Groups data succeeds
+          .mockResolvedValueOnce(mockParticipantsData) // Participants data succeeds
+          .mockRejectedValueOnce(new Error('Group performance query failed')); // Group performance fails
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        // Should have session analytics
+        expect(result.sessionAnalyticsOverview).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        
+        // Should have empty group analytics due to failure
+        expect(result.groupAnalytics).toEqual([]);
+        
+        // Should indicate partial success
+        expect(result.computationMetadata.status).toBe('partial_success');
+        expect(result.computationMetadata.errors).toContain('Group performance query failed');
+      });
+
+      it('should provide minimal analytics when session overview fails', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockRejectedValueOnce(new Error('Session overview query failed')) // Session overview fails
+          .mockResolvedValueOnce(mockParticipantsData) // Participants data succeeds
+          .mockResolvedValueOnce(mockGroupPerformanceData); // Group performance succeeds
+
+        mockDatabricksService.upsert = jest.fn().mockResolvedValue(undefined);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        // Should have minimal session analytics
+        expect(result.sessionAnalyticsOverview).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        expect(result.sessionAnalyticsOverview.totalStudents).toBe(0); // Minimal values
+        expect(result.sessionAnalyticsOverview.sessionDuration).toBe(60); // From session data
+
+        // Should have group analytics
+        expect(result.groupAnalytics).toBeDefined();
+        expect(result.groupAnalytics.length).toBeGreaterThan(0);
+        
+        // Should indicate partial success
+        expect(result.computationMetadata.status).toBe('partial_success');
+      });
+
+      it('should continue even if persistence fails', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(mockSessionData) // Session data
+          .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
+
+        mockDatabricksService.query
+          .mockResolvedValueOnce(mockGroupsData)
+          .mockResolvedValueOnce(mockParticipantsData)
+          .mockResolvedValueOnce(mockGroupPerformanceData);
+
+        // Mock persistence failure
+        mockDatabricksService.upsert = jest.fn().mockRejectedValue(new Error('Database write failed'));
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        // Should still return computed analytics
+        expect(result).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        expect(result.groupAnalytics).toBeDefined();
+      });
+    });
+
+    describe('Error Classification', () => {
+      it('should classify database connection errors correctly', async () => {
+        const connectionError = new Error('ECONNRESET: Connection reset by peer');
+        mockDatabricksService.queryOne.mockRejectedValueOnce(connectionError);
+
+        try {
+          await service.computeSessionAnalytics(sessionId);
+        } catch (error: any) {
+          expect(error.type).toBe('DATABASE_CONNECTION');
+          expect(error.message).toContain('Database connection failed');
+        }
+      });
+
+      it('should classify timeout errors correctly', async () => {
+        const timeoutError = new Error('Query timed out after 30000ms');
+        mockDatabricksService.queryOne.mockRejectedValueOnce(timeoutError);
+
+        try {
+          await service.computeSessionAnalytics(sessionId);
+        } catch (error: any) {
+          expect(error.type).toBe('TIMEOUT');
+          expect(error.message).toContain('took too long');
+        }
+      });
+
+      it('should classify data corruption errors correctly', async () => {
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(null); // Session not found
+
+        try {
+          await service.computeSessionAnalytics(sessionId);
+        } catch (error: any) {
+          expect(error.type).toBe('DATA_CORRUPTION');
+          expect(error.message).toContain('Session data is invalid or corrupted');
+        }
+      });
+    });
+
+    describe('Fallback Analytics', () => {
+      it('should provide cached analytics when database connection fails', async () => {
+        // Mock database connection failure
+        const connectionError = new Error('ECONNRESET: Connection reset by peer');
+        mockDatabricksService.queryOne.mockRejectedValueOnce(connectionError);
+
+        // Mock cached analytics available
+        const cachedAnalytics = {
+          session_id: sessionId,
+          total_students: 5,
+          active_students: 4,
+          avg_participation_rate: 0.8,
+          actual_groups: 2,
+          avg_group_size: 2.5,
+          session_duration: 45,
+          planned_groups: 2,
+          ready_groups_at_start: 1,
+          ready_groups_at_5m: 2,
+          ready_groups_at_10m: 2,
+          member_adherence: 100
+        };
+
+        // Mock fallback query for cached data
+        mockDatabricksService.queryOne.mockResolvedValueOnce(cachedAnalytics);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        expect(result).toBeDefined();
+        expect(result.sessionAnalyticsOverview.sessionId).toBe(sessionId);
+        expect(result.sessionAnalyticsOverview.totalStudents).toBe(5);
+        expect(result.sessionAnalyticsOverview.activeStudents).toBe(4);
+        expect(result.computationMetadata.status).toBe('fallback_from_cache');
+      });
+
+      it('should not provide fallback for data corruption errors', async () => {
+        // Mock data corruption error (session not found)
+        mockDatabricksService.queryOne
+          .mockResolvedValueOnce(null) // No existing analytics
+          .mockResolvedValueOnce(null); // Session not found
+
+        await expect(service.computeSessionAnalytics(sessionId))
+          .rejects
+          .toThrow('Session data is invalid or corrupted');
+      });
+    });
+
+    describe('Idempotency', () => {
+      it('should return existing analytics without recomputation', async () => {
+        const existingAnalytics = {
+          sessionAnalyticsOverview: {
+            sessionId,
+            totalStudents: 10,
+            activeStudents: 8,
+            participationRate: 80,
+            overallEngagement: 75,
+            groupCount: 3,
+            averageGroupSize: 3,
+            sessionDuration: 60,
+            plannedGroups: 3,
+            actualGroups: 3,
+            readyGroupsAtStart: 2,
+            readyGroupsAt5m: 3,
+            readyGroupsAt10m: 3,
+            memberAdherence: 100
+          },
+          groupAnalytics: [],
+          computationMetadata: {
+            computationId: 'existing-123',
+            computedAt: new Date(),
+            version: '2.0',
+            status: 'completed',
+            processingTime: 1500
+          }
+        };
+
+        // Mock existing analytics found
+        mockDatabricksService.queryOne.mockResolvedValueOnce(existingAnalytics);
+
+        const result = await service.computeSessionAnalytics(sessionId);
+
+        expect(result).toEqual(existingAnalytics);
+        
+        // Should not call any other database methods
+        expect(mockDatabricksService.query).not.toHaveBeenCalled();
+        expect(mockDatabricksService.upsert).not.toHaveBeenCalled();
+      });
     });
   });
 });

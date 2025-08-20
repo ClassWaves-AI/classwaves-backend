@@ -259,7 +259,7 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
         actorType: 'teacher',
         eventType: 'session_analytics_access',
         eventCategory: 'data_access',
-        resourceType: 'session_analytics',
+        resourceType: 'session_metrics', // ✅ Updated to use correct table name
         resourceId: sessionId,
         schoolId: school.id,
         description: `Teacher accessed session analytics for educational review`,
@@ -1317,7 +1317,7 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       // Try to get computed analytics first (preferred path)
       const analyticsData = await databricksService.queryOne(`
         SELECT analytics_data, computed_at, status
-        FROM session_analytics 
+        FROM session_metrics 
         WHERE session_id = ? AND analysis_type = 'final_summary'
         ORDER BY computed_at DESC 
         LIMIT 1
@@ -1328,7 +1328,18 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       if (analyticsData && analyticsData.analytics_data) {
         // Use pre-computed analytics (fast path)
         const fullAnalytics = JSON.parse(analyticsData.analytics_data);
-        membershipSummary = fullAnalytics.membershipSummary;
+        // Transform the old format to new format for consistency
+        membershipSummary = {
+          totalConfiguredMembers: fullAnalytics.totalConfiguredMembers || 0,
+          totalActualMembers: fullAnalytics.totalActualMembers || 0,
+          groupsWithLeadersPresent: fullAnalytics.groupsWithLeadersPresent || 0,
+          groupsAtFullCapacity: fullAnalytics.groupsAtFullCapacity || 0,
+          averageMembershipAdherence: fullAnalytics.averageMembershipAdherence || 0,
+          membershipFormationTime: fullAnalytics.membershipFormationTime || {
+            avgFormationTime: null,
+            fastestGroup: null
+          }
+        };
         
       } else {
         // Fallback: compute on-demand (slower but always works)
@@ -1336,7 +1347,19 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
         const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
         
         if (computedAnalytics) {
-          membershipSummary = computedAnalytics.sessionAnalyticsOverview.membershipSummary;
+          // ✅ Use the new interface structure
+          const sessionOverview = computedAnalytics.sessionAnalyticsOverview;
+          membershipSummary = {
+            totalConfiguredMembers: sessionOverview.totalStudents,
+            totalActualMembers: sessionOverview.activeStudents,
+            groupsWithLeadersPresent: sessionOverview.groupCount,
+            groupsAtFullCapacity: sessionOverview.actualGroups,
+            averageMembershipAdherence: sessionOverview.memberAdherence / 100,
+            membershipFormationTime: {
+              avgFormationTime: null,
+              fastestGroup: null
+            }
+          };
         } else {
           // Final fallback: use legacy calculation
           return await getLegacyMembershipSummary(sessionId, res);

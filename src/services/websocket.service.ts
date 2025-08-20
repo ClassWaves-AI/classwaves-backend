@@ -132,6 +132,9 @@ interface ServerToClientEvents {
   'teacher:prompt:used': (data: { promptId: string; timestamp: string }) => void;
   'teacher:prompt:dismissed': (data: { promptId: string; timestamp: string }) => void;
 
+  // Analytics events
+  'analytics:finalized': (data: { sessionId: string; timestamp: string }) => void;
+
   // Audio streaming events  
   'audio:stream:start': (data: { groupId: string }) => void;
   'audio:stream:end': (data: { groupId: string }) => void;
