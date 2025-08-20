@@ -342,6 +342,26 @@ static createDeviceFingerprint(req: Request): string {
       // Generate new token pair
       const newTokens = await this.generateSecureTokens(teacher, school, payload.sessionId, req);
       
+      // CRITICAL: Update session data in Redis to sync with new device fingerprint
+      // This prevents auth middleware fallback issues when session cookie is used
+      try {
+        const { SecureSessionService } = await import('./secure-session.service');
+        console.log('🔄 Updating Redis session data with new device fingerprint...');
+        
+        // Update existing session with new device fingerprint and activity timestamp
+        await SecureSessionService.updateSessionOnRotation(
+          payload.sessionId, 
+          newTokens.deviceFingerprint, 
+          req
+        );
+        
+        console.log(`✅ Session ${payload.sessionId} updated with new device fingerprint`);
+      } catch (sessionError) {
+        console.error('❌ Failed to update session data during token rotation:', sessionError);
+        // Don't fail the entire rotation, but log the issue for monitoring
+        // The tokens are still valid, just the session fallback might have issues
+      }
+      
       console.log(`🔄 Token rotation successful for user ${teacher.id}`);
       return newTokens;
     } catch (error) {

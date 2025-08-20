@@ -1276,30 +1276,50 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       websocketService.endSession(sessionId);
       websocketService.notifySessionUpdate(sessionId, { type: 'session_ended', sessionId });
       
-      // Trigger robust analytics computation in background
-      // The service will emit analytics:finalized only after successful computation
+      // Trigger robust analytics computation with circuit breaker protection and duplicate prevention
+      // The enhanced service prevents duplicate triggers and provides graceful degradation
       setImmediate(async () => {
+        const startTime = Date.now();
         try {
           const { analyticsComputationService } = await import('../services/analytics-computation.service');
+          
+          console.log(`🎯 Starting protected analytics computation for ended session ${sessionId}`);
           const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
           
           if (computedAnalytics) {
             await analyticsComputationService.emitAnalyticsFinalized(sessionId);
-            console.log(`🎯 Analytics computation completed and event emitted for session ${sessionId}`);
+            const duration = Date.now() - startTime;
+            console.log(`🎉 Protected analytics computation completed in ${duration}ms for session ${sessionId}`);
           } else {
-            console.warn(`⚠️ Analytics computation failed for session ${sessionId}, emitting error event`);
+            console.warn(`⚠️ Protected analytics computation returned null for session ${sessionId}`);
             websocketService.emitToSession(sessionId, 'analytics:failed', { 
               sessionId, 
               timestamp: new Date().toISOString(),
-              error: 'Analytics computation failed' 
+              error: 'Analytics computation completed but returned no results',
+              recoverable: true
             });
           }
         } catch (error) {
-          console.error(`❌ Analytics computation error for session ${sessionId}:`, error);
+          const duration = Date.now() - startTime;
+          const errorMessage = error instanceof Error ? error.message : 'Unknown analytics error';
+          
+          console.error(`❌ Protected analytics computation error for session ${sessionId} after ${duration}ms:`, error);
+          
+          // Enhanced error classification
+          const isCircuitBreakerError = errorMessage.includes('circuit breaker');
+          const isLockError = errorMessage.includes('locked by') || errorMessage.includes('lock acquisition failed');
+          const isTimeoutError = errorMessage.includes('timeout');
+          
           websocketService.emitToSession(sessionId, 'analytics:failed', { 
             sessionId, 
             timestamp: new Date().toISOString(),
-            error: error instanceof Error ? error.message : 'Unknown analytics error' 
+            error: errorMessage,
+            errorType: isCircuitBreakerError ? 'circuit_breaker' : 
+                      isLockError ? 'duplicate_prevention' :
+                      isTimeoutError ? 'timeout' : 'computation_error',
+            recoverable: isLockError || isCircuitBreakerError, // These are recoverable
+            retryable: !isCircuitBreakerError, // Don't retry if circuit breaker is open
+            duration
           });
         }
       });

@@ -104,10 +104,30 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       console.log(`⏱️  Secure session lookup took ${(performance.now() - sessionLookupStart).toFixed(2)}ms`);
       
       if (!sessionData) {
-        return res.status(401).json({
+        // Enhanced logging for rotation debugging
+        console.warn(`🚨 Session lookup failed for session ID: ${effectiveSessionId}`);
+        console.warn('🚨 This could be due to:');
+        console.warn('   1. Session expired naturally');
+        console.warn('   2. Token rotation in progress (deviceFingerprint mismatch)');
+        console.warn('   3. Session invalidated by security policy');
+        console.warn(`   4. JWT token source: ${token ? 'Bearer token' : 'session cookie'}`);
+        
+        // For token rotation scenarios, provide a more specific error
+        // This helps clients understand they may need to re-authenticate or retry
+        const errorResponse = {
           error: 'SESSION_EXPIRED',
           message: 'Session has expired or been invalidated',
-        });
+          // Add rotation hint for debugging (development only)
+          ...(process.env.NODE_ENV === 'development' && {
+            debug: {
+              sessionId: effectiveSessionId,
+              tokenSource: token ? 'jwt' : 'cookie',
+              hint: 'If this occurs during token rotation, the session may be updating'
+            }
+          })
+        };
+        
+        return res.status(401).json(errorResponse);
       }
 
       // Add user info to request from Redis session

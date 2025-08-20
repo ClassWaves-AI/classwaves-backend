@@ -236,6 +236,51 @@ export class SecureSessionService {
     }
   }
   
+  // SECURITY 6.5: Update session data during token rotation
+  static async updateSessionOnRotation(
+    sessionId: string,
+    newDeviceFingerprint: string,
+    req: Request
+  ): Promise<void> {
+    console.log('🔄 Starting session update for token rotation');
+    
+    try {
+      // First retrieve the existing session data
+      const existingSessionData = await this.getSecureSession(sessionId, req);
+      
+      if (!existingSessionData) {
+        console.warn(`⚠️ Session ${sessionId} not found during rotation - may have expired`);
+        return;
+      }
+      
+      // Update session data with new device fingerprint and activity timestamp
+      const updatedSessionData: SecureSessionData = {
+        ...existingSessionData,
+        deviceFingerprint: newDeviceFingerprint,
+        lastActivity: new Date(),
+        // Clear any suspicious flags since this is a valid rotation
+        isSuspicious: false
+      };
+      
+      console.log('🔄 Encrypting updated session data...');
+      const encryptedSessionData = this.encryptSessionData(updatedSessionData);
+      
+      // Store the updated session with same TTL as original
+      const sessionTtl = 86400; // 24 hours in seconds (SESSION_TTL equivalent)
+      await redisService.set(
+        `secure_session:${sessionId}`,
+        JSON.stringify(encryptedSessionData),
+        sessionTtl
+      );
+      
+      console.log(`✅ Session ${sessionId} successfully updated with new device fingerprint`);
+      
+    } catch (error) {
+      console.error(`❌ Failed to update session during token rotation for ${sessionId}:`, error);
+      throw new Error(`Session update failed during token rotation: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+  
   // SECURITY 7: Retrieve and verify secure session
   static async getSecureSession(sessionId: string, req?: Request): Promise<SecureSessionData | null> {
     const retrieveStart = performance.now();
