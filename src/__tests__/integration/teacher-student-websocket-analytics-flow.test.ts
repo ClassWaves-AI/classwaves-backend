@@ -447,19 +447,29 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
       });
     });
 
-    // Simulate a session status update
-    teacherSocket?.emit('session:update_status', { 
-      sessionId, 
-      status: 'active', 
-      broadcastToStudents: true 
-    });
+    // Use REST API to start session (proper REST-first architecture)
+    console.log('📡 Starting session via REST API (not WebSocket)...');
+    const restResponse = await axios.post(
+      `http://localhost:${port}/api/v1/sessions/${sessionId}/start`,
+      {},
+      {
+        headers: {
+          'Authorization': `Bearer ${teacherToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
+    expect(restResponse.status).toBe(200);
+    console.log('✅ Session started via REST API');
+
+    // Verify WebSocket notification was broadcast automatically
     await studentStatusUpdatePromise;
 
     // STEP 8: Verify analytics were triggered and recorded
     console.log('📝 Step 8: Verifying analytics data was recorded...');
     
-    // Check session_events table for session started events (REST + WebSocket)
+    // Check session_events table for session started events (REST API only - single source of truth)
     const sessionEvents = await databricksService.query(
       `SELECT * FROM classwaves.analytics.session_events 
        WHERE session_id = ? AND event_type = 'started'
@@ -467,7 +477,7 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
       [sessionId]
     );
 
-    expect(sessionEvents).toHaveLength(1); // Currently only WebSocket records events (REST analytics may be failing silently)
+    expect(sessionEvents).toHaveLength(1); // Exactly 1 record from REST API (WebSocket duplicates eliminated)
     sessionEvents.forEach((event: any) => {
       expect(event.teacher_id).toBe(testTeacher.id);
       expect(event.event_type).toBe('started');
@@ -478,8 +488,9 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
     const eventPayload = JSON.parse(startEvent.payload);
     expect(eventPayload.readyGroupsAtStart).toBeGreaterThanOrEqual(0);
     expect(eventPayload.timestamp).toBeDefined();
+    expect(eventPayload.source).toBe('session_controller'); // Verify REST API source (not WebSocket)
     
-    console.log(`✅ Analytics recorded: ${startEvent.event_type} event with payload:`, eventPayload);
+    console.log(`✅ Analytics recorded: ${startEvent.event_type} event from ${eventPayload.source} with payload:`, eventPayload);
 
     // Check session_metrics table was updated
     const sessionMetrics = await databricksService.query(
