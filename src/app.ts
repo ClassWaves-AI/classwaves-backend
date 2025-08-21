@@ -30,6 +30,11 @@ import client from 'prom-client';
 
 const app = express();
 
+// In test environment, trust proxy so req.ip parsing matches x-forwarded-for
+if (process.env.NODE_ENV === 'test') {
+  app.set('trust proxy', true);
+}
+
 // CRITICAL DEBUG: Add global error handling to catch uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('🔧 DEBUG: Uncaught Exception:', error);

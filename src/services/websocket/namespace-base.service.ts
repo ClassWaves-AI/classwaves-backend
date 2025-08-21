@@ -37,9 +37,9 @@ export abstract class NamespaceBaseService {
         }
 
         // Enhanced user verification with school context
-        let user = null;
-        let userRole = decoded.role;
-        let schoolId = null;
+        let user: any = null;
+        let userRole: 'teacher' | 'student' | 'admin' = decoded.role as any;
+        let schoolId: string | undefined = undefined;
 
         if (decoded.role === 'teacher' || decoded.role === 'admin') {
           // Verify teacher exists and is active with school context
@@ -50,7 +50,7 @@ export abstract class NamespaceBaseService {
              WHERE t.id = ? AND t.status = 'active' AND s.subscription_status = 'active'`,
             [decoded.userId]
           );
-          schoolId = user?.school_id;
+          schoolId = (user?.school_id as string | undefined);
         } else if (decoded.role === 'student') {
           // Verify student exists in active session participants with session context
           user = await databricksService.queryOne(
@@ -63,8 +63,8 @@ export abstract class NamespaceBaseService {
             [decoded.userId]
           );
           if (user) {
-            user.role = 'student';
-            schoolId = user.school_id;
+            (user as any).role = 'student';
+            schoolId = (user as any).school_id as string | undefined;
           }
         }
 

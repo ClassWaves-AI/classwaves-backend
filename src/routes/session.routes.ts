@@ -34,6 +34,7 @@ router.post('/:sessionId/end', authenticate, endSession);
 router.get('/:sessionId/analytics', authenticate, getSessionAnalytics);
 
 // Public student join endpoint (no auth)
+router.post('/join', joinSession);
 router.post('/:sessionId/join', joinSession);
 
 // Participants (teacher auth)

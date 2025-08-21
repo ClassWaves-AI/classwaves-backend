@@ -149,10 +149,21 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Missing required fields' });
     }
 
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, status, join_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
-      [sessionCode]
-    );
+    // Prefer Redis mapping (created at session creation time) for fast lookup
+    let session: any = null;
+    const cachedSessionId = await getSessionByAccessCode(sessionCode);
+    if (cachedSessionId) {
+      session = await databricksService.queryOne(
+        `SELECT id, teacher_id, school_id, title, description, status, access_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
+        [cachedSessionId]
+      );
+    }
+    if (!session) {
+      session = await databricksService.queryOne(
+        `SELECT id, teacher_id, school_id, title, description, status, access_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
+        [sessionCode]
+      );
+    }
     if (!session) {
       return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: 'Invalid session code' });
     }
@@ -247,12 +258,13 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     }
 
     // Insert participant record for the session
+    const participantStudentId = studentIdFromRoster || studentId;
     const participantData = {
       id: studentId,
       session_id: session.id,
       group_id: assignedGroupId,
-      student_id: studentIdFromRoster, // Use roster ID if found, null if not
-      anonymous_id: studentIdFromRoster ? null : studentId, // Only use anonymous ID if not in roster
+      student_id: participantStudentId, // Always set to an ID (roster or generated)
+      anonymous_id: studentIdFromRoster ? null : studentId, // Keep anonymous for non-roster joins
       display_name: safeDisplayName,
       join_time: new Date(),
       leave_time: null,
@@ -384,7 +396,7 @@ export async function getSessionAnalytics(req: Request, res: Response): Promise<
     const sessionId = req.params.sessionId || (req.params as any).id;
 
     const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     if (!session) {
@@ -495,9 +507,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         description: description || goal,
         status: 'created',
         scheduled_start: scheduledStart ? new Date(scheduledStart) : null,
-        actual_duration_minutes: 0,
         planned_duration_minutes: plannedDuration, // REQUIRED COLUMN
-        max_students: 999, // TEMPORARY: Until we can make column nullable
+        max_students: 999, // schema requires a value
         target_group_size: 4, // TEMPORARY: Until we can make column nullable
         auto_group_enabled: false, // Groups are pre-configured in declarative mode
         teacher_id: teacher.id,
@@ -512,9 +523,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         total_groups: groupPlan.groups.length,
         total_students: groupPlan.groups.reduce((sum: number, g: GroupConfiguration) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0),
         access_code: accessCode,
-        end_reason: '',
-        teacher_notes: '',
         engagement_score: 0.0,
+        participation_rate: 0.0,
         created_at: new Date(),
         updated_at: new Date(),
       });
@@ -533,19 +543,10 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           max_size: groupPlan.groupSize,
           current_size: group.memberIds.length + (group.leaderId ? 1 : 0),
           auto_managed: false,
-          start_time: new Date(),
-          end_time: new Date(),
-          total_speaking_time_seconds: 0,
-          collaboration_score: 0.0,
-          topic_focus_score: 0.0,
           created_at: new Date(),
           updated_at: new Date(),
           leader_id: group.leaderId || null,
           is_ready: false,
-          topical_cohesion: 0.0,
-          argumentation_quality: 0.0,
-          sentiment_arc: '[]',
-          conceptual_density: 0.0,
         });
 
         // 3. Create member assignments (including leader if specified)
@@ -577,11 +578,27 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         teacherId: teacher.id,
         schoolId: school.id,
         errorType: typeof createError,
-        errorConstructor: createError?.constructor?.name
+        errorConstructor: createError?.constructor?.name,
+        payload: {
+          topic,
+          plannedDuration,
+          groupCount: groupPlan.groups.length,
+          totalStudents: groupPlan.groups.reduce((sum: number, g: GroupConfiguration) => sum + g.memberIds.length + (g.leaderId ? 1 : 0), 0)
+        }
       });
       
       // Log the original error without wrapping for debugging
       console.error('❌ RAW ERROR OBJECT:', createError);
+      console.error('❌ DATABASE INSERT DETAILS:', {
+        operation: 'classroom_sessions insert',
+        sessionData: {
+          id: sessionId,
+          title: topic,
+          planned_duration_minutes: plannedDuration,
+          teacher_id: teacher.id,
+          school_id: school.id
+        }
+      });
       
       throw new Error(`Failed to create session: ${errorMessage}`);
     }
@@ -651,13 +668,20 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     });
   } catch (error) {
     console.error('❌ Error creating session:', error);
-    return res.status(500).json({
+    const responsePayload: any = {
       success: false,
       error: {
         code: 'SESSION_CREATE_FAILED',
         message: 'Failed to create session',
       },
-    });
+    };
+    if (process.env.NODE_ENV === 'test') {
+      responsePayload.error.details = {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+    }
+    return res.status(500).json(responsePayload);
   }
 }
 
@@ -804,7 +828,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
  */
 async function validateSessionOwnership(sessionId: string, teacherId: string): Promise<any> {
   return await databricksService.queryOne(
-    `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+    `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
     [sessionId, teacherId]
   );
 }
@@ -932,7 +956,7 @@ async function recordSessionStarted(
 async function getSessionWithGroups(sessionId: string, teacherId: string): Promise<Session> {
   // Get main session data
   const session = await databricksService.queryOne(
-    `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+    `SELECT id, teacher_id, school_id, title, description, status, access_code, scheduled_start, actual_start, actual_end, planned_duration_minutes, actual_duration_minutes, target_group_size, recording_enabled, transcription_enabled, ai_analysis_enabled, created_at, updated_at FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
     [sessionId, teacherId]
   );
 
@@ -1084,13 +1108,14 @@ export async function getSession(req: Request, res: Response): Promise<Response>
  */
 export async function startSession(req: Request, res: Response): Promise<Response> {
   try {
+    console.log('🔧 DEBUG: startSession endpoint called for session:', req.params.sessionId);
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId;
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes, total_students FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1159,6 +1184,9 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     // Record analytics - session started event
     await recordSessionStarted(sessionId, teacher.id, readyGroupsAtStart, startedWithoutReadyGroups);
     
+    // Analytics recording is handled by recordSessionStarted() helper above
+    // which uses the centralized analyticsQueryRouterService
+    
     // Record audit log
     await databricksService.recordAuditLog({
       actorId: teacher.id,
@@ -1209,7 +1237,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1387,7 +1415,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1453,7 +1481,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     
     // Get updated session
     const updatedSession = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
       [sessionId]
     );
     
@@ -1486,7 +1514,7 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     
     // Verify session belongs to teacher
     const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
       [sessionId, teacher.id]
     );
     
@@ -1556,7 +1584,7 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
     
     // Verify session belongs to teacher and is active
     const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, topic, description, status, join_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ? AND status = ?`,
+      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ? AND status = ?`,
       [sessionId, teacher.id, 'active']
     );
     
