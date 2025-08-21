@@ -9,6 +9,9 @@
  * 4. Analytics trigger and data verification
  */
 
+// Load environment variables from .env file (like other working tests)
+import 'dotenv/config';
+
 // CRITICAL: Set JWT secrets AND Databricks token BEFORE any imports to ensure services initialize correctly
 if (!process.env.JWT_SECRET) {
   process.env.JWT_SECRET = 'test-jwt-secret-for-integration-testing-only-not-for-production-use-minimum-256-bits';
@@ -16,9 +19,15 @@ if (!process.env.JWT_SECRET) {
 if (!process.env.JWT_REFRESH_SECRET) {
   process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-for-integration-testing-only-not-for-production-use-minimum-256-bits';
 }
-// Databricks token should be provided via environment variable
+// Databricks token should be provided via environment variable or .env file
 if (!process.env.DATABRICKS_TOKEN) {
-  throw new Error('DATABRICKS_TOKEN environment variable is required for integration tests');
+  throw new Error(`DATABRICKS_TOKEN environment variable is required for integration tests. 
+  
+  Solutions:
+  1. Create a .env file in classwaves-backend/ with: DATABRICKS_TOKEN=your-token-here
+  2. Or run test with: DATABRICKS_TOKEN=your-token npm test -- --testPathPattern="teacher-student-websocket-analytics-flow"
+  
+  See classwaves-backend/docs/ENVIRONMENT_STRATEGY.md for more details.`);
 }
 console.log('🔐 JWT secrets and Databricks token configured before service imports');
 console.log('🔧 Integration test environment setup:');
