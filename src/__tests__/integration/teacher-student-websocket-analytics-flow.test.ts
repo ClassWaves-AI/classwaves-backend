@@ -48,12 +48,8 @@ function resetDatabricksService() {
 
 resetDatabricksService();
 
-import { Server, createServer } from 'http';
 import { io as Client, Socket } from 'socket.io-client';
 import axios from 'axios';
-// Use the REAL app instead of test app for proper service initialization
-import app from '../../app';
-import { initializeWebSocket } from '../../services/websocket.service';
 import { createTestSessionWithGroups, cleanupTestData } from '../test-utils/factories';
 import { databricksService } from '../../services/databricks.service';
 import { redisService } from '../../services/redis.service';
@@ -62,7 +58,6 @@ import { SecureSessionService } from '../../services/secure-session.service';
 import { guidanceSystemHealthService } from '../../services/guidance-system-health.service';
 
 describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', () => {
-  let server: Server;
   let port: number;
   let teacherSocket: Socket | null = null;
   let studentSocket: Socket | null = null;
@@ -78,24 +73,25 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
   beforeAll(async () => {
     console.log('🔧 Test environment initialized with JWT secrets already configured');
     
-    // Start the REAL app with a proper HTTP server so Socket.IO can attach
-    console.log('🚀 CRITICAL: Using REAL app with Socket.IO initialization...');
-    const httpServer = createServer(app);
-    initializeWebSocket(httpServer);
-    server = httpServer.listen(0);
-    port = (server.address() as any)?.port;
-    console.log(`✅ Real app server started on port ${port}`);
+    // Use existing backend server on port 3000 (no need to start our own)
+    console.log('🚀 Using existing backend server on port 3000...');
+    port = 3000;
+    
+    // Test if server is accessible
+    try {
+      const healthCheck = await axios.get(`http://localhost:${port}/api/health`);
+      console.log(`✅ Backend server is accessible on port ${port}`, healthCheck.status);
+    } catch (error) {
+      console.error('❌ Backend server is not accessible on port 3000. Make sure it\'s running with: NODE_ENV=test npm run dev');
+      throw new Error('Backend server not accessible. Start it first with NODE_ENV=test npm run dev');
+    }
   });
 
   afterAll(async () => {
-    // Clean shutdown of all services to prevent Jest teardown issues
+    // Clean shutdown of background services to prevent Jest teardown issues
     try {
       // Shutdown background services first
       await guidanceSystemHealthService.shutdown();
-      
-      if (server) {
-        server.close();
-      }
       
       // Allow time for cleanup of async operations
       await new Promise(resolve => setTimeout(resolve, 1000));
