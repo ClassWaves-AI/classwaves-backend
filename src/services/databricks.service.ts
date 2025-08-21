@@ -394,64 +394,66 @@ export class DatabricksService {
    * Get the appropriate schema for a table
    */
   private getSchemaForTable(table: string): string {
-    // Map tables to their schemas
+    // Map tables to their schemas - UPDATED FROM LIVE DATABASE AUDIT
     const tableSchemaMap: Record<string, string> = {
-      // Users schema
-      'schools': 'users',
-      'teachers': 'users',
-      'students': 'users',
-      
-      // Sessions schema
-      'classroom_sessions': 'sessions',
-      'sessions': 'sessions', // Alias (deprecated - use classroom_sessions)
-      'student_groups': 'sessions',
-      'student_group_members': 'sessions',
-      'session_events': 'sessions',
-      'groups': 'sessions', // Alias
-      'transcriptions': 'sessions',
-      
-      // Analytics data stored in users schema (cache tables)
-      'session_analytics_cache': 'users',
-      'teacher_analytics_summary': 'users', 
-      'dashboard_metrics_hourly': 'users',
-      
-      // Legacy analytics table names - redirect to cache table
-      'session_analytics': 'users', // → session_analytics_cache
-      'session_metrics': 'users',   // → session_analytics_cache
-      
-      // Compliance schema
-      'audit_log': 'compliance',
-      'parental_consents': 'compliance',
-      'parental_consent_records': 'compliance', // Alias
-      'retention_policies': 'compliance',
-      'data_retention_policies': 'compliance', // Alias
-      'coppa_compliance': 'compliance',
-      'coppa_data_protection': 'compliance', // Alias
-      
-      // AI Insights schema
-      'analysis_results': 'ai_insights',
-      'intervention_suggestions': 'ai_insights',
-      'educational_insights': 'ai_insights',
-      'teacher_interventions': 'ai_insights', // Alias
-      
-      // Operational schema
-      'system_events': 'operational',
-      'api_metrics': 'operational',
-      'background_jobs': 'operational',
-      
-      // Communication schema
-      'messages': 'communication',
-      
-      // Audio schema
-      'recordings': 'audio',
-      
       // Admin schema
       'districts': 'admin',
       'school_settings': 'admin',
-      
+
+      // AI Insights schema
+      'analysis_results': 'ai_insights',
+      'educational_insights': 'ai_insights',
+      'intervention_suggestions': 'ai_insights',
+
+      // Analytics schema
+      'educational_metrics': 'analytics',
+      'group_analytics': 'analytics',
+      'group_metrics': 'analytics',
+      'session_analytics': 'analytics',
+      'session_events': 'analytics',
+      'session_metrics': 'analytics',
+      'student_metrics': 'analytics',
+
+      // Audio schema
+      'recordings': 'audio',
+
+      // Communication schema
+      'messages': 'communication',
+
+      // Compliance schema
+      'audit_log': 'compliance',
+      'audit_logs': 'compliance', // Alias for audit_log
+      'coppa_compliance': 'compliance',
+      'parental_consents': 'compliance',
+      'parental_consent_records': 'compliance', // Alias
+      'retention_policies': 'compliance',
+
       // Notifications schema
+      'notification_queue': 'notifications',
       'templates': 'notifications',
-      'notification_queue': 'notifications'
+
+      // Operational schema
+      'api_metrics': 'operational',
+      'background_jobs': 'operational',
+      'system_events': 'operational',
+
+      // Sessions schema
+      'classroom_sessions': 'sessions',
+      'sessions': 'sessions', // Alias (deprecated - use classroom_sessions)
+      'participants': 'sessions',
+      'student_group_members': 'sessions',
+      'student_groups': 'sessions',
+      'groups': 'sessions', // Alias for student_groups
+      'transcriptions': 'sessions',
+
+      // Users schema
+      'analytics_job_metadata': 'users',
+      'dashboard_metrics_hourly': 'users', // Primary location for this table
+      'schools': 'users',
+      'session_analytics_cache': 'users', // Primary location for this table
+      'students': 'users',
+      'teacher_analytics_summary': 'users', // Primary location for this table
+      'teachers': 'users'
     };
     
     return tableSchemaMap[table] || 'users'; // Default to users schema
@@ -473,18 +475,33 @@ export class DatabricksService {
     `;
     
     // DEBUG: Log the exact SQL and table info for session creation issues
-    if (table === 'classroom_sessions') {
-      console.log('🔍 DEBUG SESSION INSERT:');
+    if (table === 'classroom_sessions' || table === 'student_groups' || table === 'student_group_members') {
+      console.log(`🔍 DEBUG ${table.toUpperCase()} INSERT:`);
       console.log(`  Table: ${table}`);
       console.log(`  Schema: ${schema}`);
       console.log(`  Full table path: ${databricksConfig.catalog}.${schema}.${table}`);
       console.log(`  Columns (${columns.length}): ${columns.join(', ')}`);
       console.log(`  SQL: ${sql.trim()}`);
-      console.log(`  Contains engagement_score: ${columns.includes('engagement_score')}`);
+      console.log(`  Data types:`, Object.entries(data).map(([k,v]) => `${k}:${typeof v}`).join(', '));
     }
     
-    await this.query(sql, values);
-    return data.id || this.generateId();
+    try {
+      await this.query(sql, values);
+      if (table === 'classroom_sessions' || table === 'student_groups' || table === 'student_group_members') {
+        console.log(`✅ ${table.toUpperCase()} INSERT SUCCESS`);
+      }
+      return data.id || this.generateId();
+    } catch (insertError) {
+      console.error(`❌ ${table.toUpperCase()} INSERT FAILED:`, {
+        table,
+        schema,
+        fullPath: `${databricksConfig.catalog}.${schema}.${table}`,
+        error: insertError,
+        columns: columns.join(', '),
+        errorMessage: insertError instanceof Error ? insertError.message : String(insertError)
+      });
+      throw insertError;
+    }
   }
 
   /**

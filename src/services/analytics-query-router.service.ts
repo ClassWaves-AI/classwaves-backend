@@ -920,7 +920,7 @@ export class AnalyticsQueryRouterService {
       try {
         const eventId = `${sessionId}_${eventType}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
-        await databricksService.insert('classwaves.analytics.session_events', {
+        await databricksService.insert('session_events', {
           id: eventId,
           session_id: sessionId,
           teacher_id: teacherId,

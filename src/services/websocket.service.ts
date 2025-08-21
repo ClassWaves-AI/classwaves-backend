@@ -228,10 +228,24 @@ export class WebSocketService {
         // Verify JWT token
         const payload = verifyToken(token);
         
-        // Verify session exists in Redis
-        const sessionData = await redisService.getSession(payload.sessionId);
-        if (!sessionData) {
-          return next(new Error('Session expired'));
+        // Verify session exists for teacher/admin; students don't maintain secure sessions
+        let sessionOk = false;
+        if (payload.role === 'teacher' || payload.role === 'admin') {
+          const sessionData = await redisService.getSession(payload.sessionId);
+          if (sessionData) {
+            sessionOk = true;
+          } else {
+            try {
+              const { SecureSessionService } = await import('./secure-session.service');
+              const secure = await SecureSessionService.getSecureSession(payload.sessionId as string);
+              sessionOk = !!secure;
+            } catch {
+              sessionOk = false;
+            }
+          }
+          if (!sessionOk) {
+            return next(new Error('Session expired'));
+          }
         }
 
         // Attach user data to socket
@@ -251,7 +265,7 @@ export class WebSocketService {
 
   private setupEventHandlers() {
     this.io.on('connection', (socket) => {
-      console.log(`User ${socket.data.userId} connected via WebSocket`);
+      console.log(`🔧 DEBUG: User ${socket.data.userId} connected via WebSocket with role ${socket.data.role}`);
       this.connectedUsers.set(socket.data.userId, socket);
 
       // Replace participant-based joinSession with group-based joinGroup
@@ -346,6 +360,7 @@ export class WebSocketService {
 
       socket.on('session:update_status', async (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => {
         try {
+          console.log('🔧 DEBUG: WebSocket session:update_status received:', data);
           const sessionId = (data?.session_id || data?.sessionId || '').trim();
           let status = data?.status;
           if (!sessionId || !status) {
@@ -372,6 +387,51 @@ export class WebSocketService {
           }
 
           await databricksService.updateSessionStatus(sessionId, status as any);
+          
+          // If starting session, record analytics using centralized service
+          if (status === 'active') {
+            console.log('🔧 DEBUG: Recording analytics for session start via WebSocket');
+            try {
+              // Get ready groups count for analytics context
+              const readyGroupsResult = await databricksService.queryOne(
+                `SELECT COUNT(*) as ready_groups_count 
+                 FROM classwaves.sessions.student_groups 
+                 WHERE session_id = ? AND is_ready = true`,
+                [sessionId]
+              );
+              
+              const totalGroupsResult = await databricksService.queryOne(
+                `SELECT COUNT(*) as total_groups_count 
+                 FROM classwaves.sessions.student_groups 
+                 WHERE session_id = ?`,
+                [sessionId]
+              );
+              
+              const readyGroupsAtStart = readyGroupsResult?.ready_groups_count || 0;
+              const totalGroups = totalGroupsResult?.total_groups_count || 0;
+              const startedWithoutReadyGroups = readyGroupsAtStart < totalGroups;
+              
+              // Use centralized analytics service instead of direct database writes
+              const { analyticsQueryRouterService } = await import('../services/analytics-query-router.service');
+              await analyticsQueryRouterService.logSessionEvent(
+                sessionId,
+                socket.data.userId,
+                'started',
+                {
+                  readyGroupsAtStart,
+                  startedWithoutReadyGroups,
+                  timestamp: new Date().toISOString(),
+                  source: 'websocket'
+                }
+              );
+              
+              console.log('✅ WebSocket analytics recording completed for session:', sessionId);
+            } catch (analyticsError) {
+              console.error('❌ WebSocket analytics recording failed:', analyticsError);
+              // Don't fail the status update if analytics fail
+            }
+          }
+          
           // Broadcast to session room
           this.io.to(`session:${sessionId}`).emit('session:status_changed', { sessionId, status });
         } catch (err) {
@@ -975,8 +1035,10 @@ export class WebSocketService {
 let wsService: WebSocketService | null = null;
 
 export function initializeWebSocket(httpServer: HTTPServer): WebSocketService {
+  console.log('🔧 DEBUG: Initializing WebSocket service...');
   if (!wsService) {
     wsService = new WebSocketService(httpServer);
+    console.log('🔧 DEBUG: WebSocket service created successfully');
   }
   return wsService;
 }
