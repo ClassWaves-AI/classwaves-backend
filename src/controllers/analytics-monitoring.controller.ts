@@ -553,3 +553,98 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
     });
   }
 };
+
+/**
+ * POST /api/v1/analytics/monitoring/cache-sync
+ * 
+ * Manually trigger cache synchronization to Databricks
+ * Admin access only
+ */
+export const triggerCacheSync = async (req: Request, res: Response): Promise<Response> => {
+  try {
+    const authReq = req as AuthRequest;
+    const user = authReq.user;
+    
+    // Verify admin access
+    if (!user || (user.role !== 'admin' && user.role !== 'super_admin')) {
+      return res.status(403).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'Admin access required'
+      });
+    }
+
+    const { force } = req.body;
+    
+    // Import the service dynamically to avoid circular dependencies
+    const { realTimeAnalyticsCacheService } = await import('../services/real-time-analytics-cache.service');
+    
+    console.log(`🚀 Admin ${user.id} triggered manual cache sync (force: ${force || false})`);
+    
+    // Trigger the cache sync
+    const result = await realTimeAnalyticsCacheService.triggerManualCacheSync();
+    
+    // Log the admin action
+    analyticsLogger.logOperation(
+      'admin_cache_sync_triggered',
+      'cache_sync',
+      Date.now(),
+      result.success,
+      {
+        teacherId: user.id,
+        recordCount: result.sessionsProcessed,
+        metadata: {
+          adminId: user.id,
+          force: force || false,
+          sessionsProcessed: result.sessionsProcessed,
+          sessionsSynced: result.sessionsSynced,
+          failedSessions: result.failedSessions,
+          duration: result.duration
+        },
+        forceLog: true
+      }
+    );
+    
+    return res.json({
+      success: true,
+      data: {
+        message: 'Cache sync triggered successfully',
+        result,
+        triggeredBy: user.id,
+        timestamp: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    console.error('Failed to trigger cache sync:', error);
+    
+    // Log the failed admin action
+    try {
+      const authReq = req as AuthRequest;
+      analyticsLogger.logOperation(
+        'admin_cache_sync_failed',
+        'cache_sync',
+        Date.now(),
+        false,
+        {
+          teacherId: authReq.user?.id,
+          recordCount: 0,
+          error: error instanceof Error ? error.message : String(error),
+          metadata: {
+            adminId: authReq.user?.id,
+            errorType: error instanceof Error ? error.constructor.name : typeof error
+          },
+          forceLog: true
+        }
+      );
+    } catch (logError) {
+      console.error('Failed to log cache sync failure:', logError);
+    }
+    
+    return res.status(500).json({
+      success: false,
+      error: 'SYNC_FAILED',
+      message: error instanceof Error ? error.message : 'Failed to trigger cache sync'
+    });
+  }
+};
