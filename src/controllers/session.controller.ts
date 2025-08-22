@@ -1157,18 +1157,26 @@ export async function getSession(req: Request, res: Response): Promise<Response>
 
 /**
  * Start a session - Phase 5: Returns full session, records readiness metrics
+ * Enhanced with retry + timeout guards for reliability (Task 2.3)
  */
 export async function startSession(req: Request, res: Response): Promise<Response> {
+  const startTime = Date.now();
   try {
     console.log('🔧 DEBUG: startSession endpoint called for session:', req.params.sessionId);
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId;
     
-    // Verify session belongs to teacher
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes, total_students FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
+    // Import RetryService for resilience
+    const { RetryService } = await import('../services/retry.service');
+    
+    // Verify session belongs to teacher - with retry and timeout
+    const session = await RetryService.retryDatabaseOperation(
+      () => databricksService.queryOne(
+        `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes, total_students FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+        [sessionId, teacher.id]
+      ),
+      'verify-session-ownership'
     );
     
     if (!session) {
@@ -1191,72 +1199,137 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       });
     }
     
-    // Compute ready_groups_at_start from student_groups.is_ready
-    const readyGroupsResult = await databricksService.queryOne(
-      `SELECT COUNT(*) as ready_groups_count 
-       FROM ${databricksConfig.catalog}.sessions.student_groups 
-       WHERE session_id = ? AND is_ready = true`,
-      [sessionId]
+    // Compute ready_groups_at_start from student_groups.is_ready - with retry and timeout
+    const readyGroupsResult = await RetryService.retryDatabaseOperation(
+      () => databricksService.queryOne(
+        `SELECT COUNT(*) as ready_groups_count 
+         FROM ${databricksConfig.catalog}.sessions.student_groups 
+         WHERE session_id = ? AND is_ready = true`,
+        [sessionId]
+      ),
+      'count-ready-groups'
     );
     
-    const totalGroupsResult = await databricksService.queryOne(
-      `SELECT COUNT(*) as total_groups_count 
-       FROM ${databricksConfig.catalog}.sessions.student_groups 
-       WHERE session_id = ?`,
-      [sessionId]
+    const totalGroupsResult = await RetryService.retryDatabaseOperation(
+      () => databricksService.queryOne(
+        `SELECT COUNT(*) as total_groups_count 
+         FROM ${databricksConfig.catalog}.sessions.student_groups 
+         WHERE session_id = ?`,
+        [sessionId]
+      ),
+      'count-total-groups'
     );
     
     const readyGroupsAtStart = readyGroupsResult?.ready_groups_count || 0;
     const totalGroups = totalGroupsResult?.total_groups_count || 0;
     const startedWithoutReadyGroups = readyGroupsAtStart < totalGroups;
 
-    // Update session status and actual_start
+    // Update session status and actual_start - with retry and timeout
     const startedAt = new Date();
-    await databricksService.update('classroom_sessions', sessionId, {
-      status: 'active',
-      actual_start: startedAt,
-    });
+    await RetryService.retryDatabaseOperation(
+      () => databricksService.update('classroom_sessions', sessionId, {
+        status: 'active',
+        actual_start: startedAt,
+      }),
+      'update-session-to-active'
+    );
     
-    // Broadcast session status change to all connected WebSocket clients
+    // Broadcast session status change to all connected WebSocket clients - with graceful degradation
     const { websocketService } = await import('../services/websocket.service');
     if (websocketService.io) {
-      // Broadcast to general session room
-      websocketService.emitToSession(sessionId, 'session:status_changed', { 
-        sessionId, 
-        status: 'active'
-      });
-      
-      // Also broadcast to legacy namespace if needed
-      websocketService.io.to(`session:${sessionId}`).emit('session:status_changed', {
+      try {
+        await RetryService.withRetry(
+          async () => {
+            // Broadcast to general session room
+            websocketService.emitToSession(sessionId, 'session:status_changed', { 
+              sessionId, 
+              status: 'active'
+            });
+            
+            // Also broadcast to legacy namespace if needed
+            websocketService.io?.to(`session:${sessionId}`).emit('session:status_changed', {
+              sessionId,
+              status: 'active'
+            });
+            
+            return true; // Success indicator
+          },
+          'websocket-broadcast-session-active',
+          {
+            maxRetries: 2,
+            baseDelay: 500,
+            timeoutMs: 3000, // 3s timeout for WebSocket broadcast
+            retryCondition: (error) => {
+              // Retry most WebSocket errors but not connection issues
+              return !error.message?.includes('not connected');
+            }
+          }
+        );
+        console.log('✅ WebSocket broadcast successful for session start:', sessionId);
+      } catch (wsError) {
+        // WebSocket failure should not prevent session start - graceful degradation
+        console.warn('⚠️ WebSocket broadcast failed during session start (non-critical):', {
+          sessionId,
+          error: wsError instanceof Error ? wsError.message : 'Unknown WebSocket error',
+          degradation: 'Session started successfully, real-time updates may be delayed'
+        });
+      }
+    } else {
+      console.warn('⚠️ WebSocket service not available during session start (non-critical):', {
         sessionId,
-        status: 'active'
+        degradation: 'Session started successfully, real-time updates unavailable'
       });
     }
     
-    // Record analytics - session started event
-    await recordSessionStarted(sessionId, teacher.id, readyGroupsAtStart, startedWithoutReadyGroups);
+    // Record analytics - session started event - with retry and graceful degradation
+    try {
+      await RetryService.retryRedisOperation(
+        () => recordSessionStarted(sessionId, teacher.id, readyGroupsAtStart, startedWithoutReadyGroups),
+        'record-session-started-analytics'
+      );
+      console.log('✅ Analytics recording successful for session start:', sessionId);
+    } catch (analyticsError) {
+      // Analytics failure should not prevent session start - graceful degradation
+      console.warn('⚠️ Analytics recording failed during session start (non-critical):', {
+        sessionId,
+        error: analyticsError instanceof Error ? analyticsError.message : 'Unknown analytics error',
+        degradation: 'Session started successfully, analytics may be incomplete'
+      });
+    }
     
-    // Analytics recording is handled by recordSessionStarted() helper above
-    // which uses the centralized analyticsQueryRouterService
+    // Record audit log - with retry (critical for compliance)
+    await RetryService.retryDatabaseOperation(
+      () => databricksService.recordAuditLog({
+        actorId: teacher.id,
+        actorType: 'teacher',
+        eventType: 'session_started',
+        eventCategory: 'session',
+        resourceType: 'session',
+        resourceId: sessionId,
+        schoolId: session.school_id,
+        description: `Teacher ID ${teacher.id} started session (${readyGroupsAtStart}/${totalGroups} groups ready)`,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        complianceBasis: 'legitimate_interest',
+      }),
+      'record-session-start-audit-log'
+    );
     
-    // Record audit log
-    await databricksService.recordAuditLog({
-      actorId: teacher.id,
-      actorType: 'teacher',
-      eventType: 'session_started',
-      eventCategory: 'session',
-      resourceType: 'session',
-      resourceId: sessionId,
-      schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} started session (${readyGroupsAtStart}/${totalGroups} groups ready)`,
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-      complianceBasis: 'legitimate_interest',
+    // Get complete session for response - with retry and timeout
+    const fullSession = await RetryService.retryDatabaseOperation(
+      () => getSessionWithGroups(sessionId, teacher.id),
+      'get-session-with-groups-for-response'
+    );
+    
+    const totalDuration = Date.now() - startTime;
+    console.log('✅ Session started successfully with resilience hardening:', {
+      sessionId,
+      teacherId: teacher.id,
+      totalDuration: `${totalDuration}ms`,
+      readyGroups: `${readyGroupsAtStart}/${totalGroups}`,
+      performance: totalDuration < 400 ? 'EXCELLENT' : totalDuration < 1000 ? 'GOOD' : 'NEEDS_ATTENTION'
     });
-    
-    // Get complete session for response
-    const fullSession = await getSessionWithGroups(sessionId, teacher.id);
-    
+
     return res.json({
       success: true,
       data: {
@@ -1266,12 +1339,24 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       },
     });
   } catch (error) {
-    console.error('Error starting session:', error);
+    const totalDuration = Date.now() - startTime;
+    console.error('❌ Session start failed with retry exhaustion:', {
+      sessionId: req.params.sessionId,
+      teacherId: (req as AuthRequest).user?.id,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      totalDuration: `${totalDuration}ms`,
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    
     return res.status(500).json({
       success: false,
       error: {
         code: 'SESSION_START_FAILED',
-        message: 'Failed to start session',
+        message: 'Failed to start session after retries',
+        details: process.env.NODE_ENV === 'development' ? {
+          error: error instanceof Error ? error.message : 'Unknown error',
+          duration: `${totalDuration}ms`
+        } : undefined
       },
     });
   }
