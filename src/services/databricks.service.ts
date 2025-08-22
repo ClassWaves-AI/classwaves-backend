@@ -515,7 +515,7 @@ export class DatabricksService {
     const schema = this.getSchemaForTable(table);
     const sql = `
       UPDATE ${databricksConfig.catalog}.${schema}.${table}
-      SET ${setClause}, updated_at = CURRENT_TIMESTAMP
+      SET ${setClause}
       WHERE id = ?
     `;
     
@@ -796,7 +796,7 @@ export class DatabricksService {
       'planned_duration_minutes', 'actual_duration_minutes', 'target_group_size',
       'auto_group_enabled', 'recording_enabled', 'transcription_enabled', 'ai_analysis_enabled',
       'ferpa_compliant', 'coppa_compliant', 'recording_consent_obtained', 'data_retention_date',
-      'total_groups', 'total_students', 'engagement_score'
+      'total_groups', 'total_students', 'engagement_score', 'updated_at'
     ];
     
     // Filter additionalData to only include allowed fields
@@ -805,6 +805,9 @@ export class DatabricksService {
         updateData[key] = value;
       }
     }
+    
+    // CRITICAL: Always set updated_at to current time
+    updateData.updated_at = new Date();
     
     if (status === 'active' && !updateData.actual_start) {
       updateData.actual_start = new Date();

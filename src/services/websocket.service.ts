@@ -41,22 +41,27 @@ interface ClientToServerEvents {
   leaveSession: (sessionCode: string) => void;
   sendMessage: (data: { sessionCode: string; message: string }) => void;
   updatePresence: (data: { sessionCode: string; status: string }) => void;
-
-  // Deprecated: group:status_update replaced by group:leader_ready
-  'group:leader_ready': (data: { sessionId: string; groupId: string; ready: boolean }) => void;
+  'group:join': (data: { groupId: string; sessionId: string }) => void;
+  'group:status_update': (data: { groupId: string; isReady: boolean }) => void;
   
   // Audio processing events
   'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void;
   'audio:stream:start': (data: { groupId: string }) => void;
   'audio:stream:end': (data: { groupId: string }) => void;
-
-  // Teacher dashboard session control (to match frontend client)
+  
+  // Teacher dashboard session control
   'session:join': (data: { session_id?: string; sessionId?: string }) => void;
   'session:leave': (data: { session_id?: string; sessionId?: string }) => void;
   
+  // Group leader readiness
+  'group:leader_ready': (data: { sessionId: string; groupId: string; ready: boolean }) => void;
+  
   // Student session control
   'student:session:join': (data: { sessionId: string }) => void;
-  'session:update_status': (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => void;
+  
+  // REMOVED: 'session:update_status' - duplicates REST API logic
+  // Session status updates should only go through REST endpoints to ensure
+  // proper business logic, validation, and analytics recording
 
   // Delivery confirmation events
   'teacher:alert:delivery:confirm': (data: { alertId: string; deliveryId: string; sessionId: string }) => void;
@@ -280,7 +285,7 @@ export class WebSocketService {
 
           // Verify session belongs to authenticated teacher
           const session = await databricksService.queryOne(
-            `SELECT id, status FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            `SELECT id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
             [sessionId, socket.data.userId]
           );
           if (!session) {
@@ -320,8 +325,8 @@ export class WebSocketService {
           // Verify student is a participant in this session
           const participant = await databricksService.queryOne(
             `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
-             FROM classwaves.sessions.participants p 
-             LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
+             FROM ${databricksConfig.catalog}.sessions.participants p 
+             LEFT JOIN ${databricksConfig.catalog}.sessions.student_groups sg ON p.group_id = sg.id
              WHERE p.session_id = ? AND p.student_id = ?`,
             [sessionId, socket.data.userId]
           );
@@ -355,45 +360,6 @@ export class WebSocketService {
             code: 'STUDENT_SESSION_JOIN_FAILED', 
             message: 'Failed to join session as student' 
           });
-        }
-      });
-
-      socket.on('session:update_status', async (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => {
-        try {
-          console.log('🔧 DEBUG: WebSocket session:update_status received:', data);
-          const sessionId = (data?.session_id || data?.sessionId || '').trim();
-          let status = data?.status;
-          if (!sessionId || !status) {
-            socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'session_id and status are required' });
-            return;
-          }
-
-          // Map client 'waiting' to DB 'created'
-          if (status === 'waiting') status = 'created';
-          const allowed: Record<string, true> = { created: true, active: true, paused: true, ended: true, archived: true } as const;
-          if (!allowed[status]) {
-            socket.emit('error', { code: 'INVALID_STATUS', message: `Unsupported status: ${status}` });
-            return;
-          }
-
-          // Verify ownership
-          const owned = await databricksService.queryOne(
-            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-            [sessionId, socket.data.userId]
-          );
-          if (!owned) {
-            socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
-            return;
-          }
-
-          await databricksService.updateSessionStatus(sessionId, status as any);
-          
-          console.log(`📡 WebSocket notification: Session ${sessionId} status updated to ${status} (analytics handled by REST API)`);
-          
-          // Broadcast to session room
-          this.io.to(`session:${sessionId}`).emit('session:status_changed', { sessionId, status });
-        } catch (err) {
-          socket.emit('error', { code: 'STATUS_UPDATE_FAILED', message: 'Failed to update session status' });
         }
       });
 
@@ -651,7 +617,7 @@ export class WebSocketService {
         try {
           // Verify session ownership
           const session = await databricksService.queryOne(
-            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            `SELECT id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
             [data.sessionId, socket.data.userId]
           );
 
@@ -670,7 +636,7 @@ export class WebSocketService {
         try {
           // Verify session ownership
           const session = await databricksService.queryOne(
-            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            `SELECT id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
             [data.sessionId, socket.data.userId]
           );
 
@@ -689,7 +655,7 @@ export class WebSocketService {
         try {
           // Verify session ownership
           const session = await databricksService.queryOne(
-            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            `SELECT id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
             [data.sessionId, socket.data.userId]
           );
 

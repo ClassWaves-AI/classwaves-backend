@@ -980,13 +980,13 @@ async function getTeacherSessionsOptimized(teacherId: string, limit: number): Pr
   
   const sql = `
     ${queryBuilder.sql}
-    FROM classwaves.sessions.classroom_sessions s
+    FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
     LEFT JOIN (
       SELECT 
         session_id, 
         COUNT(*) as group_count,
         COALESCE(SUM(current_size), 0) as student_count
-      FROM classwaves.sessions.student_groups 
+      FROM ${databricksConfig.catalog}.sessions.student_groups 
       GROUP BY session_id
     ) g ON s.id = g.session_id
     WHERE s.teacher_id = ?
@@ -1021,7 +1021,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     'session-detail',
     () => databricksService.queryOne(
       `${queryBuilder.sql}
-       FROM classwaves.sessions.classroom_sessions s
+       FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
        WHERE s.id = ? AND s.teacher_id = ?`,
       [sessionId, teacherId]
     ),
@@ -1040,7 +1040,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       g.leader_id,
       g.is_ready,
       g.group_number
-    FROM classwaves.sessions.student_groups g
+    FROM ${databricksConfig.catalog}.sessions.student_groups g
     WHERE g.session_id = ?
     ORDER BY g.group_number
   `, [sessionId]);
@@ -1051,8 +1051,8 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       m.group_id,
       m.student_id,
       s.display_name as name
-    FROM classwaves.sessions.student_group_members m
-    LEFT JOIN classwaves.users.students s ON m.student_id = s.id
+    FROM ${databricksConfig.catalog}.sessions.student_group_members m
+    LEFT JOIN ${databricksConfig.catalog}.users.students s ON m.student_id = s.id
     WHERE m.session_id = ?
   `, [sessionId]);
 
@@ -1107,7 +1107,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       enable_ai_insights: Boolean(session.ai_analysis_enabled),
     },
     created_at: new Date(session.created_at),
-    updated_at: new Date(session.updated_at),
+    updated_at: session.updated_at ? new Date(session.updated_at) : new Date(), // Handle null values gracefully
   };
 }
 
@@ -1219,7 +1219,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     const readyGroupsResult = await RetryService.retryDatabaseOperation(
       () => databricksService.queryOne(
         `SELECT COUNT(*) as ready_groups_count 
-         FROM classwaves.sessions.student_groups 
+         FROM ${databricksConfig.catalog}.sessions.student_groups 
          WHERE session_id = ? AND is_ready = true`,
         [sessionId]
       ),
@@ -1229,7 +1229,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     const totalGroupsResult = await RetryService.retryDatabaseOperation(
       () => databricksService.queryOne(
         `SELECT COUNT(*) as total_groups_count 
-         FROM classwaves.sessions.student_groups 
+         FROM ${databricksConfig.catalog}.sessions.student_groups 
          WHERE session_id = ?`,
         [sessionId]
       ),
@@ -1246,9 +1246,22 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       () => databricksService.update('classroom_sessions', sessionId, {
         status: 'active',
         actual_start: startedAt,
+        updated_at: startedAt, // CRITICAL: Set updated_at to current time
       }),
       'update-session-to-active'
     );
+    
+    // CRITICAL FIX: Invalidate session cache to ensure fresh data
+    try {
+      const { queryCacheService } = await import('../services/query-cache.service');
+      // Invalidate all session-detail cache entries for this session
+      const cachePattern = `session-detail:*${sessionId}*`;
+      await queryCacheService.invalidateCache(cachePattern);
+      console.log('✅ Session cache invalidated for fresh data:', cachePattern);
+    } catch (cacheError) {
+      console.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
+      // Continue without cache invalidation - database update is the source of truth
+    }
     
     // Broadcast session status change to all connected WebSocket clients - with graceful degradation
     const { websocketService } = await import('../services/websocket.service');
@@ -1416,6 +1429,18 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     
     // Update session status (note: end_reason and teacher_notes fields don't exist in schema, logged in audit instead)
     await databricksService.updateSessionStatus(sessionId, 'ended');
+    
+    // CRITICAL FIX: Invalidate session cache to ensure fresh data
+    try {
+      const { queryCacheService } = await import('../services/query-cache.service');
+      // Invalidate all session-detail cache entries for this session
+      const cachePattern = `session-detail:*${sessionId}*`;
+      await queryCacheService.invalidateCache(cachePattern);
+      console.log('✅ Session cache invalidated for fresh data:', cachePattern);
+    } catch (cacheError) {
+      console.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
+      // Continue without cache invalidation - database update is the source of truth
+    }
     
     // Record audit log
     await databricksService.recordAuditLog({
@@ -1753,6 +1778,18 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
     
     // Update session status (note: paused_at field doesn't exist in schema, status change is sufficient)
     await databricksService.updateSessionStatus(sessionId, 'paused');
+    
+    // CRITICAL FIX: Invalidate session cache to ensure fresh data
+    try {
+      const { queryCacheService } = await import('../services/query-cache.service');
+      // Invalidate all session-detail cache entries for this session
+      const cachePattern = `session-detail:*${sessionId}*`;
+      await queryCacheService.invalidateCache(cachePattern);
+      console.log('✅ Session cache invalidated for fresh data:', cachePattern);
+    } catch (cacheError) {
+      console.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
+      // Continue without cache invalidation - database update is the source of truth
+    }
     
     // Record audit log
     await databricksService.recordAuditLog({

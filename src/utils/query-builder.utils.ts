@@ -71,7 +71,11 @@ export const SESSION_DETAIL_FIELDS: QueryFieldSet = {
     'actual_end',        // ✅ Exists in schema (not 'ended_at')
     'end_reason',        // ✅ Exists in schema
     'actual_duration_minutes', // ✅ Exists in schema
-    'teacher_notes'      // ✅ Exists in schema
+    'teacher_notes',     // ✅ Exists in schema
+    'updated_at',        // ✅ ADDED: Required for session updates
+    'recording_enabled', // ✅ ADDED: Required for settings
+    'transcription_enabled', // ✅ ADDED: Required for settings
+    'ai_analysis_enabled'    // ✅ ADDED: Required for settings
   ]
 };
 
