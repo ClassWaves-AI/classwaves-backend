@@ -80,12 +80,12 @@ describe('Rate Limiting Integration Tests', () => {
     app.use('/api/auth/google', authLimiter);
     app.use('/api/auth/refresh', authLimiter);
     app.use('/api', apiLimiter);
-    app.use('/api/sessions', strictLimiter); // Additional limiting for session creation
+    app.use('/api/v1/sessions', strictLimiter); // Additional limiting for session creation
     app.use('/api/students/join', strictLimiter); // Prevent spam joins
     
     // Mount routes
     app.use('/api/auth', authRoutes);
-    app.use('/api/sessions', sessionRoutes);
+    app.use('/api/v1/sessions', sessionRoutes);
     // app.use('/api/students', studentRoutes); // Removed with participant model
     app.use(errorHandler);
     
@@ -169,14 +169,14 @@ describe('Rate Limiting Integration Tests', () => {
       // Make a few requests; limiter max is 60 so still OK
       for (let i = 0; i < 10; i++) {
         await request(app)
-          .get('/api/sessions')
+          .get('/api/v1/sessions')
           .set('Authorization', `Bearer ${authToken}`)
           .expect((res) => { if (res.status !== 200 && res.status !== 429 && res.status !== 503) throw new Error(`Unexpected ${res.status}`); });
       }
 
       // Another request may be OK or limited depending on store; accept both
       const response = await request(app)
-        .get('/api/sessions')
+        .get('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .expect((res) => { if (res.status !== 200 && res.status !== 429 && res.status !== 503) throw new Error(`Unexpected ${res.status}`); });
       
@@ -190,13 +190,13 @@ describe('Rate Limiting Integration Tests', () => {
       // Make 5 requests
       for (let i = 0; i < 5; i++) {
         await request(app)
-          .get('/api/sessions')
+          .get('/api/v1/sessions')
           .set('Authorization', `Bearer ${authToken}`)
           .expect(200);
       }
 
       await request(app)
-        .get('/api/sessions')
+        .get('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .expect((res) => { if (res.status !== 200 && res.status !== 429) throw new Error(`Unexpected ${res.status}`); });
 
@@ -205,7 +205,7 @@ describe('Rate Limiting Integration Tests', () => {
 
       // Should be able to make requests again
       await request(app)
-        .get('/api/sessions')
+        .get('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
@@ -221,7 +221,7 @@ describe('Rate Limiting Integration Tests', () => {
       // Make 10 requests (the strict limit)
       for (let i = 0; i < 10; i++) {
         await request(app)
-          .post('/api/sessions')
+          .post('/api/v1/sessions')
           .set('Authorization', `Bearer ${authToken}`)
           .send(sessionData)
           .expect(201);
@@ -229,7 +229,7 @@ describe('Rate Limiting Integration Tests', () => {
 
       // 11th request should be rate limited
       const response = await request(app)
-        .post('/api/sessions')
+        .post('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .send(sessionData)
         .expect((res) => { if (res.status !== 201 && res.status !== 429) throw new Error(`Unexpected ${res.status}`); });
@@ -262,7 +262,7 @@ describe('Rate Limiting Integration Tests', () => {
   describe('Rate Limit Headers', () => {
     it('should include rate limit headers in responses', async () => {
       const response = await request(app)
-        .get('/api/sessions')
+        .get('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
@@ -275,7 +275,7 @@ describe('Rate Limiting Integration Tests', () => {
 
       for (let i = 0; i < 5; i++) {
         const response = await request(app)
-          .get('/api/sessions')
+          .get('/api/v1/sessions')
           .set('Authorization', `Bearer ${authToken}`)
           .expect(200);
 
@@ -288,12 +288,12 @@ describe('Rate Limiting Integration Tests', () => {
       // Exhaust rate limit
       for (let i = 0; i < 60; i++) {
         await request(app)
-          .get('/api/sessions')
+          .get('/api/v1/sessions')
           .set('Authorization', `Bearer ${authToken}`);
       }
 
       const response = await request(app)
-        .get('/api/sessions')
+        .get('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .expect(429);
 
@@ -436,12 +436,12 @@ describe('Rate Limiting Integration Tests', () => {
       // Exhaust API rate limit
       for (let i = 0; i < 60; i++) {
         await request(app)
-          .get('/api/sessions')
+          .get('/api/v1/sessions')
           .set('Authorization', `Bearer ${authToken}`);
       }
 
       const response = await request(app)
-        .get('/api/sessions')
+        .get('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .expect(429);
 

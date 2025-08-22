@@ -253,16 +253,32 @@ export const testData = {
     createSession: {
       topic: 'Math - Fractions Unit',
       goal: 'Students will understand fraction operations',
+      subject: 'Mathematics', // Add required subject field
       description: 'Interactive session on fraction addition and subtraction',
-      maxStudents: 30,
-      targetGroupSize: 4,
-      plannedDuration: 45,
-      autoGroupEnabled: true,
-      settings: {
-        recordingEnabled: true,
-        transcriptionEnabled: true,
-        aiAnalysisEnabled: true,
+      plannedDuration: 45, // Match schema field name
+      groupPlan: { // Add required groupPlan field
+        numberOfGroups: 2,
+        groupSize: 4,
+        groups: [
+          {
+            name: 'Group A',
+            leaderId: 'student-leader-1',
+            memberIds: ['student-1', 'student-2']
+          },
+          {
+            name: 'Group B', 
+            leaderId: 'student-leader-2',
+            memberIds: ['student-3', 'student-4']
+          }
+        ]
       },
+      aiConfig: {
+        hidden: true,
+        defaultsApplied: true
+      },
+      emailNotifications: {
+        enabled: true
+      }
     },
     joinSession: {
       sessionCode: 'ABC123',

@@ -61,30 +61,34 @@ export const SESSION_LIST_FIELDS: QueryFieldSet = {
 
 /**
  * Additional fields needed for session detail view
+ * Updated to match actual database schema from DATABASE_SCHEMA_COMPLETE.md
  */
 export const SESSION_DETAIL_FIELDS: QueryFieldSet = {
   tableName: 'classroom_sessions',
   alias: 's',
   fields: [
     ...SESSION_LIST_FIELDS.fields,
-    'ended_at',
-    'paused_at'
+    'actual_end',        // ✅ Exists in schema (not 'ended_at')
+    'end_reason',        // ✅ Exists in schema
+    'actual_duration_minutes', // ✅ Exists in schema
+    'teacher_notes'      // ✅ Exists in schema
   ]
 };
 
 /**
  * Minimal aggregation fields for session group/student counts
+ * Updated to match actual database schema from DATABASE_SCHEMA_COMPLETE.md
  */
 export const SESSION_AGGREGATES: QueryFieldSet[] = [
   {
     tableName: 'student_groups',
     alias: 'sg',
-    fields: ['COUNT(*) as total_groups', 'SUM(CASE WHEN is_ready = true THEN 1 ELSE 0 END) as ready_groups']
+    fields: ['COUNT(*) as total_groups']
   },
   {
-    tableName: 'group_members',
-    alias: 'gm', 
-    fields: ['COUNT(DISTINCT student_id) as total_students', 'COUNT(DISTINCT CASE WHEN is_active = true THEN student_id END) as active_students']
+    tableName: 'student_group_members', // ✅ Fixed: was 'group_members'
+    alias: 'sgm', 
+    fields: ['COUNT(DISTINCT student_id) as total_students'] // ✅ Removed is_active check as field doesn't exist
   }
 ];
 
@@ -187,10 +191,10 @@ export function buildSessionListQuery(): QueryBuildResult {
 
 /**
  * Builds an optimized session detail query with required fields
- * Includes basic session data + computed aggregates
+ * Includes basic session data only - aggregates handled separately
  */
 export function buildSessionDetailQuery(): QueryBuildResult {
-  return buildSelectClause([SESSION_DETAIL_FIELDS, ...SESSION_AGGREGATES]);
+  return buildSelectClause([SESSION_DETAIL_FIELDS]);
 }
 
 /**

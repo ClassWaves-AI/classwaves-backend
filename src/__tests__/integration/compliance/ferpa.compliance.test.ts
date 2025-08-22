@@ -61,7 +61,7 @@ describe('FERPA Compliance Tests', () => {
     
     // Mount routes
     app.use('/api/auth', authRoutes);
-    app.use('/api/sessions', sessionRoutes);
+    app.use('/api/v1/sessions', sessionRoutes);
     // app.use('/api/students', studentRoutes); // Removed with participant model
     app.use(errorHandler);
     
@@ -79,14 +79,14 @@ describe('FERPA Compliance Tests', () => {
     it('should restrict session access to authorized teachers only', async () => {
       // Teacher can access their own session
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
       // Other teacher cannot access
       mockDatabricksService.queryOne.mockResolvedValueOnce(null);
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${unauthorizedToken}`)
         .expect(404); // ownership enforced in query
     });
@@ -97,14 +97,14 @@ describe('FERPA Compliance Tests', () => {
 
       // Authorized teacher can access
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
       // Unauthorized teacher cannot access (ownership enforced in query)
       mockDatabricksService.queryOne.mockResolvedValueOnce(null);
       await request(app)
-        .get(`/api/sessions/${activeSession.id}/participants`)
+        .get(`/api/v1/sessions/${activeSession.id}/participants`)
         .set('Authorization', `Bearer ${unauthorizedToken}`)
         .expect(404);
     });
@@ -114,14 +114,14 @@ describe('FERPA Compliance Tests', () => {
 
       // Session owner can access
       await request(app)
-        .get(`/api/sessions/${activeSession.id}/analytics`)
+        .get(`/api/v1/sessions/${activeSession.id}/analytics`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
       // Non-owner cannot access
       mockDatabricksService.queryOne.mockResolvedValueOnce(null);
       await request(app)
-        .get(`/api/sessions/${activeSession.id}/analytics`)
+        .get(`/api/v1/sessions/${activeSession.id}/analytics`)
         .set('Authorization', `Bearer ${unauthorizedToken}`)
         .expect(404);
     });
@@ -142,7 +142,7 @@ describe('FERPA Compliance Tests', () => {
 
       // Admin can access any session in their school
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${adminToken}`)
         .expect(200);
     });
@@ -151,7 +151,7 @@ describe('FERPA Compliance Tests', () => {
   describe('Audit Logging', () => {
     it('should log all access to educational records', async () => {
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
@@ -162,7 +162,7 @@ describe('FERPA Compliance Tests', () => {
       mockDatabricksService.getSessionStudents.mockResolvedValue(testData.students.active);
 
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
@@ -179,7 +179,7 @@ describe('FERPA Compliance Tests', () => {
       mockDatabricksService.update = jest.fn().mockResolvedValue(undefined);
 
       await request(app)
-        .put(`/api/sessions/${testData.sessions.created.id}`)
+        .put(`/api/v1/sessions/${testData.sessions.created.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .send(updateData)
         .expect(200);
@@ -193,7 +193,7 @@ describe('FERPA Compliance Tests', () => {
       mockDatabricksService.updateSessionStatus.mockResolvedValue(true);
 
       await request(app)
-        .delete(`/api/sessions/${testData.sessions.created.id}`)
+        .delete(`/api/v1/sessions/${testData.sessions.created.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
@@ -230,7 +230,7 @@ describe('FERPA Compliance Tests', () => {
       // Simulate an allowed operation that triggers audit logging instead
       mockDatabricksService.queryOne.mockResolvedValueOnce(testData.sessions.created);
       await request(app)
-        .delete(`/api/sessions/${activeSession.id}`)
+        .delete(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .set('X-Forwarded-For', '192.168.1.100')
         .set('User-Agent', 'Mozilla/5.0 Test Browser')
@@ -257,7 +257,7 @@ describe('FERPA Compliance Tests', () => {
       });
 
       await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
     });
@@ -360,7 +360,7 @@ describe('FERPA Compliance Tests', () => {
       });
 
       await request(app)
-        .post('/api/sessions')
+        .post('/api/v1/sessions')
         .set('Authorization', `Bearer ${authToken}`)
         .send(sessionData)
         .expect(201);
@@ -369,7 +369,7 @@ describe('FERPA Compliance Tests', () => {
     it('should use secure communication channels', async () => {
       // Verify HTTPS is enforced in production
       const response = await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
@@ -409,7 +409,7 @@ describe('FERPA Compliance Tests', () => {
 
       // This endpoint would be implemented for data export
       // await request(app)
-      //   .get(`/api/sessions/${activeSession.id}/export`)
+      //   .get(`/api/v1/sessions/${activeSession.id}/export`)
       //   .set('Authorization', `Bearer ${authToken}`)
       //   .expect(200);
     });
@@ -459,7 +459,7 @@ describe('FERPA Compliance Tests', () => {
       mockDatabricksService.getSessionStudents.mockResolvedValue([studentWithOptOut]);
 
       const response = await request(app)
-        .get(`/api/sessions/${activeSession.id}`)
+        .get(`/api/v1/sessions/${activeSession.id}`)
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
