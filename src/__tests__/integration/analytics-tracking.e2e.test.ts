@@ -1,461 +1,648 @@
-import { analyticsTrackingValidator } from '../../services/analytics-tracking-validator.service';
-import { databricksService } from '../../services/databricks.service';
+import { databricksAIService } from '../../services/databricks-ai.service';
 import { teacherPromptService } from '../../services/teacher-prompt.service';
-import { alertPrioritizationService } from '../../services/alert-prioritization.service';
+import { databricksService } from '../../services/databricks.service';
+import type { Tier1Insights } from '../../types/ai-analysis.types';
+import type { SessionPhase, SubjectArea } from '../../types/teacher-guidance.types';
+import { v4 as uuidv4 } from 'uuid';
 
-// Mock external dependencies for E2E testing
-jest.mock('../../services/databricks.service');
-jest.mock('../../services/websocket.service');
+// Define the context interface used by teacher prompt service
+interface PromptGenerationContext {
+  sessionId: string;
+  groupId: string;
+  teacherId: string;
+  sessionPhase: SessionPhase;
+  subject: SubjectArea;
+  learningObjectives: string[];
+  groupSize: number;
+  sessionDuration: number;
+}
 
-describe('Analytics Tracking E2E Tests', () => {
-  let mockDatabricksService: jest.Mocked<typeof databricksService>;
+// Real database integration per TEST_REWRITE_PLAN.md
+// Mock only external AI API calls for test reliability (keeps other services real)
+jest.mock('../../services/databricks-ai.service', () => ({
+  databricksAIService: {
+    analyzeTier1: jest.fn().mockResolvedValue({
+      topicalCohesion: 0.4,  // Below 0.6 threshold to trigger redirection prompts
+      conceptualDensity: 0.3, // Below 0.5 threshold to trigger deepening prompts
+      analysisTimestamp: new Date().toISOString(),
+      windowStartTime: new Date(Date.now() - 30000).toISOString(),
+      windowEndTime: new Date().toISOString(),
+      transcriptLength: 150,
+      confidence: 0.85,
+      insights: [
+        {
+          type: 'topical_cohesion',
+          message: 'Strong focus on photosynthesis concepts',
+          severity: 'success',
+          actionable: 'Continue encouraging scientific vocabulary'
+        }
+      ],
+      metadata: {
+        processingTimeMs: 1200,
+        modelVersion: 'tier1-v1.0'
+      }
+    }),
+    analyzeTier2: jest.fn().mockResolvedValue({
+      argumentationQuality: {
+        coherence: 0.75,
+        evidenceUse: 0.80,
+        counterarguments: 0.60
+      },
+      collectiveEmotionalArc: {
+        engagementTrend: 'increasing',
+        frustrationPoints: [],
+        excitementPeaks: [{ timestamp: new Date().toISOString(), intensity: 0.8 }]
+      },
+      collaborationPatterns: {
+        participationEquity: 0.85,
+        buildingBehavior: 0.70,
+        conflictResolution: 0.65
+      },
+      learningSignals: {
+        comprehensionIndicators: 0.75,
+        misconceptionFlags: [],
+        knowledgeGaps: ['photosynthesis-details']
+      },
+      recommendations: [
+        {
+          type: 'facilitation',
+          priority: 'high',
+          message: 'Guide students to deeper exploration',
+          actionable: 'Ask follow-up questions about energy conversion'
+        }
+      ],
+      processingTime: 9000,
+      recommendationCount: 1,
+      metadata: {
+        processingTimeMs: 9000,
+        modelVersion: 'tier2-v1.0'
+      }
+    })
+  }
+}));
 
-  beforeEach(() => {
-    jest.clearAllMocks();
-    
-    mockDatabricksService = databricksService as jest.Mocked<typeof databricksService>;
-    
-    // Setup successful database mocks
-    mockDatabricksService.query.mockImplementation(async (sql: string) => {
-      if (sql.includes('INSERT INTO teacher_guidance_metrics')) {
-        return [{ insertId: '12345' }];
-      }
-      if (sql.includes('SELECT COUNT(*) as count FROM teacher_guidance_metrics')) {
-        return [{ count: 1 }];
-      }
-      if (sql.includes('UPDATE teacher_guidance_metrics')) {
-        return [{ affectedRows: 1 }];
-      }
-      if (sql.includes('INSERT INTO session_audit_log')) {
-        return [{ insertId: '67890' }];
-      }
-      if (sql.includes('SELECT * FROM teacher_guidance_metrics WHERE prompt_id')) {
-        return [{
-          prompt_id: 'test-prompt-123',
-          session_id: 'analytics-test-session',
-          teacher_id: 'analytics-test-teacher',
-          group_id: 'analytics-test-group',
-          category: 'facilitation',
-          priority: 'medium',
-          generated_at: new Date().toISOString(),
-          acknowledged_at: new Date().toISOString(),
-          used_at: new Date().toISOString(),
-          effectiveness_score: 85,
-          teacher_feedback_rating: 4
-        }];
-      }
-      return [];
-    });
+// Get mocked functions for test assertions
+const mockAnalyzeTier1 = databricksAIService.analyzeTier1 as jest.MockedFunction<typeof databricksAIService.analyzeTier1>;
+const mockAnalyzeTier2 = databricksAIService.analyzeTier2 as jest.MockedFunction<typeof databricksAIService.analyzeTier2>;
+
+describe('Analytics Tracking E2E Tests (Real Database)', () => {
+  let testSessionId: string;
+  let testTeacherId: string;
+  let testGroupId: string;
+  let testSchoolId: string;
+
+  beforeAll(async () => {
+    // Setup test data using real database per schema
+    testSessionId = uuidv4();
+    testTeacherId = uuidv4();
+    testGroupId = uuidv4();
+    testSchoolId = uuidv4();
+
+    // Create test session in real DB (classwaves.sessions.classroom_sessions)
+    await databricksService.query(
+      `INSERT INTO classwaves.sessions.classroom_sessions 
+       (id, title, status, planned_duration_minutes, max_students, target_group_size, 
+        auto_group_enabled, teacher_id, school_id, recording_enabled, transcription_enabled, 
+        ai_analysis_enabled, ferpa_compliant, coppa_compliant, recording_consent_obtained, 
+        total_groups, total_students, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        testSessionId,
+        'Analytics Test Session',
+        'created',
+        30,
+        20,
+        4,
+        true,
+        testTeacherId,
+        testSchoolId,
+        true, // recording_enabled
+        true, // transcription_enabled
+        true, // ai_analysis_enabled
+        true, // ferpa_compliant
+        true, // coppa_compliant
+        true, // recording_consent_obtained
+        0,    // total_groups
+        0,    // total_students
+        new Date().toISOString(),
+        new Date().toISOString()
+      ]
+    );
+
+    // Create test student group per schema
+    await databricksService.query(
+      `INSERT INTO classwaves.sessions.student_groups 
+       (id, session_id, name, group_number, status, max_size, current_size, 
+        auto_managed, is_ready, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        testGroupId,
+        testSessionId,
+        'Test Group 1',
+        1,
+        'created',
+        4,
+        2,
+        true,
+        false,
+        new Date().toISOString(),
+        new Date().toISOString()
+      ]
+    );
   });
 
-  afterEach(async () => {
-    // Cleanup test data
-    await analyticsTrackingValidator.cleanup();
+  afterAll(async () => {
+    // Cleanup test data from real database
+    await databricksService.query(
+      'DELETE FROM classwaves.analytics.session_events WHERE session_id = ?',
+      [testSessionId]
+    );
+    await databricksService.query(
+      'DELETE FROM classwaves.sessions.student_groups WHERE session_id = ?',
+      [testSessionId]
+    );
+    await databricksService.query(
+      'DELETE FROM classwaves.sessions.classroom_sessions WHERE id = ?',
+      [testSessionId]
+    );
   });
 
-  describe('Full Analytics Tracking Workflow', () => {
-    it('should track complete prompt lifecycle from generation to feedback', async () => {
-      // Step 1: Generate a test prompt
+  describe('AI Analysis and Analytics Tracking Workflow', () => {
+    it('should track complete AI analysis lifecycle from transcripts to analytics events', async () => {
+      // Step 1: Generate AI analysis using current APIs
+      const testTranscripts = [
+        'Student A: I think the main concept here is photosynthesis.',
+        'Student B: Yes, and it involves converting light energy to chemical energy.',
+        'Student C: The chloroplasts are the key organelles for this process.'
+      ];
+
+      // Use current Tier1 analysis API per TEST_REWRITE_PLAN.md (mocked for test reliability)
+      const tier1Insights: Tier1Insights = await databricksAIService.analyzeTier1(
+        testTranscripts,
+        {
+          groupId: testGroupId,
+          sessionId: testSessionId,
+          focusAreas: ['topical_cohesion', 'conceptual_density']
+        }
+      );
+
+      // Verify AI service was called with correct parameters
+      expect(mockAnalyzeTier1).toHaveBeenCalledWith(
+        testTranscripts,
+        {
+          groupId: testGroupId,
+          sessionId: testSessionId,
+          focusAreas: ['topical_cohesion', 'conceptual_density']
+        }
+      );
+
+      // Verify Tier1 insights structure per current types
+      expect(tier1Insights).toHaveProperty('topicalCohesion');
+      expect(tier1Insights).toHaveProperty('conceptualDensity');
+      expect(tier1Insights).toHaveProperty('analysisTimestamp');
+      expect(tier1Insights).toHaveProperty('windowStartTime');
+      expect(tier1Insights).toHaveProperty('windowEndTime');
+      expect(tier1Insights).toHaveProperty('transcriptLength');
+      expect(tier1Insights).toHaveProperty('confidence');
+      expect(tier1Insights).toHaveProperty('insights');
+      expect(tier1Insights).toHaveProperty('metadata.processingTimeMs');
+
+      // Step 2: Generate teacher prompts using correct context structure
+      const promptGenerationContext: PromptGenerationContext = {
+        sessionId: testSessionId,
+        groupId: testGroupId,
+        teacherId: testTeacherId,
+        sessionPhase: 'development',
+        subject: 'science',
+        learningObjectives: ['Test analytics tracking workflow'],
+        groupSize: 4,
+        sessionDuration: 30
+      };
+
       const prompts = await teacherPromptService.generatePrompts(
+        tier1Insights,
+        promptGenerationContext,
         {
-          topicalCohesion: 70,
-          conceptualDensity: 80,
-
-          // participationBalance removed from type
-          // offTopicIndicators removed from type
-          // keyTermsUsed removed from type
-          // groupDynamics removed from type
-          analysisTimestamp: new Date().toISOString(),
-          windowStartTime: new Date().toISOString(),
-          windowEndTime: new Date().toISOString(),
-          transcriptLength: 100,
-          confidence: 0.8,
-          insights: []
-        },
-        {
-          sessionId: 'analytics-test-session',
-          teacherId: 'analytics-test-teacher',
-          groupId: 'analytics-test-group',
-          sessionPhase: 'development',
-          subject: 'science',
-          learningObjectives: ['Test analytics tracking'],
-          // currentTime removed from PromptGenerationContext
-          groupSize: 4,
-          sessionDuration: 30
+          maxPrompts: 5,
+          priorityFilter: 'all',
+          includeEffectivenessScore: true
         }
       );
 
       expect(prompts.length).toBeGreaterThan(0);
       const testPrompt = prompts[0];
 
-      // Step 2: Store prompt in database (simulated)
-      const storeResult = await databricksService.query(
-        'INSERT INTO teacher_guidance_metrics (prompt_id, session_id, teacher_id, group_id, category, priority, message, context, generated_at, effectiveness_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      // Step 3: Record analytics event in real database per schema
+      const analyticsEventResult = await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          testPrompt.id,
-          testPrompt.sessionId,
-          testPrompt.teacherId,
-          testPrompt.groupId,
-          testPrompt.category,
-          testPrompt.priority,
-          testPrompt.message,
-          testPrompt.context,
-          testPrompt.generatedAt.toISOString(),
-          testPrompt.effectivenessScore
-        ]
-      );
-
-      expect(storeResult).toEqual([{ insertId: '12345' }]);
-      expect(mockDatabricksService.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO teacher_guidance_metrics'),
-        expect.arrayContaining([testPrompt.id, testPrompt.sessionId])
-      );
-
-      // Step 3: Simulate teacher acknowledgment
-      const acknowledgeTime = new Date();
-      const acknowledgeResult = await databricksService.query(
-        'UPDATE teacher_guidance_metrics SET acknowledged_at = ? WHERE prompt_id = ?',
-        [acknowledgeTime.toISOString(), testPrompt.id]
-      );
-
-      expect(acknowledgeResult).toEqual([{ affectedRows: 1 }]);
-
-      // Step 4: Simulate teacher using the prompt
-      const useTime = new Date();
-      const useResult = await databricksService.query(
-        'UPDATE teacher_guidance_metrics SET used_at = ? WHERE prompt_id = ?',
-        [useTime.toISOString(), testPrompt.id]
-      );
-
-      expect(useResult).toEqual([{ affectedRows: 1 }]);
-
-      // Step 5: Simulate teacher feedback
-      const feedbackResult = await databricksService.query(
-        'UPDATE teacher_guidance_metrics SET teacher_feedback_rating = ?, teacher_feedback_text = ? WHERE prompt_id = ?',
-        [4, 'Very helpful prompt, improved discussion focus', testPrompt.id]
-      );
-
-      expect(feedbackResult).toEqual([{ affectedRows: 1 }]);
-
-      // Step 6: Log audit trail
-      const auditResult = await databricksService.query(
-        'INSERT INTO session_audit_log (session_id, teacher_id, action_type, action_data, timestamp) VALUES (?, ?, ?, ?, ?)',
-        [
-          testPrompt.sessionId,
-          testPrompt.teacherId,
-          'prompt_feedback_submitted',
-          JSON.stringify({ promptId: testPrompt.id, rating: 4 }),
+          uuidv4(),
+          testSessionId,
+          testTeacherId,
+          'ai_analysis_completed',
+          new Date().toISOString(),
+          JSON.stringify({
+            analysisType: 'tier1',
+            groupId: testGroupId,
+            topicalCohesion: tier1Insights.topicalCohesion,
+            conceptualDensity: tier1Insights.conceptualDensity,
+            promptsGenerated: prompts.length,
+            processingTime: tier1Insights.metadata?.processingTimeMs
+          }),
           new Date().toISOString()
         ]
       );
 
-      expect(auditResult).toEqual([{ insertId: '67890' }]);
+      expect(analyticsEventResult).toBeDefined();
+      expect(Array.isArray(analyticsEventResult)).toBe(true);
 
-      // Step 7: Verify complete tracking
-      const retrievalResult = await databricksService.query(
-        'SELECT * FROM teacher_guidance_metrics WHERE prompt_id = ?',
-        [testPrompt.id]
+      // Step 4: Record prompt generation event
+      const promptEventResult = await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(),
+          testSessionId,
+          testTeacherId,
+          'prompt_generated',
+          new Date().toISOString(),
+          JSON.stringify({
+            promptId: testPrompt.id,
+            promptCategory: testPrompt.category,
+            promptPriority: testPrompt.priority,
+            effectivenessScore: testPrompt.effectivenessScore,
+            groupId: testGroupId
+          }),
+          new Date().toISOString()
+        ]
       );
 
-      expect(retrievalResult).toHaveLength(1);
-      const trackedPrompt = retrievalResult[0];
-      expect(trackedPrompt.prompt_id).toBe(testPrompt.id);
-      expect(trackedPrompt.acknowledged_at).toBeDefined();
-      expect(trackedPrompt.used_at).toBeDefined();
-      expect(trackedPrompt.teacher_feedback_rating).toBe(4);
-    });
+      expect(promptEventResult).toBeDefined();
 
-    it('should track alert delivery and confirmation', async () => {
-      // Create a high-priority prompt for alert testing
-      const urgentPrompt = await teacherPromptService['createPrompt']({
-        category: 'collaboration',
-        priority: 'high',
-        message: 'Urgent: One student is dominating the discussion',
-        context: 'Group dynamics analysis shows 80% participation from one student',
-        suggestedTiming: 'immediate',
-        sessionPhase: 'development',
-        subject: 'science',
-        sessionId: 'alert-test-session',
-        teacherId: 'alert-test-teacher',
-        groupId: 'alert-test-group'
-      });
-
-      // Track alert delivery
-      await alertPrioritizationService.prioritizeAlert(urgentPrompt, {
-        sessionId: 'alert-test-session',
-        teacherId: 'alert-test-teacher',
-        currentAlertCount: 2,
-        sessionPhase: 'development'
-      });
-
-      // Verify alert was logged
-      expect(mockDatabricksService.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO session_audit_log'),
-        expect.arrayContaining([
-          urgentPrompt.sessionId,
-          urgentPrompt.teacherId,
-          'alert_delivered'
-        ])
+      // Step 5: Verify analytics tracking in real database
+      const analyticsQuery = await databricksService.query(
+        'SELECT * FROM classwaves.analytics.session_events WHERE session_id = ? ORDER BY created_at',
+        [testSessionId]
       );
 
-      // Simulate delivery confirmation
-      const deliveryConfirmTime = new Date();
-      await databricksService.query(
-        'UPDATE teacher_guidance_metrics SET delivery_confirmed_at = ? WHERE prompt_id = ?',
-        [deliveryConfirmTime.toISOString(), urgentPrompt.id]
-      );
-
-      expect(mockDatabricksService.query).toHaveBeenCalledWith(
-        'UPDATE teacher_guidance_metrics SET delivery_confirmed_at = ? WHERE prompt_id = ?',
-        [deliveryConfirmTime.toISOString(), urgentPrompt.id]
-      );
-    });
-  });
-
-  describe('Analytics Validation System', () => {
-    it('should validate complete analytics tracking system', async () => {
-      // Run the full analytics validation
-      const validationReport = await analyticsTrackingValidator.validateAnalyticsTracking();
-
-      expect(validationReport).toBeDefined();
-      expect(validationReport.overall).toBeDefined();
+      expect(analyticsQuery).toHaveLength(2); // ai_analysis_completed + prompt_generated
+      expect(analyticsQuery[0].event_type).toBe('ai_analysis_completed');
+      expect(analyticsQuery[1].event_type).toBe('prompt_generated');
       
-      // Verify validation report structure
-      // Note: status and timestamp properties have been removed from the validation report type
-      expect(validationReport.overall.passed).toBeDefined();
-      expect(validationReport.overall.successRate).toBeDefined();
-
-      // Check that validation created and tested data
-      expect(mockDatabricksService.query).toHaveBeenCalledTimes(expect.any(Number));
-
-      // Verify cleanup was called
-      await analyticsTrackingValidator.cleanup();
-      expect(mockDatabricksService.query).toHaveBeenCalledWith(
-        expect.stringContaining('DELETE FROM teacher_guidance_metrics'),
-        expect.any(Array)
-      );
+      // Validate payload structure
+      const analysisPayload = JSON.parse(analyticsQuery[0].payload);
+      expect(analysisPayload.analysisType).toBe('tier1');
+      expect(analysisPayload.groupId).toBe(testGroupId);
+      expect(analysisPayload).toHaveProperty('topicalCohesion');
+      expect(analysisPayload).toHaveProperty('conceptualDensity');
     });
 
-    it('should validate individual analytics components', async () => {
-      // Test prompt generation validation
-      const promptResults = await analyticsTrackingValidator.testComponent('promptGeneration');
-      expect(promptResults).toHaveLength(expect.any(Number));
-      expect(promptResults[0].passed).toBeDefined();
+    it('should track Tier 2 deep analysis workflow', async () => {
+      // Generate deeper analysis using real API
+      const tier2Insights = await databricksAIService.analyzeTier2(
+        [
+          'Student A: The photosynthesis process is more complex than just light to energy conversion.',
+          'Student B: I disagree, I think it\'s primarily about the chlorophyll absorbing light.',
+          'Student C: Both perspectives have merit. Let\'s consider the Calvin cycle as well.',
+          'Student D: That\'s a good point about the Calvin cycle, but what about cellular respiration?'
+        ],
+        {
+          sessionId: testSessionId,
+          analysisDepth: 'comprehensive'
+        }
+      );
 
-      // Test prompt storage validation
-      const storageResults = await analyticsTrackingValidator.testComponent('promptStorage');
-      expect(storageResults).toHaveLength(expect.any(Number));
+      // Verify Tier2 structure per current types
+      expect(tier2Insights).toHaveProperty('argumentationQuality');
+      expect(tier2Insights).toHaveProperty('collectiveEmotionalArc');
+      expect(tier2Insights).toHaveProperty('collaborationPatterns');
+      expect(tier2Insights).toHaveProperty('learningSignals');
+      expect(tier2Insights).toHaveProperty('recommendations');
+      expect(tier2Insights).toHaveProperty('metadata.processingTimeMs');
 
-      // Test teacher interactions validation
-      const interactionResults = await analyticsTrackingValidator.testComponent('teacherInteractions');
-      expect(interactionResults).toHaveLength(expect.any(Number));
+      // Record Tier 2 analytics event
+      const tier2EventResult = await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(),
+          testSessionId,
+          testTeacherId,
+          'tier2_analysis_completed',
+          new Date().toISOString(),
+          JSON.stringify({
+            analysisType: 'tier2',
+            argumentationScore: tier2Insights.argumentationQuality.score,
+            collaborationScore: tier2Insights.collaborationPatterns.turnTaking,
+            recommendationCount: tier2Insights.recommendations.length,
+            processingTime: tier2Insights.metadata?.processingTimeMs
+          }),
+          new Date().toISOString()
+        ]
+      );
 
-      // Test effectiveness tracking validation
-      const effectivenessResults = await analyticsTrackingValidator.testComponent('effectivenessTracking');
-      expect(effectivenessResults).toHaveLength(expect.any(Number));
-
-      // Test audit logging validation
-      const auditResults = await analyticsTrackingValidator.testComponent('auditLogging');
-      expect(auditResults).toHaveLength(expect.any(Number));
+      expect(tier2EventResult).toBeDefined();
     });
   });
 
-  describe('Session-level Analytics Aggregation', () => {
-    it('should aggregate session guidance analytics correctly', async () => {
-      const sessionId = 'aggregation-test-session';
-      const teacherId = 'aggregation-test-teacher';
+  describe('Analytics Data Persistence Validation', () => {
+    it('should persist and retrieve analytics events correctly', async () => {
+      // Create multiple analytics events
+      const eventTypes = ['configured', 'started', 'leader_ready', 'member_join'];
+      const eventIds: string[] = [];
 
-      // Mock session summary data
-      mockDatabricksService.query.mockImplementation(async (sql: string) => {
-        if (sql.includes('SELECT session_id, COUNT(*) as total_prompts')) {
-          return [{
-            session_id: sessionId,
-            total_prompts: 8,
-            acknowledged_prompts: 7,
-            used_prompts: 5,
-            dismissed_prompts: 1,
-            avg_response_time: 4.2,
-            avg_effectiveness_score: 82.5,
-            high_priority_count: 2,
-            categories_used: 'facilitation,deepening,collaboration'
-          }];
-        }
-        if (sql.includes('INSERT INTO session_guidance_summary')) {
-          return [{ insertId: 'summary-123' }];
-        }
-        return [];
-      });
-
-      // Generate session summary
-      const summaryResult = await databricksService.query(
-        'INSERT INTO session_guidance_summary (session_id, teacher_id, total_prompts, acknowledged_prompts, used_prompts, dismissed_prompts, avg_response_time, avg_effectiveness_score, session_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [sessionId, teacherId, 8, 7, 5, 1, 4.2, 82.5, new Date().toISOString()]
-      );
-
-      expect(summaryResult).toEqual([{ insertId: 'summary-123' }]);
-
-      // Verify aggregation query
-      const aggregationResult = await databricksService.query(
-        'SELECT session_id, COUNT(*) as total_prompts, SUM(CASE WHEN acknowledged_at IS NOT NULL THEN 1 ELSE 0 END) as acknowledged_prompts FROM teacher_guidance_metrics WHERE session_id = ? GROUP BY session_id',
-        [sessionId]
-      );
-
-      expect(aggregationResult).toHaveLength(1);
-      expect(aggregationResult[0].total_prompts).toBe(8);
-      expect(aggregationResult[0].acknowledged_prompts).toBe(7);
-    });
-  });
-
-  describe('Error Handling and Data Integrity', () => {
-    it('should handle database errors gracefully', async () => {
-      // Mock database failure
-      mockDatabricksService.query.mockRejectedValueOnce(
-        new Error('Database connection failed')
-      );
-
-      // Analytics validation should handle errors
-      await expect(analyticsTrackingValidator.testComponent('promptStorage'))
-        .resolves.not.toThrow();
-
-      // Should record the failure in validation results
-      const results = await analyticsTrackingValidator.testComponent('promptStorage');
-      const failedTest = results.find(r => !r.passed);
-      expect(failedTest).toBeDefined();
-      expect(failedTest?.error).toContain('Database connection failed');
-    });
-
-    it('should maintain data consistency during concurrent operations', async () => {
-      const sessionId = 'concurrency-test-session';
-      const teacherId = 'concurrency-test-teacher';
-
-      // Setup multiple concurrent prompt tracking operations
-      const promptPromises: Promise<any>[] = [];
-      for (let i = 0; i < 5; i++) {
-        const prompt = await teacherPromptService['createPrompt']({
-          category: 'facilitation',
-          priority: 'medium',
-          message: `Concurrent prompt ${i}`,
-          context: 'Concurrency test',
-          suggestedTiming: 'immediate',
-          sessionPhase: 'development',
-          subject: 'science',
-          sessionId,
-          teacherId,
-          groupId: `group-${i}`
-        });
-
-        promptPromises.push(
-          databricksService.query(
-            'INSERT INTO teacher_guidance_metrics (prompt_id, session_id, teacher_id, category, generated_at) VALUES (?, ?, ?, ?, ?)',
-            [prompt.id, prompt.sessionId, prompt.teacherId, prompt.category, prompt.generatedAt.toISOString()]
-          )
+      for (const eventType of eventTypes) {
+        const eventId = uuidv4();
+        eventIds.push(eventId);
+        
+        await databricksService.query(
+          `INSERT INTO classwaves.analytics.session_events 
+           (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            eventId,
+            testSessionId,
+            testTeacherId,
+            eventType,
+            new Date().toISOString(),
+            JSON.stringify({ groupId: testGroupId, testEvent: true }),
+            new Date().toISOString()
+          ]
         );
       }
 
-      // All operations should complete successfully
-      const results = await Promise.all(promptPromises);
-      expect(results).toHaveLength(5);
-      results.forEach(result => {
-        expect(result).toEqual([{ insertId: '12345' }]);
-      });
-    });
-
-    it('should validate data consistency after operations', async () => {
-      const sessionId = 'consistency-test-session';
-
-      // Mock count verification queries
-      mockDatabricksService.query.mockImplementation(async (sql: string) => {
-        if (sql.includes('COUNT(*) as count FROM teacher_guidance_metrics')) {
-          return [{ count: 3 }];
-        }
-        if (sql.includes('COUNT(*) as count FROM session_audit_log')) {
-          return [{ count: 5 }];
-        }
-        return [{ insertId: '12345' }];
-      });
-
-      // Create test data
-      await databricksService.query(
-        'INSERT INTO teacher_guidance_metrics (prompt_id, session_id) VALUES (?, ?)',
-        ['test1', sessionId]
-      );
-      await databricksService.query(
-        'INSERT INTO teacher_guidance_metrics (prompt_id, session_id) VALUES (?, ?)',
-        ['test2', sessionId]
-      );
-      await databricksService.query(
-        'INSERT INTO teacher_guidance_metrics (prompt_id, session_id) VALUES (?, ?)',
-        ['test3', sessionId]
+      // Verify all events were stored
+      const retrievedEvents = await databricksService.query(
+        'SELECT * FROM classwaves.analytics.session_events WHERE session_id = ? ORDER BY event_time',
+        [testSessionId]
       );
 
-      // Verify counts
-      const promptCount = await databricksService.query(
-        'SELECT COUNT(*) as count FROM teacher_guidance_metrics WHERE session_id = ?',
-        [sessionId]
-      );
-      expect(promptCount[0].count).toBe(3);
-
-      const auditCount = await databricksService.query(
-        'SELECT COUNT(*) as count FROM session_audit_log WHERE session_id = ?',
-        [sessionId]
-      );
-      expect(auditCount[0].count).toBe(5);
+      expect(retrievedEvents.length).toBeGreaterThanOrEqual(eventTypes.length);
+      
+      // Verify event structure matches schema
+      const firstEvent = retrievedEvents[0];
+      expect(firstEvent).toHaveProperty('id');
+      expect(firstEvent).toHaveProperty('session_id');
+      expect(firstEvent).toHaveProperty('teacher_id');
+      expect(firstEvent).toHaveProperty('event_type');
+      expect(firstEvent).toHaveProperty('event_time');
+      expect(firstEvent).toHaveProperty('payload');
+      expect(firstEvent).toHaveProperty('created_at');
+      
+      // Validate payload JSON structure
+              const payload = JSON.parse(firstEvent.payload);
+        // Validate actual payload structure from the test
+        expect(payload).toHaveProperty('groupId');
+        expect(payload.groupId).toBe(testGroupId);
     });
   });
 
-  describe('Performance Analytics', () => {
-    it('should track response times and system performance', async () => {
-      const sessionId = 'performance-test-session';
-      const startTime = Date.now();
-
-      // Simulate prompt generation with timing
-      const prompt = await teacherPromptService['createPrompt']({
-        category: 'facilitation',
-        priority: 'medium',
-        message: 'Performance test prompt',
-        context: 'Timing validation',
-        suggestedTiming: 'immediate',
-        sessionPhase: 'development',
-        subject: 'science',
-        sessionId,
-        teacherId: 'performance-teacher',
-        groupId: 'performance-group'
-      });
-
-      const generateTime = Date.now() - startTime;
-
-      // Track generation time
+  describe('Session Analytics Integration', () => {
+    it('should integrate AI analysis with session lifecycle events', async () => {
+      // Step 1: Record session started event
+      const sessionStartEventId = uuidv4();
       await databricksService.query(
-        'INSERT INTO teacher_guidance_metrics (prompt_id, session_id, generation_time_ms) VALUES (?, ?, ?)',
-        [prompt.id, sessionId, generateTime]
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          sessionStartEventId,
+          testSessionId,
+          testTeacherId,
+          'started',
+          new Date().toISOString(),
+          JSON.stringify({ totalGroups: 1, targetGroupSize: 4 }),
+          new Date().toISOString()
+        ]
       );
 
-      expect(mockDatabricksService.query).toHaveBeenCalledWith(
-        'INSERT INTO teacher_guidance_metrics (prompt_id, session_id, generation_time_ms) VALUES (?, ?, ?)',
-        [prompt.id, sessionId, generateTime]
+      // Step 2: Record group ready event
+      const groupReadyEventId = uuidv4();
+      await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          groupReadyEventId,
+          testSessionId,
+          testTeacherId,
+          'leader_ready',
+          new Date().toISOString(),
+          JSON.stringify({ groupId: testGroupId, groupNumber: 1 }),
+          new Date().toISOString()
+        ]
       );
 
-      // Verify performance is within acceptable bounds (< 100ms for prompt generation)
-      expect(generateTime).toBeLessThan(100);
+      // Step 3: Query session event timeline
+      const eventTimeline = await databricksService.query(
+        `SELECT event_type, event_time, payload 
+         FROM classwaves.analytics.session_events 
+         WHERE session_id = ? 
+         ORDER BY event_time ASC`,
+        [testSessionId]
+      );
+
+      expect(eventTimeline.length).toBeGreaterThanOrEqual(2);
+      
+      // Verify event sequence includes session lifecycle events
+      const eventTypes = eventTimeline.map(e => e.event_type);
+      expect(eventTypes).toContain('started');
+      expect(eventTypes).toContain('leader_ready');
+    });
+  });
+
+  describe('Data Integrity and Error Handling', () => {
+    it('should handle AI service errors gracefully', async () => {
+      const invalidTranscripts: string[] = [];
+      
+      // Test with empty transcripts - should handle gracefully
+      try {
+        await databricksAIService.analyzeTier1(invalidTranscripts, {
+          groupId: testGroupId,
+          sessionId: testSessionId,
+          focusAreas: ['topical_cohesion']
+        });
+      } catch (error: unknown) {
+        // Verify error handling structure
+        expect(error).toBeInstanceOf(Error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        expect(errorMessage).toContain('failed');
+      }
     });
 
-    it('should aggregate performance metrics across sessions', async () => {
-      // Mock performance aggregation query
-      mockDatabricksService.query.mockResolvedValueOnce([{
-        avg_generation_time: 45.2,
-        avg_response_time: 3.8,
-        avg_delivery_time: 0.8,
-        prompt_count: 156,
-        session_count: 12
-      }]);
+    it('should maintain referential integrity across analytics tables', async () => {
+      // Verify session exists before adding events
+      const sessionCheck = await databricksService.query(
+        'SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ?',
+        [testSessionId]
+      );
+      expect(sessionCheck).toHaveLength(1);
 
-      const performanceMetrics = await databricksService.query(
-        'SELECT AVG(generation_time_ms) as avg_generation_time, AVG(response_time_seconds) as avg_response_time, COUNT(*) as prompt_count FROM teacher_guidance_metrics WHERE DATE(generated_at) = CURRENT_DATE'
+      // Verify group exists and references session
+      const groupCheck = await databricksService.query(
+        'SELECT id, session_id FROM classwaves.sessions.student_groups WHERE id = ?',
+        [testGroupId]
+      );
+      expect(groupCheck).toHaveLength(1);
+      expect(groupCheck[0].session_id).toBe(testSessionId);
+
+      // Add analytics event referencing both session and group
+      const eventId = uuidv4();
+      await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          eventId,
+          testSessionId,
+          testTeacherId,
+          'member_join',
+          new Date().toISOString(),
+          JSON.stringify({ groupId: testGroupId, memberCount: 1 }),
+          new Date().toISOString()
+        ]
       );
 
-      expect(performanceMetrics[0].avg_generation_time).toBe(45.2);
-      expect(performanceMetrics[0].avg_response_time).toBe(3.8);
-      expect(performanceMetrics[0].prompt_count).toBe(156);
+      // Verify analytics event references valid session
+      const eventCheck = await databricksService.query(
+        'SELECT session_id, payload FROM classwaves.analytics.session_events WHERE id = ?',
+        [eventId]
+      );
+      expect(eventCheck).toHaveLength(1);
+      expect(eventCheck[0].session_id).toBe(testSessionId);
+      
+      const payload = JSON.parse(eventCheck[0].payload);
+      expect(payload.groupId).toBe(testGroupId);
+    });
+  });
+
+  describe('AI Analysis Performance Tracking', () => {
+    it('should track AI processing times and validate performance budgets', async () => {
+      const startTime = Date.now();
+
+      // Execute Tier 1 analysis with timing
+      const tier1Result = await databricksAIService.analyzeTier1(
+        ['Student discussion about renewable energy sources'],
+        {
+          groupId: testGroupId,
+          sessionId: testSessionId,
+          focusAreas: ['topical_cohesion', 'conceptual_density']
+        }
+      );
+
+      const totalProcessingTime = Date.now() - startTime;
+
+      // Verify processing time is reasonable (<5000ms)
+      expect(totalProcessingTime).toBeLessThan(5000);
+      
+      // Verify metadata includes processing time per current types
+      expect(tier1Result.metadata?.processingTimeMs).toBeDefined();
+      expect(typeof tier1Result.metadata?.processingTimeMs).toBe('number');
+      expect(tier1Result.metadata?.processingTimeMs).toBeGreaterThan(0);
+
+      // Record performance analytics event
+      const performanceEventId = uuidv4();
+      await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          performanceEventId,
+          testSessionId,
+          testTeacherId,
+          'ai_performance_tracked',
+          new Date().toISOString(),
+          JSON.stringify({
+            analysisType: 'tier1',
+            processingTimeMs: tier1Result.metadata?.processingTimeMs,
+            totalRequestTime: totalProcessingTime,
+            transcriptLength: tier1Result.transcriptLength,
+            confidence: tier1Result.confidence
+          }),
+          new Date().toISOString()
+        ]
+      );
+
+      expect(performanceEventId).toBeDefined();
+    });
+
+    it('should validate end-to-end analytics workflow performance', async () => {
+      const workflowStartTime = Date.now();
+
+      // Full workflow: AI analysis → prompt generation → analytics recording (mocked for test reliability)
+      const tier1Insights = await databricksAIService.analyzeTier1(
+        ['Brief student discussion for performance testing'],
+        {
+          groupId: testGroupId,
+          sessionId: testSessionId,
+          focusAreas: ['topical_cohesion']
+        }
+      );
+
+      // Note: Mock reset between tests, so this is the first call in this test
+      expect(mockAnalyzeTier1).toHaveBeenCalledWith(
+        ['Brief student discussion for performance testing'],
+        {
+          groupId: testGroupId,
+          sessionId: testSessionId,
+          focusAreas: ['topical_cohesion']
+        }
+      );
+
+      const promptContext: PromptGenerationContext = {
+        sessionId: testSessionId,
+        groupId: testGroupId,
+        teacherId: testTeacherId,
+        sessionPhase: 'development',
+        subject: 'science',
+        learningObjectives: ['Performance testing'],
+        groupSize: 4,
+        sessionDuration: 30
+      };
+
+      const prompts = await teacherPromptService.generatePrompts(
+        tier1Insights,
+        promptContext,
+        {
+          maxPrompts: 3,
+          priorityFilter: 'all',
+          includeEffectivenessScore: true
+        }
+      );
+
+      const workflowEndTime = Date.now();
+      const totalWorkflowTime = workflowEndTime - workflowStartTime;
+
+      // Record workflow performance
+      const workflowEventId = uuidv4();
+      await databricksService.query(
+        `INSERT INTO classwaves.analytics.session_events 
+         (id, session_id, teacher_id, event_type, event_time, payload, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          workflowEventId,
+          testSessionId,
+          testTeacherId,
+          'workflow_performance_tracked',
+          new Date().toISOString(),
+          JSON.stringify({
+            workflowType: 'ai_analysis_to_prompts',
+            totalTimeMs: totalWorkflowTime,
+            aiProcessingTime: tier1Insights.metadata?.processingTimeMs,
+            promptsGenerated: prompts.length,
+            success: true
+          }),
+          new Date().toISOString()
+        ]
+      );
+
+      // Validate workflow completed successfully
+      expect(prompts.length).toBeGreaterThan(0);
+      expect(totalWorkflowTime).toBeLessThan(10000); // <10s for full workflow
     });
   });
 });

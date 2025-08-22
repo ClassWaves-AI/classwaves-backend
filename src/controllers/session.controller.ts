@@ -78,6 +78,8 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
+    console.log('🔍 DEBUG: listSessions called with teacher:', teacher.id);
+    
     // Get query parameters
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
@@ -95,6 +97,11 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
       () => getTeacherSessionsOptimized(teacher.id, limit),
       { teacherId: teacher.id }
     );
+
+    console.log('🔍 DEBUG: Raw sessions returned:', rawSessions?.length || 0);
+    if (rawSessions && rawSessions.length > 0) {
+      console.log('🔍 DEBUG: First session teacher_id:', rawSessions[0].teacher_id);
+    }
 
     // Map DB rows to frontend contract and fetch access codes from Redis
     const sessions = await Promise.all((rawSessions || []).map(async (s: any) => {
@@ -973,13 +980,13 @@ async function getTeacherSessionsOptimized(teacherId: string, limit: number): Pr
   
   const sql = `
     ${queryBuilder.sql}
-    FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
+    FROM classwaves.sessions.classroom_sessions s
     LEFT JOIN (
       SELECT 
         session_id, 
         COUNT(*) as group_count,
         COALESCE(SUM(current_size), 0) as student_count
-      FROM ${databricksConfig.catalog}.sessions.student_groups 
+      FROM classwaves.sessions.student_groups 
       GROUP BY session_id
     ) g ON s.id = g.session_id
     WHERE s.teacher_id = ?
@@ -987,7 +994,16 @@ async function getTeacherSessionsOptimized(teacherId: string, limit: number): Pr
     LIMIT ?
   `;
   
-  return databricksService.query(sql, [teacherId, limit]);
+  console.log('🔍 DEBUG: SQL Query:', sql);
+  console.log('🔍 DEBUG: Parameters:', [teacherId, limit]);
+  
+  const result = await databricksService.query(sql, [teacherId, limit]);
+  console.log('🔍 DEBUG: Query result count:', result?.length || 0);
+  if (result && result.length > 0) {
+    console.log('🔍 DEBUG: First result teacher_id:', result[0].teacher_id);
+  }
+  
+  return result;
 }
 
 /**
@@ -1005,7 +1021,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     'session-detail',
     () => databricksService.queryOne(
       `${queryBuilder.sql}
-       FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
+       FROM classwaves.sessions.classroom_sessions s
        WHERE s.id = ? AND s.teacher_id = ?`,
       [sessionId, teacherId]
     ),
@@ -1024,7 +1040,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       g.leader_id,
       g.is_ready,
       g.group_number
-    FROM ${databricksConfig.catalog}.sessions.student_groups g
+    FROM classwaves.sessions.student_groups g
     WHERE g.session_id = ?
     ORDER BY g.group_number
   `, [sessionId]);
@@ -1035,8 +1051,8 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       m.group_id,
       m.student_id,
       s.display_name as name
-    FROM ${databricksConfig.catalog}.sessions.student_group_members m
-    LEFT JOIN ${databricksConfig.catalog}.users.students s ON m.student_id = s.id
+    FROM classwaves.sessions.student_group_members m
+    LEFT JOIN classwaves.users.students s ON m.student_id = s.id
     WHERE m.session_id = ?
   `, [sessionId]);
 
@@ -1203,7 +1219,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     const readyGroupsResult = await RetryService.retryDatabaseOperation(
       () => databricksService.queryOne(
         `SELECT COUNT(*) as ready_groups_count 
-         FROM ${databricksConfig.catalog}.sessions.student_groups 
+         FROM classwaves.sessions.student_groups 
          WHERE session_id = ? AND is_ready = true`,
         [sessionId]
       ),
@@ -1213,7 +1229,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     const totalGroupsResult = await RetryService.retryDatabaseOperation(
       () => databricksService.queryOne(
         `SELECT COUNT(*) as total_groups_count 
-         FROM ${databricksConfig.catalog}.sessions.student_groups 
+         FROM classwaves.sessions.student_groups 
          WHERE session_id = ?`,
         [sessionId]
       ),

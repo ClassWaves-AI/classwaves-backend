@@ -1024,9 +1024,11 @@ export class TeacherPromptService {
 
 export const teacherPromptService = new TeacherPromptService();
 
-// Periodic cleanup
-setInterval(() => {
-  teacherPromptService.cleanup().catch(error => {
-    console.error('❌ Teacher prompt cleanup failed:', error);
-  });
-}, 15 * 60 * 1000); // Every 15 minutes
+// Periodic cleanup (skip in test environment to avoid keeping Jest alive)
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(() => {
+    teacherPromptService.cleanup().catch(error => {
+      console.error('❌ Teacher prompt cleanup failed:', error);
+    });
+  }, 15 * 60 * 1000); // Every 15 minutes
+}

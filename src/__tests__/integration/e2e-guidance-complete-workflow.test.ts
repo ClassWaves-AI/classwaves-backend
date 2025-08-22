@@ -115,7 +115,7 @@ describe('E2E: Complete Guidance Workflow', () => {
 
       // Step 1: Create test session via API
       const sessionResponse = await request(app)
-        .post('/api/sessions')
+        .post('/api/v1/sessions')
         .set('Authorization', `Bearer ${teacherToken}`)
         .send({
           name: 'E2E Test Session',
@@ -388,7 +388,7 @@ describe('E2E: Complete Guidance Workflow', () => {
       // Create multiple test sessions
       for (let i = 0; i < concurrentSessions; i++) {
         const sessionResponse = await request(app)
-          .post('/api/sessions')
+          .post('/api/v1/sessions')
           .set('Authorization', `Bearer ${teacherToken}`)
           .send({
             name: `Performance Test Session ${i}`,
@@ -468,7 +468,7 @@ describe('E2E: Complete Guidance Workflow', () => {
 
       // Create session for resilience testing
       const sessionResponse = await request(app)
-        .post('/api/sessions')
+        .post('/api/v1/sessions')
         .set('Authorization', `Bearer ${teacherToken}`)
         .send({
           name: 'Resilience Test Session',
