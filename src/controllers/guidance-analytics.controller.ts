@@ -398,13 +398,21 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
       (analytics as any).groupBreakdown = groupBreakdown.map(group => ({
         groupId: group.groupId,
         groupName: group.groupName,
-        studentCount: group.studentCount,
-        engagementScore: group.engagementScore,
-        participationBalance: group.participationBalance,
-        topicalFocus: group.topicalFocus,
-        collaborationQuality: group.collaborationQuality,
-        promptsReceived: group.promptsReceived,
-        improvementAreas: group.improvementAreas
+        leaderId: group.leaderId,
+        configuredSize: group.configuredSize,
+        actualMemberCount: group.actualMemberCount,
+        leaderPresent: group.leaderPresent,
+        regularMembersCount: group.regularMembersCount,
+        membershipAdherence: group.configuredSize > 0 
+          ? Number((group.actualMemberCount / group.configuredSize).toFixed(2))
+          : 0,
+        joinTimeline: {
+          firstMemberJoined: group.firstMemberJoined,
+          lastMemberJoined: group.lastMemberJoined,
+          formationTime: group.lastMemberJoined && group.firstMemberJoined
+            ? new Date(group.lastMemberJoined).getTime() - new Date(group.firstMemberJoined).getTime()
+            : null,
+        },
       }));
     }
 
@@ -804,9 +812,10 @@ async function getTeacherComparisons(teacherId: string, schoolId: string, timefr
 }
 
 async function verifySessionOwnership(sessionId: string, teacherId: string, schoolId: string): Promise<any> {
+  // ✅ FIXED: Use correct table name - classroom_sessions is in sessions schema, not users
   const query = `
-    SELECT teacher_id, topic, scheduled_start, actual_end, status
-    FROM classwaves.users.sessions
+    SELECT teacher_id, title as topic, scheduled_start, actual_end, status
+    FROM classwaves.sessions.classroom_sessions
     WHERE id = ? AND school_id = ?
   `;
   
@@ -1134,7 +1143,7 @@ export async function getSessionOverview(req: Request, res: Response): Promise<R
       FROM classwaves.sessions.student_groups sg
       LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
       WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name, sg.leader_id, sg.current_size
+      GROUP BY sg.id, sg.name, sg.leader_id, sg.current_size, sg.group_number
       ORDER BY sg.group_number
     `, [sessionId]);
 
@@ -1263,9 +1272,9 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
         sg.is_ready,
         sg.max_size as configured_size,
         sg.current_size as members_present,
-        ga.leader_ready_at,
-        ga.members_configured,
-        ga.configured_name,
+        MAX(ga.leader_ready_at) as leader_ready_at,
+        MAX(ga.members_configured) as members_configured,
+        MAX(ga.configured_name) as configured_name,
         COUNT(sgm.student_id) as actual_member_count,
         COUNT(CASE WHEN sg.leader_id = sgm.student_id THEN 1 END) as leader_present,
         COUNT(CASE WHEN sg.leader_id != sgm.student_id THEN 1 END) as regular_members_count,
@@ -1276,7 +1285,7 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
       LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
       WHERE sg.session_id = ?
       GROUP BY sg.id, sg.name, sg.leader_id, sg.is_ready, sg.max_size, sg.current_size, 
-               ga.leader_ready_at, ga.members_configured, ga.configured_name, sg.group_number
+               sg.group_number
       ORDER BY sg.group_number
     `, [sessionId]);
 
@@ -1343,7 +1352,7 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       // Try to get computed analytics first (preferred path)
       const analyticsData = await databricksService.queryOne(`
         SELECT analytics_data, computed_at, status
-        FROM session_metrics 
+        FROM classwaves.analytics.session_metrics 
         WHERE session_id = ? AND analysis_type = 'final_summary'
         ORDER BY computed_at DESC 
         LIMIT 1

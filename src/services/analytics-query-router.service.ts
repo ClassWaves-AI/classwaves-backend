@@ -370,6 +370,13 @@ export class AnalyticsQueryRouterService {
       const strategy = Object.values(this.strategies).find(s => s.tableName === tableName);
       if (!strategy) return { isFresh: false, ageHours: 999 };
 
+      // First check if the table exists
+      const tableExists = await this.checkTableExists(tableName);
+      if (!tableExists) {
+        console.log(`Table ${tableName} does not exist, falling back to source`);
+        return { isFresh: false, ageHours: 999 };
+      }
+
       let freshnessQuery = '';
       
       switch (tableName) {
@@ -409,23 +416,38 @@ export class AnalyticsQueryRouterService {
           return { isFresh: false, ageHours: 999 };
       }
 
-      const result = await databricksService.queryOne(freshnessQuery, [params.sessionId || params.teacherId || params.schoolId]);
-      const ageHours = result?.age_hours || 999;
-      
-      // Use appropriate freshness threshold based on table type
-      let freshnessThreshold = 24; // Default 24 hours
-      if (tableName === 'dashboard_metrics_hourly') freshnessThreshold = 2; // 2 hours for hourly metrics
-      if (tableName === 'session_analytics_cache') freshnessThreshold = 0.5; // 30 minutes for session cache
-      if (tableName === 'group_metrics') freshnessThreshold = 1; // 1 hour for group metrics
-      
-      return {
-        isFresh: ageHours <= freshnessThreshold,
-        ageHours
-      };
-      
+      if (!freshnessQuery) {
+        return { isFresh: false, ageHours: 999 };
+      }
+
+      // Execute freshness query with proper error handling
+      try {
+        const result = await databricksService.queryOne(freshnessQuery, [params.teacherId || params.sessionId || params.schoolId]);
+        const ageHours = result?.age_hours || 999;
+        
+        return {
+          isFresh: ageHours < 24, // Consider data fresh if less than 24 hours old
+          ageHours
+        };
+      } catch (queryError) {
+        console.warn(`Failed to check freshness for ${tableName}:`, queryError);
+        return { isFresh: false, ageHours: 999 };
+      }
+
     } catch (error) {
-      console.error(`Error checking freshness for ${tableName}:`, error);
+      console.warn(`Error checking data freshness for ${tableName}:`, error);
       return { isFresh: false, ageHours: 999 };
+    }
+  }
+
+  private async checkTableExists(tableName: string): Promise<boolean> {
+    try {
+      // Simple query to check if table exists
+      await databricksService.queryOne(`SELECT 1 FROM ${tableName} LIMIT 1`);
+      return true;
+    } catch (error) {
+      // Table doesn't exist or is not accessible
+      return false;
     }
   }
 
@@ -479,13 +501,10 @@ export class AnalyticsQueryRouterService {
 
   // Query execution methods (pre-aggregated versions)
 
-  private async executeTeacherAnalyticsFromSummary(
-    teacherId: string, 
-    timeframe: string,
-    includeComparisons: boolean
-  ): Promise<any> {
+  private async executeTeacherAnalyticsFromSummary(teacherId: string, timeframe: string, includeComparisons: boolean): Promise<any> {
     try {
       const interval = this.getDatabricksIntervalFromTimeframe(timeframe);
+      // ✅ FIXED: Use correct schema - teacher_analytics_summary is in users schema, not analytics
       const query = `
         SELECT 
           teacher_id,
@@ -509,7 +528,7 @@ export class AnalyticsQueryRouterService {
           total_leader_ready_events,
           confidence_score,
           calculated_at
-        FROM classwaves.analytics.teacher_analytics_summary
+        FROM classwaves.users.teacher_analytics_summary
         WHERE teacher_id = ?
           AND summary_date >= date_sub(CURRENT_DATE(), ${interval})
         ORDER BY summary_date DESC
@@ -533,6 +552,7 @@ export class AnalyticsQueryRouterService {
     includeRealTime: boolean
   ): Promise<any> {
     try {
+      // ✅ FIXED: Use correct schema - session_analytics_cache is in users schema, not analytics
       const query = `
         SELECT 
           session_id,
@@ -555,7 +575,7 @@ export class AnalyticsQueryRouterService {
           expires_at,
           last_updated,
           created_at
-        FROM classwaves.analytics.session_analytics_cache
+        FROM classwaves.users.session_analytics_cache
         WHERE session_id = ?
       `;
 
@@ -577,20 +597,22 @@ export class AnalyticsQueryRouterService {
       const interval = this.getDatabricksIntervalFromTimeframe(timeframe);
       
       // Query existing session_metrics table for basic teacher analytics
+      // ✅ FIXED: Join with classroom_sessions to get teacher_id and use correct field names
       const sessionMetrics = await databricksService.query(`
         SELECT 
-          session_id,
-          teacher_id,
-          total_students,
-          active_students,
-          avg_participation_rate,
-          ready_groups_at_5m,
-          ready_groups_at_10m,
-          created_at
-        FROM classwaves.analytics.session_metrics
-        WHERE teacher_id = ?
-          AND DATE(created_at) >= date_sub(CURRENT_DATE(), ${interval})
-        ORDER BY created_at DESC
+          sm.session_id,
+          cs.teacher_id,
+          sm.total_students,
+          sm.active_students,
+          sm.participation_rate,
+          sm.ready_groups_at_5m,
+          sm.ready_groups_at_10m,
+          sm.created_at
+        FROM classwaves.analytics.session_metrics sm
+        JOIN classwaves.sessions.classroom_sessions cs ON sm.session_id = cs.id
+        WHERE cs.teacher_id = ?
+          AND DATE(sm.created_at) >= date_sub(CURRENT_DATE(), ${interval})
+        ORDER BY sm.created_at DESC
       `, [teacherId]);
 
       // Return simplified analytics data
@@ -655,12 +677,13 @@ export class AnalyticsQueryRouterService {
     
     try {
       // Query existing session_metrics for dashboard data
+      // ✅ FIXED: Use correct field name participation_rate instead of avg_participation_rate
       const metrics = await databricksService.query(`
         SELECT 
           COUNT(*) as total_sessions,
-          COUNT(DISTINCT teacher_id) as active_teachers,
-          SUM(total_students) as total_students,
-          AVG(avg_participation_rate) as avg_participation
+          COUNT(DISTINCT cs.teacher_id) as active_teachers,
+          SUM(sm.total_students) as total_students,
+          AVG(sm.participation_rate) as avg_participation
         FROM classwaves.analytics.session_metrics sm
         JOIN classwaves.sessions.classroom_sessions cs ON sm.session_id = cs.id
         WHERE cs.school_id = ?
@@ -853,7 +876,7 @@ export class AnalyticsQueryRouterService {
           MIN(metric_hour) as period_start,
           MAX(metric_hour) as period_end,
           MAX(calculated_at) as last_calculated
-        FROM classwaves.analytics.dashboard_metrics_hourly
+        FROM classwaves.users.dashboard_metrics_hourly
         WHERE school_id = ?
           AND metric_hour >= date_sub(CURRENT_TIMESTAMP(), INTERVAL ${timeframeHours} HOUR)
         GROUP BY school_id

@@ -46,10 +46,8 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
         cs.id,
         cs.teacher_id,
         cs.school_id,
-        cs.status,
-        s.name as school_name
+        cs.status
       FROM classwaves.sessions.classroom_sessions cs
-      LEFT JOIN classwaves.auth.schools s ON cs.school_id = s.id
       WHERE cs.id = ?
     `, [sessionId]);
 
@@ -127,8 +125,7 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
       id: session.id,
       teacherId: session.teacher_id,
       schoolId: session.school_id,
-      status: session.status,
-      schoolName: session.school_name
+      status: session.status
     };
 
     console.log(`✅ Session access authorized: ${sessionId} for user ${authReq.user.id}`);
