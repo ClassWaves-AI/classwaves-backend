@@ -79,10 +79,11 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
     
     // Test if server is accessible
     try {
-      const healthCheck = await axios.get(`http://localhost:${port}/api/health`);
+      const healthCheck = await axios.get(`http://localhost:${port}/api/v1/health`);
       console.log(`✅ Backend server is accessible on port ${port}`, healthCheck.status);
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Backend server is not accessible on port 3000. Make sure it\'s running with: NODE_ENV=test npm run dev');
+      console.error('Health check error:', error.response?.data || error.message);
       throw new Error('Backend server not accessible. Start it first with NODE_ENV=test npm run dev');
     }
   });

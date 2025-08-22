@@ -674,7 +674,7 @@ export class DatabricksService {
   /**
    * Get sessions for a teacher
    */
-  async getTeacherSessions(teacherId: string, limit: number = 50): Promise<Session[]> {
+  async getTeacherSessions(teacherId: string, limit: number = 10): Promise<Session[]> {
     const sql = `
       SELECT s.id,
              s.title,

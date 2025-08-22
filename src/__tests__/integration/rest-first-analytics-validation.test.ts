@@ -28,6 +28,7 @@ describe('REST-First Analytics Validation', () => {
   let testSchool: any;
   let teacherToken: string;
   let sessionId: string;
+  let testTimestamp: number;
 
   beforeAll(async () => {
     // Quick health check
@@ -38,7 +39,8 @@ describe('REST-First Analytics Validation', () => {
 
   beforeEach(async () => {
     // Create minimal test data
-    const timestamp = Date.now();
+    testTimestamp = Date.now();
+    const timestamp = testTimestamp;
     testTeacher = {
       id: `teacher_${timestamp}`,
       email: 'test.teacher@validation.test',
@@ -73,9 +75,40 @@ describe('REST-First Analytics Validation', () => {
       updated_at: new Date()
     };
 
+    // Create test students for group leaders
+    const testStudents = [
+      {
+        id: `student_leader_${timestamp}_1`,
+        display_name: 'Rob Test',
+        email: 'rheck56@gmail.com',
+        school_id: testTeacher.school_id,
+        status: 'active',
+        has_parental_consent: true,
+        data_sharing_consent: true,
+        audio_recording_consent: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      },
+      {
+        id: `student_leader_${timestamp}_2`,
+        display_name: 'Rob Taronc',
+        email: 'rtaroncher56@gmail.com',
+        school_id: testTeacher.school_id,
+        status: 'active',
+        has_parental_consent: true,
+        data_sharing_consent: true,
+        audio_recording_consent: true,
+        created_at: new Date(),
+        updated_at: new Date()
+      }
+    ];
+
     // Insert test data
     await databricksService.insert('teachers', testTeacher);
     await databricksService.insert('schools', testSchool);
+    for (const student of testStudents) {
+      await databricksService.insert('students', student);
+    }
 
     // Generate JWT token
     const authSessionId = `auth_${timestamp}`;
@@ -119,6 +152,20 @@ describe('REST-First Analytics Validation', () => {
           [sessionId]
         );
       }
+
+      // Clean up test students
+      const studentIds = [
+        `student_leader_${testTimestamp}_1`,
+        `student_leader_${testTimestamp}_2`
+      ];
+      for (const studentId of studentIds) {
+        try {
+          await databricksService.delete('students', studentId);
+        } catch (error) {
+          // Student might not exist, continue with cleanup
+        }
+      }
+
       await databricksService.delete('teachers', testTeacher.id);
       await databricksService.delete('schools', testSchool.id);
     } catch (error) {
@@ -131,17 +178,32 @@ describe('REST-First Analytics Validation', () => {
 
     // STEP 1: Create session via REST API
     sessionId = `rest_test_${Date.now()}`;
+    const timestamp = Date.now();
     const sessionPayload = {
-      name: 'REST Analytics Test Session',
-      description: 'Testing single analytics recording',
-      subject: 'Math',
       topic: 'Fractions',
-      grade_level: '5th',
-      max_students: 25,
+      goal: 'Learn fraction operations and problem solving',
+      subject: 'Math',
+      description: 'Testing single analytics recording',
+      plannedDuration: 45,
       groupPlan: {
-        minStudentsPerGroup: 2,
-        maxStudentsPerGroup: 4,
-        allowStudentSelection: false
+        numberOfGroups: 2,
+        groupSize: 3,
+        groups: [
+          {
+            name: 'Group A',
+            leaderId: `student_leader_${timestamp}_1`,
+            memberIds: []
+          },
+          {
+            name: 'Group B',
+            leaderId: `student_leader_${timestamp}_2`,
+            memberIds: []
+          }
+        ]
+      },
+      aiConfig: {
+        hidden: true,
+        defaultsApplied: true
       }
     };
 

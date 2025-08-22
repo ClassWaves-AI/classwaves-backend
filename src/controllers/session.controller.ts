@@ -855,7 +855,6 @@ async function recordSessionConfigured(sessionId: string, teacherId: string, gro
         overall_engagement_score: 0, // Will be calculated during session
         average_group_size: groupPlan.groups?.length > 0 ? Math.round(groupPlan.totalStudents / groupPlan.groups.length) : 0,
         planned_groups: groupPlan.groups?.length || 0,
-        actual_groups: 0, // Will be updated when session starts
         created_at: configuredAt
       }),
       {
@@ -912,7 +911,6 @@ async function recordSessionStarted(
       'session_metrics',
       () => databricksService.update('session_metrics', `session_id = '${sessionId}'`, {
         calculation_timestamp: startedAt,
-        actual_groups: readyGroupsAtStart,
         ready_groups_at_start: readyGroupsAtStart,
         started_without_ready_groups: startedWithoutReadyGroups
       }),

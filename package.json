@@ -27,6 +27,7 @@
     "db:check": "ts-node src/scripts/check-databricks-state.ts",
     "db:integrity-audit": "ts-node src/scripts/data-integrity-audit.ts",
     "db:performance-baseline": "ts-node src/scripts/performance-baseline.ts",
+    "db:schema-sot": "npx ts-node scripts/comprehensive-schema-audit.ts",
     "validate-test-schema": "ts-node src/scripts/database-schema-validator.ts",
     "validate-integration-infrastructure": "ts-node src/scripts/validate-integration-infrastructure.ts",
     "validate-env-parity": "ts-node src/scripts/environment-parity-validator.ts",
