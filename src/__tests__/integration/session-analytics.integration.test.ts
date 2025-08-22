@@ -13,6 +13,7 @@ import { databricksService } from '../../services/databricks.service';
 import { websocketService } from '../../services/websocket.service';
 import { analyticsComputationService } from '../../services/analytics-computation.service';
 import { AuthRequest } from '../../types/auth.types';
+import { afterAllWithCleanup } from '../../test/test-cleanup';
 
 // Mock WebSocket service to capture events
 jest.mock('../../services/websocket.service', () => ({
@@ -40,11 +41,17 @@ describe('Session Analytics Integration', () => {
     server = testSetup.server;
   });
 
-  afterAll(async () => {
+  afterAll(afterAllWithCleanup(async () => {
+    // Close HTTP server
     if (server) {
-      server.close();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          console.log('✅ Test server closed');
+          resolve();
+        });
+      });
     }
-  });
+  }));
 
   beforeEach(async () => {
     jest.clearAllMocks();

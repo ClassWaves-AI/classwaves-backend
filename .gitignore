@@ -10,8 +10,10 @@ build/
 .env*.bak
 .env*.backup
 
+
 # RSA Keys
 keys/
 *.pem
 *.key
 test-results/
+.env.test

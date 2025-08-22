@@ -11,33 +11,74 @@ export interface TestSchoolData {
   id: string;
   name: string;
   domain: string;
+  google_workspace_id?: string;
+  admin_email: string;
   subscription_tier: string;
   subscription_status: string;
+  max_teachers: number;
+  current_teachers: number;
+  stripe_customer_id?: string;
+  subscription_start_date?: Date;
+  subscription_end_date?: Date;
+  trial_ends_at?: Date;
   ferpa_agreement: boolean;
   coppa_compliant: boolean;
+  data_retention_days: number;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface TestTeacherData {
   id: string;
   google_id: string;
   email: string;
-  given_name: string;
-  family_name: string;
+  name: string;
+  picture?: string;
   school_id: string;
   role: string;
   status: string;
+  access_level: string;
+  max_concurrent_sessions: number;
+  current_sessions: number;
+  grade?: string;
+  subject?: string;
+  timezone: string;
+  features_enabled?: string;
+  last_login?: Date;
+  login_count: number;
+  total_sessions_created: number;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface TestSessionData {
   id: string;
-  teacher_id: string;
-  school_id: string;
-  topic: string;
+  title: string;
+  description?: string;
   status: string;
-  join_code: string;
-  created_at: Date;
+  scheduled_start?: Date;
   actual_start?: Date;
   actual_end?: Date;
+  planned_duration_minutes: number;
+  actual_duration_minutes?: number;
+  max_students: number;
+  target_group_size: number;
+  auto_group_enabled: boolean;
+  teacher_id: string;
+  school_id: string;
+  recording_enabled: boolean;
+  transcription_enabled: boolean;
+  ai_analysis_enabled: boolean;
+  ferpa_compliant: boolean;
+  coppa_compliant: boolean;
+  recording_consent_obtained: boolean;
+  data_retention_date?: Date;
+  total_groups: number;
+  total_students: number;
+  created_at: Date;
+  updated_at: Date;
+  access_code: string;
+  end_reason?: string;
 }
 
 export interface TestGroupData {
@@ -60,14 +101,26 @@ export interface TestGroupMemberData {
  * Create a test school
  */
 export async function createTestSchool(overrides: Partial<TestSchoolData> = {}): Promise<TestSchoolData> {
+  const now = new Date();
   const schoolData: TestSchoolData = {
     id: uuidv4(),
     name: 'Test School',
     domain: 'testschool.edu',
+    google_workspace_id: `gws_${uuidv4()}`,
+    admin_email: `admin@testschool.edu`,
     subscription_tier: 'premium',
     subscription_status: 'active',
+    max_teachers: 50,
+    current_teachers: 1,
+    stripe_customer_id: `cus_${Math.random().toString(36).substring(2, 15)}`,
+    subscription_start_date: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+    subscription_end_date: new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000), // 1 year from now
+    trial_ends_at: undefined,
     ferpa_agreement: true,
     coppa_compliant: true,
+    data_retention_days: 2555, // 7 years in days
+    created_at: now,
+    updated_at: now,
     ...overrides
   };
 
@@ -85,15 +138,28 @@ export async function createTestSchool(overrides: Partial<TestSchoolData> = {}):
  * Create a test teacher
  */
 export async function createTestTeacher(overrides: Partial<TestTeacherData> = {}): Promise<TestTeacherData> {
+  const now = new Date();
   const teacherData: TestTeacherData = {
     id: uuidv4(),
     google_id: `google_${uuidv4()}`,
     email: `teacher${Math.random().toString(36).substring(7)}@test.edu`,
-    given_name: 'Test',
-    family_name: 'Teacher',
+    name: 'Test Teacher',
+    picture: `https://lh3.googleusercontent.com/test-${uuidv4()}`,
     school_id: uuidv4(),
     role: 'teacher',
     status: 'active',
+    access_level: 'standard',
+    max_concurrent_sessions: 5,
+    current_sessions: 0,
+    grade: 'K-5',
+    subject: 'General',
+    timezone: 'America/New_York',
+    features_enabled: 'ai_analysis,recording,transcription',
+    last_login: new Date(now.getTime() - 24 * 60 * 60 * 1000), // 1 day ago
+    login_count: 5,
+    total_sessions_created: 12,
+    created_at: now,
+    updated_at: now,
     ...overrides
   };
 
@@ -110,14 +176,35 @@ export async function createTestTeacher(overrides: Partial<TestTeacherData> = {}
  * Create a test session
  */
 export async function createTestSession(overrides: Partial<TestSessionData> = {}): Promise<TestSessionData> {
+  const now = new Date();
   const sessionData: TestSessionData = {
     id: uuidv4(),
+    title: 'Test Session',
+    description: 'Integration test session for automated testing',
+    status: 'created',
+    scheduled_start: new Date(now.getTime() + 60 * 60 * 1000), // 1 hour from now
+    actual_start: undefined,
+    actual_end: undefined,
+    planned_duration_minutes: 50,
+    actual_duration_minutes: undefined,
+    max_students: 30,
+    target_group_size: 4,
+    auto_group_enabled: true,
     teacher_id: uuidv4(),
     school_id: uuidv4(),
-    topic: 'Test Session Topic',
-    status: 'created',
-    join_code: Math.random().toString(36).substring(2, 8).toUpperCase(),
-    created_at: new Date(),
+    recording_enabled: false, // Default to false for test privacy
+    transcription_enabled: true,
+    ai_analysis_enabled: true,
+    ferpa_compliant: true,
+    coppa_compliant: true,
+    recording_consent_obtained: false, // Since recording disabled
+    data_retention_date: new Date(now.getTime() + (2555 * 24 * 60 * 60 * 1000)), // 7 years
+    total_groups: 0,
+    total_students: 0,
+    created_at: now,
+    updated_at: now,
+    access_code: Math.random().toString(36).substring(2, 8).toUpperCase(),
+    end_reason: undefined,
     ...overrides
   };
 

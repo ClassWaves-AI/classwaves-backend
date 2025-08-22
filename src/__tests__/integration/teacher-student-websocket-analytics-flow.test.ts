@@ -9,6 +9,9 @@
  * 4. Analytics trigger and data verification
  */
 
+// Load environment variables from .env file (like other working tests)
+import 'dotenv/config';
+
 // CRITICAL: Set JWT secrets AND Databricks token BEFORE any imports to ensure services initialize correctly
 if (!process.env.JWT_SECRET) {
   process.env.JWT_SECRET = 'test-jwt-secret-for-integration-testing-only-not-for-production-use-minimum-256-bits';
@@ -16,9 +19,15 @@ if (!process.env.JWT_SECRET) {
 if (!process.env.JWT_REFRESH_SECRET) {
   process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-for-integration-testing-only-not-for-production-use-minimum-256-bits';
 }
-// Databricks token should be provided via environment variable
+// Databricks token should be provided via environment variable or .env file
 if (!process.env.DATABRICKS_TOKEN) {
-  throw new Error('DATABRICKS_TOKEN environment variable is required for integration tests');
+  throw new Error(`DATABRICKS_TOKEN environment variable is required for integration tests. 
+  
+  Solutions:
+  1. Create a .env file in classwaves-backend/ with: DATABRICKS_TOKEN=your-token-here
+  2. Or run test with: DATABRICKS_TOKEN=your-token npm test -- --testPathPattern="teacher-student-websocket-analytics-flow"
+  
+  See classwaves-backend/docs/ENVIRONMENT_STRATEGY.md for more details.`);
 }
 console.log('🔐 JWT secrets and Databricks token configured before service imports');
 console.log('🔧 Integration test environment setup:');
@@ -39,12 +48,8 @@ function resetDatabricksService() {
 
 resetDatabricksService();
 
-import { Server, createServer } from 'http';
 import { io as Client, Socket } from 'socket.io-client';
 import axios from 'axios';
-// Use the REAL app instead of test app for proper service initialization
-import app from '../../app';
-import { initializeWebSocket } from '../../services/websocket.service';
 import { createTestSessionWithGroups, cleanupTestData } from '../test-utils/factories';
 import { databricksService } from '../../services/databricks.service';
 import { redisService } from '../../services/redis.service';
@@ -53,7 +58,6 @@ import { SecureSessionService } from '../../services/secure-session.service';
 import { guidanceSystemHealthService } from '../../services/guidance-system-health.service';
 
 describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', () => {
-  let server: Server;
   let port: number;
   let teacherSocket: Socket | null = null;
   let studentSocket: Socket | null = null;
@@ -69,24 +73,26 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
   beforeAll(async () => {
     console.log('🔧 Test environment initialized with JWT secrets already configured');
     
-    // Start the REAL app with a proper HTTP server so Socket.IO can attach
-    console.log('🚀 CRITICAL: Using REAL app with Socket.IO initialization...');
-    const httpServer = createServer(app);
-    initializeWebSocket(httpServer);
-    server = httpServer.listen(0);
-    port = (server.address() as any)?.port;
-    console.log(`✅ Real app server started on port ${port}`);
+    // Use existing backend server on port 3000 (no need to start our own)
+    console.log('🚀 Using existing backend server on port 3000...');
+    port = 3000;
+    
+    // Test if server is accessible
+    try {
+      const healthCheck = await axios.get(`http://localhost:${port}/api/v1/health`);
+      console.log(`✅ Backend server is accessible on port ${port}`, healthCheck.status);
+    } catch (error: any) {
+      console.error('❌ Backend server is not accessible on port 3000. Make sure it\'s running with: NODE_ENV=test npm run dev');
+      console.error('Health check error:', error.response?.data || error.message);
+      throw new Error('Backend server not accessible. Start it first with NODE_ENV=test npm run dev');
+    }
   });
 
   afterAll(async () => {
-    // Clean shutdown of all services to prevent Jest teardown issues
+    // Clean shutdown of background services to prevent Jest teardown issues
     try {
       // Shutdown background services first
       await guidanceSystemHealthService.shutdown();
-      
-      if (server) {
-        server.close();
-      }
       
       // Allow time for cleanup of async operations
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -447,19 +453,29 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
       });
     });
 
-    // Simulate a session status update
-    teacherSocket?.emit('session:update_status', { 
-      sessionId, 
-      status: 'active', 
-      broadcastToStudents: true 
-    });
+    // Use REST API to start session (proper REST-first architecture)
+    console.log('📡 Starting session via REST API (not WebSocket)...');
+    const restResponse = await axios.post(
+      `http://localhost:${port}/api/v1/sessions/${sessionId}/start`,
+      {},
+      {
+        headers: {
+          'Authorization': `Bearer ${teacherToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
+    expect(restResponse.status).toBe(200);
+    console.log('✅ Session started via REST API');
+
+    // Verify WebSocket notification was broadcast automatically
     await studentStatusUpdatePromise;
 
     // STEP 8: Verify analytics were triggered and recorded
     console.log('📝 Step 8: Verifying analytics data was recorded...');
     
-    // Check session_events table for session started events (REST + WebSocket)
+    // Check session_events table for session started events (REST API only - single source of truth)
     const sessionEvents = await databricksService.query(
       `SELECT * FROM classwaves.analytics.session_events 
        WHERE session_id = ? AND event_type = 'started'
@@ -467,7 +483,7 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
       [sessionId]
     );
 
-    expect(sessionEvents).toHaveLength(1); // Currently only WebSocket records events (REST analytics may be failing silently)
+    expect(sessionEvents).toHaveLength(1); // Exactly 1 record from REST API (WebSocket duplicates eliminated)
     sessionEvents.forEach((event: any) => {
       expect(event.teacher_id).toBe(testTeacher.id);
       expect(event.event_type).toBe('started');
@@ -478,8 +494,9 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
     const eventPayload = JSON.parse(startEvent.payload);
     expect(eventPayload.readyGroupsAtStart).toBeGreaterThanOrEqual(0);
     expect(eventPayload.timestamp).toBeDefined();
+    expect(eventPayload.source).toBe('session_controller'); // Verify REST API source (not WebSocket)
     
-    console.log(`✅ Analytics recorded: ${startEvent.event_type} event with payload:`, eventPayload);
+    console.log(`✅ Analytics recorded: ${startEvent.event_type} event from ${eventPayload.source} with payload:`, eventPayload);
 
     // Check session_metrics table was updated
     const sessionMetrics = await databricksService.query(

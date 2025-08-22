@@ -388,49 +388,7 @@ export class WebSocketService {
 
           await databricksService.updateSessionStatus(sessionId, status as any);
           
-          // If starting session, record analytics using centralized service
-          if (status === 'active') {
-            console.log('🔧 DEBUG: Recording analytics for session start via WebSocket');
-            try {
-              // Get ready groups count for analytics context
-              const readyGroupsResult = await databricksService.queryOne(
-                `SELECT COUNT(*) as ready_groups_count 
-                 FROM classwaves.sessions.student_groups 
-                 WHERE session_id = ? AND is_ready = true`,
-                [sessionId]
-              );
-              
-              const totalGroupsResult = await databricksService.queryOne(
-                `SELECT COUNT(*) as total_groups_count 
-                 FROM classwaves.sessions.student_groups 
-                 WHERE session_id = ?`,
-                [sessionId]
-              );
-              
-              const readyGroupsAtStart = readyGroupsResult?.ready_groups_count || 0;
-              const totalGroups = totalGroupsResult?.total_groups_count || 0;
-              const startedWithoutReadyGroups = readyGroupsAtStart < totalGroups;
-              
-              // Use centralized analytics service instead of direct database writes
-              const { analyticsQueryRouterService } = await import('../services/analytics-query-router.service');
-              await analyticsQueryRouterService.logSessionEvent(
-                sessionId,
-                socket.data.userId,
-                'started',
-                {
-                  readyGroupsAtStart,
-                  startedWithoutReadyGroups,
-                  timestamp: new Date().toISOString(),
-                  source: 'websocket'
-                }
-              );
-              
-              console.log('✅ WebSocket analytics recording completed for session:', sessionId);
-            } catch (analyticsError) {
-              console.error('❌ WebSocket analytics recording failed:', analyticsError);
-              // Don't fail the status update if analytics fail
-            }
-          }
+          console.log(`📡 WebSocket notification: Session ${sessionId} status updated to ${status} (analytics handled by REST API)`);
           
           // Broadcast to session room
           this.io.to(`session:${sessionId}`).emit('session:status_changed', { sessionId, status });
