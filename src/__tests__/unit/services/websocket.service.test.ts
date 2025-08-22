@@ -41,7 +41,9 @@ describe('WebSocketService', () => {
       listen: jest.fn()
     };
 
-    webSocketService = new WebSocketService();
+    // Mock HTTP server for WebSocket service
+    const mockServer = {} as any;
+    webSocketService = new WebSocketService(mockServer);
     (webSocketService as any).io = mockIo;
 
     jest.clearAllMocks();

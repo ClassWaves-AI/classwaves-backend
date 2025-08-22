@@ -496,5 +496,31 @@ export const redisService = {
     } else {
       await client.set(key, value);
     }
+  },
+  
+  // Advanced SET operation with options (for distributed locking)
+  async setWithOptions(key: string, value: string, ttlSeconds: number, mode: 'NX' | 'XX' = 'NX'): Promise<string | null> {
+    const client = getRedisService().getClient();
+    // Use Redis command with proper argument order for ioredis
+    const args = [key, value, 'EX', ttlSeconds, mode];
+    const result = await (client as any).call('SET', ...args);
+    return result;
+  },
+  
+  // Additional Redis methods for advanced use cases
+  async del(key: string): Promise<number> {
+    return getRedisService().getClient().del(key);
+  },
+  
+  async ttl(key: string): Promise<number> {
+    return getRedisService().getClient().ttl(key);
+  },
+  
+  async expire(key: string, seconds: number): Promise<number> {
+    return getRedisService().getClient().expire(key, seconds);
+  },
+  
+  async keys(pattern: string): Promise<string[]> {
+    return getRedisService().getClient().keys(pattern);
   }
 };

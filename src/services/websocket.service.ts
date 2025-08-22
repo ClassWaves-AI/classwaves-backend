@@ -751,7 +751,7 @@ export class WebSocketService {
     if (!room) return [];
 
     const participants: string[] = [];
-    for (const socketId of room) {
+    for (const socketId of Array.from(room)) {
       const socket = this.io.sockets.sockets.get(socketId);
       if (socket?.data.userId) {
         participants.push(socket.data.userId);

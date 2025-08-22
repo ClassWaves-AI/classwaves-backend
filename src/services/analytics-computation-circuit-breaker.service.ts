@@ -83,7 +83,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
       ]);
 
       this.recordSuccess(operationId, startTime, metadata);
-      return result;
+      return result as T;
 
     } catch (error) {
       this.recordFailure(operationId, startTime, error as Error, metadata);

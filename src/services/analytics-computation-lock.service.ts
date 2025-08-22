@@ -58,10 +58,9 @@ export class AnalyticsComputationLockService {
     for (let attempt = 1; attempt <= config.retryAttempts; attempt++) {
       try {
         // Try to set lock with NX (only if not exists) and EX (expiration)
-        const result = await redisService.set(
+        const result = await redisService.setWithOptions(
           lockKey,
           lockValue,
-          'EX',
           config.ttl,
           'NX'
         );

@@ -232,7 +232,7 @@ class AnalyticsLogger {
     const slowOps = allMetrics.reduce((sum, m) => sum + (m.avgDuration > 3000 ? m.totalOperations : 0), 0);
 
     const operationBreakdown: Record<string, PerformanceMetrics> = {};
-    for (const [operation, metrics] of this.performanceMetrics.entries()) {
+    for (const [operation, metrics] of Array.from(this.performanceMetrics.entries())) {
       operationBreakdown[operation] = metrics;
     }
 
@@ -250,7 +250,7 @@ class AnalyticsLogger {
     if (slowOps / totalOps > 0.1) {
       recommendations.push('More than 10% of operations are slow (>3s) - investigate database performance');
     }
-    for (const [operation, metrics] of this.performanceMetrics.entries()) {
+    for (const [operation, metrics] of Array.from(this.performanceMetrics.entries())) {
       if (metrics.operationsPerMinute > 100) {
         recommendations.push(`High frequency detected for ${operation}: ${metrics.operationsPerMinute}/min - consider batching`);
       }

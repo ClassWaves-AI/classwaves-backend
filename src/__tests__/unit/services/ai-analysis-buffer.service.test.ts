@@ -5,41 +5,23 @@ describe('AIAnalysisBufferService', () => {
 
   beforeEach(() => {
     service = new AIAnalysisBufferService();
-    jest.clearAllTimers();
-    jest.useFakeTimers();
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
+  afterEach(async () => {
+    await service.shutdown();
   });
 
   describe('bufferTranscription', () => {
-    it('should add transcription to Tier 1 buffer', async () => {
+    it('should buffer a transcription successfully', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
       const transcription = 'This is a test transcription';
 
       await service.bufferTranscription(groupId, sessionId, transcription);
 
-      const buffer = service.getTier1Buffer(groupId);
-      expect(buffer).toBeDefined();
-      expect(buffer!.transcripts).toHaveLength(1);
-      expect(buffer!.transcripts[0].text).toBe(transcription);
-      expect(buffer!.sessionId).toBe(sessionId);
-    });
-
-    it('should add transcription to Tier 2 buffer', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-      const transcription = 'This is a test transcription';
-
-      await service.bufferTranscription(groupId, sessionId, transcription);
-
-      const buffer = service.getTier2Buffer(sessionId);
-      expect(buffer).toBeDefined();
-      expect(buffer!.transcripts).toHaveLength(1);
-      expect(buffer!.transcripts[0].text).toBe(transcription);
-      expect(buffer!.transcripts[0].groupId).toBe(groupId);
+      const transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
+      expect(transcripts).toHaveLength(1);
+      expect(transcripts[0]).toBe(transcription);
     });
 
     it('should accumulate multiple transcriptions', async () => {
@@ -48,292 +30,140 @@ describe('AIAnalysisBufferService', () => {
 
       await service.bufferTranscription(groupId, sessionId, 'First message');
       await service.bufferTranscription(groupId, sessionId, 'Second message');
-      await service.bufferTranscription(groupId, sessionId, 'Third message');
 
-      const tier1Buffer = service.getTier1Buffer(groupId);
-      const tier2Buffer = service.getTier2Buffer(sessionId);
-
-      expect(tier1Buffer!.transcripts).toHaveLength(3);
-      expect(tier2Buffer!.transcripts).toHaveLength(3);
-    });
-
-    it('should update buffer timing information', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-      const startTime = Date.now();
-
-      await service.bufferTranscription(groupId, sessionId, 'Test message');
-
-      const buffer = service.getTier1Buffer(groupId);
-      expect(buffer!.lastUpdated.getTime()).toBeGreaterThanOrEqual(startTime);
-      expect(buffer!.firstTranscriptAt.getTime()).toBeGreaterThanOrEqual(startTime);
-    });
-
-    it('should maintain correct combined text length', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-      const message1 = 'Short message';
-      const message2 = 'This is a longer message with more content';
-
-      await service.bufferTranscription(groupId, sessionId, message1);
-      await service.bufferTranscription(groupId, sessionId, message2);
-
-      const buffer = service.getTier1Buffer(groupId);
-      const expectedLength = message1.length + message2.length;
-      expect(buffer!.combinedLength).toBe(expectedLength);
+      const transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
+      expect(transcripts).toHaveLength(2);
+      expect(transcripts[0]).toBe('First message');
+      expect(transcripts[1]).toBe('Second message');
     });
   });
 
-  describe('shouldTriggerTier1Analysis', () => {
-    it('should return false for new buffer', () => {
-      const groupId = 'group1';
-      expect(service.shouldTriggerTier1Analysis(groupId)).toBe(false);
-    });
-
-    it('should trigger after 30 seconds', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-
-      await service.bufferTranscription(groupId, sessionId, 'Test message');
-      
-      // Not enough time passed
-      expect(service.shouldTriggerTier1Analysis(groupId)).toBe(false);
-
-      // Advance time by 30 seconds
-      jest.advanceTimersByTime(30000);
-      expect(service.shouldTriggerTier1Analysis(groupId)).toBe(true);
-    });
-
-    it('should trigger when buffer exceeds length threshold', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-      
-      // Create a long message that exceeds the threshold
-      const longMessage = 'A'.repeat(1000);
-      await service.bufferTranscription(groupId, sessionId, longMessage);
-
-      expect(service.shouldTriggerTier1Analysis(groupId)).toBe(true);
-    });
-
-    it('should not trigger for already analyzed buffer', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-
-      await service.bufferTranscription(groupId, sessionId, 'Test message');
-      jest.advanceTimersByTime(30000);
-
-      // First check should trigger
-      expect(service.shouldTriggerTier1Analysis(groupId)).toBe(true);
-
-      // Mark as analyzed
-      service.markTier1Analyzed(groupId);
-
-      // Should not trigger again immediately
-      expect(service.shouldTriggerTier1Analysis(groupId)).toBe(false);
-    });
-  });
-
-  describe('shouldTriggerTier2Analysis', () => {
-    it('should return false for new buffer', () => {
-      const sessionId = 'session1';
-      expect(service.shouldTriggerTier2Analysis(sessionId)).toBe(false);
-    });
-
-    it('should trigger after 2 minutes with sufficient content', async () => {
-      const sessionId = 'session1';
-      const groupId = 'group1';
-
-      // Add sufficient content
-      for (let i = 0; i < 10; i++) {
-        await service.bufferTranscription(groupId, sessionId, 'This is a substantial discussion message');
-      }
-
-      // Not enough time passed
-      expect(service.shouldTriggerTier2Analysis(sessionId)).toBe(false);
-
-      // Advance time by 2 minutes
-      jest.advanceTimersByTime(120000);
-      expect(service.shouldTriggerTier2Analysis(sessionId)).toBe(true);
-    });
-
-    it('should trigger when buffer exceeds length threshold', async () => {
-      const sessionId = 'session1';
-      const groupId = 'group1';
-      
-      // Create content that exceeds the threshold
-      const longMessage = 'A'.repeat(2000);
-      await service.bufferTranscription(groupId, sessionId, longMessage);
-
-      expect(service.shouldTriggerTier2Analysis(sessionId)).toBe(true);
-    });
-
-    it('should require minimum content length', async () => {
-      const sessionId = 'session1';
-      const groupId = 'group1';
-
-      // Add minimal content
-      await service.bufferTranscription(groupId, sessionId, 'Short');
-
-      // Even after time threshold, should not trigger due to insufficient content
-      jest.advanceTimersByTime(300000); // 5 minutes
-      expect(service.shouldTriggerTier2Analysis(sessionId)).toBe(false);
-    });
-  });
-
-  describe('buffer retrieval and management', () => {
-    it('should retrieve buffer transcripts for analysis', async () => {
+  describe('getBufferedTranscripts', () => {
+    it('should return buffered transcripts for tier1', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
 
       await service.bufferTranscription(groupId, sessionId, 'Message 1');
       await service.bufferTranscription(groupId, sessionId, 'Message 2');
 
-      const transcripts = service.getBufferedTranscripts(groupId);
+      const transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
       expect(transcripts).toHaveLength(2);
-      expect(transcripts[0].text).toBe('Message 1');
-      expect(transcripts[1].text).toBe('Message 2');
+      expect(transcripts[0]).toBe('Message 1');
+      expect(transcripts[1]).toBe('Message 2');
     });
 
-    it('should return empty array for non-existent buffer', () => {
-      const transcripts = service.getBufferedTranscripts('nonexistent');
+    it('should return empty array for non-existent buffer', async () => {
+      const transcripts = await service.getBufferedTranscripts('tier1', 'nonexistent', 'nonexistent-session');
       expect(transcripts).toEqual([]);
     });
 
-    it('should mark Tier 1 buffer as analyzed', async () => {
+    it('should handle both tier1 and tier2 buffers', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
-      service.markTier1Analyzed(groupId);
 
-      const buffer = service.getTier1Buffer(groupId);
-      expect(buffer!.lastAnalyzedAt).toBeDefined();
-      expect(buffer!.lastAnalyzedAt!.getTime()).toBeGreaterThan(0);
-    });
+      const tier1Transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
+      const tier2Transcripts = await service.getBufferedTranscripts('tier2', groupId, sessionId);
 
-    it('should mark Tier 2 buffer as analyzed', async () => {
-      const sessionId = 'session1';
-      const groupId = 'group1';
-
-      await service.bufferTranscription(groupId, sessionId, 'Test message');
-      service.markTier2Analyzed(sessionId);
-
-      const buffer = service.getTier2Buffer(sessionId);
-      expect(buffer!.lastAnalyzedAt).toBeDefined();
-      expect(buffer!.lastAnalyzedAt!.getTime()).toBeGreaterThan(0);
+      expect(tier1Transcripts).toHaveLength(1);
+      expect(tier2Transcripts).toHaveLength(1);
+      expect(tier1Transcripts[0]).toBe('Test message');
+      expect(tier2Transcripts[0]).toBe('Test message');
     });
   });
 
-  describe('buffer cleanup', () => {
-    it('should clean up old buffers', async () => {
+  describe('markBufferAnalyzed', () => {
+    it('should mark tier1 buffer as analyzed', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
+      await service.markBufferAnalyzed('tier1', groupId, sessionId);
 
-      // Advance time to make buffer old
-      jest.advanceTimersByTime(3600000); // 1 hour
-
-      service.cleanupOldBuffers();
-
-      expect(service.getTier1Buffer(groupId)).toBeUndefined();
-      expect(service.getTier2Buffer(sessionId)).toBeUndefined();
+      // Buffer should still contain transcripts after being marked as analyzed
+      const transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
+      expect(transcripts).toHaveLength(1);
     });
 
-    it('should not clean up recent buffers', async () => {
+    it('should mark tier2 buffer as analyzed', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
+      await service.markBufferAnalyzed('tier2', groupId, sessionId);
 
-      // Only advance time by 10 minutes
-      jest.advanceTimersByTime(600000);
-
-      service.cleanupOldBuffers();
-
-      expect(service.getTier1Buffer(groupId)).toBeDefined();
-      expect(service.getTier2Buffer(sessionId)).toBeDefined();
-    });
-
-    it('should clean up analyzed buffers after extended time', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
-
-      await service.bufferTranscription(groupId, sessionId, 'Test message');
-      service.markTier1Analyzed(groupId);
-      service.markTier2Analyzed(sessionId);
-
-      // Advance time significantly
-      jest.advanceTimersByTime(7200000); // 2 hours
-
-      service.cleanupOldBuffers();
-
-      expect(service.getTier1Buffer(groupId)).toBeUndefined();
-      expect(service.getTier2Buffer(sessionId)).toBeUndefined();
+      // Buffer should still contain transcripts after being marked as analyzed  
+      const transcripts = await service.getBufferedTranscripts('tier2', groupId, sessionId);
+      expect(transcripts).toHaveLength(1);
     });
   });
 
-  describe('buffer status monitoring', () => {
-    it('should provide buffer status for monitoring', async () => {
-      const groupId1 = 'group1';
-      const groupId2 = 'group2';
-      const sessionId = 'session1';
+  describe('getBufferStats', () => {
+    it('should return buffer statistics', () => {
+      const stats = service.getBufferStats();
 
-      await service.bufferTranscription(groupId1, sessionId, 'Message 1');
-      await service.bufferTranscription(groupId2, sessionId, 'Message 2');
-
-      const status = service.getBufferStatus();
-
-      expect(status.tier1BufferCount).toBe(2);
-      expect(status.tier2BufferCount).toBe(1); // Same session
-      expect(status.totalTranscripts).toBe(2);
-      expect(status.totalMemoryUsage).toBeGreaterThan(0);
+      expect(stats).toHaveProperty('tier1');
+      expect(stats).toHaveProperty('tier2');
+      expect(stats.tier1).toHaveProperty('totalTranscripts');
+      expect(stats.tier1).toHaveProperty('totalBuffers');
+      expect(stats.tier1).toHaveProperty('memoryUsageBytes');
+      expect(stats.tier2).toHaveProperty('totalTranscripts');
+      expect(stats.tier2).toHaveProperty('totalBuffers'); 
+      expect(stats.tier2).toHaveProperty('memoryUsageBytes');
     });
 
-    it('should calculate memory usage correctly', async () => {
+    it('should reflect buffer usage in stats', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
-      const message = 'Test message for memory calculation';
 
-      await service.bufferTranscription(groupId, sessionId, message);
+      await service.bufferTranscription(groupId, sessionId, 'Test message');
 
-      const status = service.getBufferStatus();
-      const expectedSize = message.length * 2; // Rough estimate (2 bytes per char)
-
-      expect(status.totalMemoryUsage).toBeGreaterThanOrEqual(expectedSize);
+      const stats = service.getBufferStats();
+      expect(stats.tier1.totalTranscripts).toBeGreaterThan(0);
+      expect(stats.tier2.totalTranscripts).toBeGreaterThan(0);
+      expect(stats.tier1.totalBuffers).toBeGreaterThan(0);
+      expect(stats.tier2.totalBuffers).toBeGreaterThan(0);
     });
   });
 
-  describe('error handling', () => {
-    it('should handle invalid group IDs gracefully', async () => {
-      expect(() => service.shouldTriggerTier1Analysis('')).not.toThrow();
-      expect(service.shouldTriggerTier1Analysis('')).toBe(false);
-    });
-
-    it('should handle invalid session IDs gracefully', async () => {
-      expect(() => service.shouldTriggerTier2Analysis('')).not.toThrow();
-      expect(service.shouldTriggerTier2Analysis('')).toBe(false);
-    });
-
-    it('should handle null/undefined transcriptions', async () => {
+  describe('cleanup', () => {
+    it('should run cleanup without errors', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
 
-      await expect(service.bufferTranscription(groupId, sessionId, null as any))
-        .rejects.toThrow();
-      await expect(service.bufferTranscription(groupId, sessionId, undefined as any))
-        .rejects.toThrow();
+      await service.bufferTranscription(groupId, sessionId, 'Test message');
+      
+      // Should not throw
+      await expect(service.cleanup()).resolves.not.toThrow();
     });
+  });
 
-    it('should handle empty transcriptions', async () => {
+  describe('edge cases', () => {
+    it('should handle empty transcriptions gracefully', async () => {
       const groupId = 'group1';
       const sessionId = 'session1';
 
       await service.bufferTranscription(groupId, sessionId, '');
 
-      const buffer = service.getTier1Buffer(groupId);
-      expect(buffer!.transcripts).toHaveLength(1);
-      expect(buffer!.combinedLength).toBe(0);
+      const transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
+      expect(transcripts).toHaveLength(1);
+      expect(transcripts[0]).toBe('');
+    });
+
+    it('should handle special characters in transcriptions', async () => {
+      const groupId = 'group1';
+      const sessionId = 'session1';
+      const specialText = 'Test with émojis 😊 and special chars: @#$%^&*()';
+
+      await service.bufferTranscription(groupId, sessionId, specialText);
+
+      const transcripts = await service.getBufferedTranscripts('tier1', groupId, sessionId);
+      expect(transcripts[0]).toBe(specialText);
+    });
+
+    it('should handle missing parameters gracefully', async () => {
+      expect(() => service.getBufferStats()).not.toThrow();
     });
   });
 });

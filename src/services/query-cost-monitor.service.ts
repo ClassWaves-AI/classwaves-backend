@@ -175,17 +175,13 @@ export class QueryCostMonitorService {
       .filter(q => q.executionTime > 3000 && !q.cacheHit)
       .slice(0, 5);
 
-    const preAggregationOpportunities = [
-      ...new Set(expensiveQueries
-        .filter(q => q.queryType === 'analytics' && !q.optimizationUsed.includes('pre-aggregation'))
-        .map(q => q.queryName))
-    ];
+    const preAggregationOpportunities = Array.from(new Set(expensiveQueries
+      .filter(q => q.queryType === 'analytics' && !q.optimizationUsed.includes('pre-aggregation'))
+      .map(q => q.queryName)));
 
-    const cacheOptimizationOpportunities = [
-      ...new Set(slowQueries
-        .filter(q => q.queryType === 'real-time' && !q.cacheHit)
-        .map(q => q.queryName))
-    ];
+    const cacheOptimizationOpportunities = Array.from(new Set(slowQueries
+      .filter(q => q.queryType === 'real-time' && !q.cacheHit)
+      .map(q => q.queryName)));
 
     // Estimate savings potential
     const preAggregationSavings = expensiveQueries

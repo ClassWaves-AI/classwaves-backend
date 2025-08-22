@@ -372,7 +372,7 @@ export class AIAnalysisBufferService {
     let totalConceptualDensity = 0;
     let validTier1Count = 0;
 
-    for (const [bufferKey, buffer] of this.tier1Buffers.entries()) {
+    for (const [bufferKey, buffer] of Array.from(this.tier1Buffers.entries())) {
       if (buffer.sessionId === sessionId && buffer.lastUpdate >= cutoffTime) {
         try {
           // Get latest analysis from database for this group
@@ -410,7 +410,7 @@ export class AIAnalysisBufferService {
       const latestTier2 = await this.getLatestTier2AnalysisFromDB(sessionId);
       if (latestTier2) {
         // Count groups and transcripts in tier2 buffers for this session
-        for (const [bufferKey, buffer] of this.tier2Buffers.entries()) {
+        for (const [bufferKey, buffer] of Array.from(this.tier2Buffers.entries())) {
           if (buffer.sessionId === sessionId) {
             tier2TotalGroups++;
             tier2TotalTranscripts += buffer.transcripts.length;
@@ -540,7 +540,7 @@ export class AIAnalysisBufferService {
    * Get latest Tier 2 analysis timestamp for session
    */
   private getLatestTier2Analysis(sessionId: string): Date | undefined {
-    for (const [bufferKey, buffer] of this.tier2Buffers.entries()) {
+    for (const [bufferKey, buffer] of Array.from(this.tier2Buffers.entries())) {
       if (buffer.sessionId === sessionId && buffer.lastAnalysis) {
         return buffer.lastAnalysis;
       }
@@ -658,7 +658,7 @@ export class AIAnalysisBufferService {
     let oldestBuffer: Date | undefined;
     let newestBuffer: Date | undefined;
 
-    for (const buffer of buffers.values()) {
+    for (const buffer of Array.from(buffers.values())) {
       totalTranscripts += buffer.transcripts.length;
       
       // Estimate memory usage
@@ -719,7 +719,7 @@ export class AIAnalysisBufferService {
   ): number {
     let cleanedCount = 0;
     
-    for (const [key, buffer] of buffers.entries()) {
+    for (const [key, buffer] of Array.from(buffers.entries())) {
       const age = now.getTime() - buffer.lastUpdate.getTime();
       if (age > maxAgeMs) {
         buffers.delete(key);

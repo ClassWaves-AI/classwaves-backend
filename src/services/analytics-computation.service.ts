@@ -267,7 +267,7 @@ export class AnalyticsComputationService {
     let totalFormationTime = 0;
     let groupsWithFormationTime = 0;
 
-    for (const group of groupsMap.values()) {
+    for (const group of Array.from(groupsMap.values())) {
       totalActualMembers += group.actualMembers.length;
       
       if (group.hasLeader) {

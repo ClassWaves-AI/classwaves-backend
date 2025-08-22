@@ -14,7 +14,7 @@
 import { Server as HTTPServer } from 'http';
 import { io as clientIO, Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
-import { app } from '../../app';
+import app from '../../app';
 import { aiAnalysisBufferService } from '../../services/ai-analysis-buffer.service';
 import { teacherPromptService } from '../../services/teacher-prompt.service';
 import { databricksService } from '../../services/databricks.service';
@@ -204,9 +204,9 @@ describe('E2E: Complete Guidance Workflow', () => {
         confidence: 0.91,
         insights: [
           {
-            type: 'conceptual_density',
+            type: 'conceptual_density' as const,
             message: 'Students demonstrating strong understanding of photosynthesis concepts',
-            severity: 'success',
+            severity: 'success' as const,
             actionable: 'Continue encouraging scientific terminology use'
           }
         ],
@@ -226,15 +226,15 @@ describe('E2E: Complete Guidance Workflow', () => {
         confidence: 0.83,
         insights: [
           {
-            type: 'topical_cohesion',
+            type: 'topical_cohesion' as const,
             message: 'Discussion has drifted away from core learning objectives',
-            severity: 'warning',
+            severity: 'warning' as const,
             actionable: 'Redirect conversation back to photosynthesis: "How does this relate to how plants make energy?"'
           },
           {
-            type: 'conceptual_density',
+            type: 'conceptual_density' as const,
             message: 'Students using more casual language, less scientific terminology',
-            severity: 'warning',
+            severity: 'warning' as const,
             actionable: 'Encourage use of scientific vocabulary'
           }
         ],
@@ -383,7 +383,7 @@ describe('E2E: Complete Guidance Workflow', () => {
 
       // Create multiple concurrent sessions to test performance
       const concurrentSessions = 3;
-      const sessionsData = [];
+      const sessionsData: Array<{sessionId: string, groupId: string}> = [];
 
       // Create multiple test sessions
       for (let i = 0; i < concurrentSessions; i++) {

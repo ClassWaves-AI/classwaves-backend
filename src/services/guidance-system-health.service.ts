@@ -87,7 +87,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
   private monitoringInterval: NodeJS.Timeout | null = null;
   
   private readonly config = {
-    checkIntervalMs: parseInt(process.env.HEALTH_CHECK_INTERVAL_MS || '30000'), // 30 seconds
+    checkIntervalMs: parseInt(process.env.HEALTH_CHECK_INTERVAL_MS || '300000'), // 5 minutes
     historyRetentionMs: parseInt(process.env.HEALTH_HISTORY_RETENTION_MS || '3600000'), // 1 hour
     alertThresholds: {
       responseTime: parseInt(process.env.HEALTH_RESPONSE_TIME_THRESHOLD_MS || '5000'),

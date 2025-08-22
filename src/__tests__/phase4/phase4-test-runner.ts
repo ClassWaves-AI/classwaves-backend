@@ -107,7 +107,7 @@ export class Phase4TestRunner {
       
     } catch (error) {
       console.error('❌ Phase 4 testing failed:', error);
-      this.testResults.overall.criticalIssues.push(`Testing execution failed: ${error.message}`);
+      this.testResults.overall.criticalIssues.push(`Testing execution failed: ${(error as Error).message}`);
       return this.testResults;
     }
   }
@@ -189,7 +189,7 @@ export class Phase4TestRunner {
       
     } catch (error) {
       console.error('❌ Performance testing error:', error);
-      this.testResults.overall.criticalIssues.push(`Performance testing error: ${error.message}`);
+      this.testResults.overall.criticalIssues.push(`Performance testing error: ${(error as Error).message}`);
     }
   }
 
@@ -225,7 +225,7 @@ export class Phase4TestRunner {
       
     } catch (error) {
       console.error('❌ Security testing error:', error);
-      this.testResults.overall.criticalIssues.push(`Security testing error: ${error.message}`);
+      this.testResults.overall.criticalIssues.push(`Security testing error: ${(error as Error).message}`);
     }
   }
 
@@ -260,7 +260,7 @@ export class Phase4TestRunner {
       
     } catch (error) {
       console.error('❌ Reliability testing error:', error);
-      this.testResults.overall.criticalIssues.push(`Reliability testing error: ${error.message}`);
+      this.testResults.overall.criticalIssues.push(`Reliability testing error: ${(error as Error).message}`);
     }
   }
 
