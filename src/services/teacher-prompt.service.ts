@@ -378,7 +378,7 @@ export class TeacherPromptService {
     const now = new Date();
     let cleanedCount = 0;
 
-    for (const [sessionId, prompts] of this.promptCache.entries()) {
+    for (const [sessionId, prompts] of Array.from(this.promptCache.entries())) {
       const activePrompts = prompts.filter(p => p.expiresAt > now);
       
       if (activePrompts.length !== prompts.length) {

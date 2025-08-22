@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { openAIWhisperService } from '../openai-whisper.service';
-import client from 'prom-client';
+import * as client from 'prom-client';
 
 interface GroupWindowState {
   chunks: Buffer[];

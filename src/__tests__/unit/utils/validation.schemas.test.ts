@@ -105,9 +105,10 @@ describe('Validation Schemas', () => {
       const result = createSessionSchema.safeParse(minimalData);
       expect(result.success).toBe(true);
       expect(result.data?.plannedDuration).toBe(45);
-      expect(result.data?.autoGroupEnabled).toBe(true);
-      expect(result.data?.maxStudents).toBe(30);
-      expect(result.data?.targetGroupSize).toBe(4);
+      // Note: autoGroupEnabled, maxStudents, and targetGroupSize properties have been removed from the schema
+      expect(result.data?.topic).toBeDefined();
+      expect(result.data?.subject).toBeDefined();
+      expect(result.data?.plannedDuration).toBeDefined();
     });
 
     it('should reject too long topic', () => {

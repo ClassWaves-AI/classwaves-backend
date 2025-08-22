@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { Request } from 'express';
 import { redisService } from './redis.service';
 import { Teacher, School } from '../types/auth.types';

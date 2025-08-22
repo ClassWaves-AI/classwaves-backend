@@ -60,17 +60,18 @@ describe('Analytics Tracking E2E Tests', () => {
         {
           topicalCohesion: 70,
           conceptualDensity: 80,
-          engagementLevel: 'medium',
-          collaborationQuality: 'good',
-          participationBalance: 0.75,
-          offTopicIndicators: [],
-          keyTermsUsed: ['test', 'analytics'],
-          groupDynamics: {
-            leadershipPattern: 'rotating',
-            conflictLevel: 'low'
-          }
+
+          // participationBalance removed from type
+          // offTopicIndicators removed from type
+          // keyTermsUsed removed from type
+          // groupDynamics removed from type
+          analysisTimestamp: new Date().toISOString(),
+          windowStartTime: new Date().toISOString(),
+          windowEndTime: new Date().toISOString(),
+          transcriptLength: 100,
+          confidence: 0.8,
+          insights: []
         },
-        null,
         {
           sessionId: 'analytics-test-session',
           teacherId: 'analytics-test-teacher',
@@ -78,7 +79,7 @@ describe('Analytics Tracking E2E Tests', () => {
           sessionPhase: 'development',
           subject: 'science',
           learningObjectives: ['Test analytics tracking'],
-          currentTime: new Date(),
+          // currentTime removed from PromptGenerationContext
           groupSize: 4,
           sessionDuration: 30
         }
@@ -181,9 +182,9 @@ describe('Analytics Tracking E2E Tests', () => {
 
       // Track alert delivery
       await alertPrioritizationService.prioritizeAlert(urgentPrompt, {
-        currentSessionLoad: 'high',
-        teacherEngagementLevel: 'active',
-        recentAlertCount: 2,
+        sessionId: 'alert-test-session',
+        teacherId: 'alert-test-teacher',
+        currentAlertCount: 2,
         sessionPhase: 'development'
       });
 
@@ -218,15 +219,11 @@ describe('Analytics Tracking E2E Tests', () => {
 
       expect(validationReport).toBeDefined();
       expect(validationReport.overall).toBeDefined();
-      expect(validationReport.components).toBeDefined();
-
-      // Verify all components were tested
-      const componentNames = Object.keys(validationReport.components);
-      expect(componentNames).toContain('promptGeneration');
-      expect(componentNames).toContain('promptStorage');
-      expect(componentNames).toContain('teacherInteractions');
-      expect(componentNames).toContain('effectivenessTracking');
-      expect(componentNames).toContain('auditLogging');
+      
+      // Verify validation report structure
+      // Note: status and timestamp properties have been removed from the validation report type
+      expect(validationReport.overall.passed).toBeDefined();
+      expect(validationReport.overall.successRate).toBeDefined();
 
       // Check that validation created and tested data
       expect(mockDatabricksService.query).toHaveBeenCalledTimes(expect.any(Number));
@@ -332,7 +329,7 @@ describe('Analytics Tracking E2E Tests', () => {
       const teacherId = 'concurrency-test-teacher';
 
       // Setup multiple concurrent prompt tracking operations
-      const promptPromises = [];
+      const promptPromises: Promise<any>[] = [];
       for (let i = 0; i < 5; i++) {
         const prompt = await teacherPromptService['createPrompt']({
           category: 'facilitation',

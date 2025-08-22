@@ -368,45 +368,144 @@ Super admin users can access:
 
 ## Testing
 
+### Testing Philosophy: Real Database Integration
+
+ClassWaves follows a **real database integration testing** approach for MVP validation, prioritizing **production confidence** over test isolation.
+
+### Environment-Specific Testing
+
+#### Backend Server Setup for Tests
+
+```bash
+# For integration/E2E tests (RECOMMENDED)
+NODE_ENV=test E2E_TEST_SECRET=test npm run dev
+
+# For regular development work
+NODE_ENV=development npm run dev
+
+# For production deployment
+NODE_ENV=production npm run start
+```
+
+#### Environment Comparison
+
+| Environment | Database | Authentication | Redis | Use Case |
+|-------------|----------|----------------|-------|----------|
+| **`test`** | ✅ Real Databricks | Relaxed (test tokens) | ✅ Real Redis | Integration & E2E testing |
+| **`development`** | ✅ Real Databricks | Full OAuth flow | ✅ Real Redis | Regular development |
+| **`production`** | ✅ Real Databricks | Full OAuth + security | ✅ Real Redis | Live deployment |
+
+#### Why Real Database Testing?
+
+**MVP Validation Benefits**:
+- 🎯 **Schema Validation**: Catches real database schema mismatches
+- 🎯 **Network Reality**: Tests actual latency, timeouts, and connection issues  
+- 🎯 **Retry Logic**: Validates resilience infrastructure with real service failures
+- 🎯 **Performance Truth**: Load testing with actual database constraints
+- 🎯 **Configuration Issues**: Discovers real-world connection and auth problems
+
+**Authentication in Test Environment**:
+- Uses mocked `authenticate` middleware for automated test execution
+- Maintains real service connections (Databricks, Redis, WebSocket)
+- Allows test token generation without full Google OAuth flow
+- Enables CI/CD automation while preserving integration fidelity
+
 ### Test Suite Structure
 ```
 src/__tests__/
-├── integration/          # API integration tests
-│   ├── auth.test.ts     # Authentication flows
-│   ├── sessions.test.ts # Session management
-│   └── ai-analysis.test.ts # AI analysis pipeline
-├── unit/                # Unit tests
-│   ├── services/        # Service layer tests
-│   ├── controllers/     # Controller tests
-│   └── middleware/      # Middleware tests
-├── e2e/                 # End-to-end tests
-│   └── full-workflow.test.ts
-└── fixtures/            # Test data
-    └── test-data.ts
+├── integration/          # Real database integration tests
+│   ├── auth.test.ts         # Authentication flows
+│   ├── session-start-resilience.test.ts  # Retry infrastructure validation
+│   ├── ai-analysis-load.test.ts          # Load testing with real services
+│   ├── guidance-system-concurrent.test.ts # Concurrent system testing
+│   ├── analytics-tracking.e2e.test.ts    # End-to-end analytics flow
+│   └── routes/              # API route testing with real DB
+├── unit/                # Isolated unit tests (mocked dependencies)
+│   ├── services/        # Service layer logic tests
+│   ├── controllers/     # Controller business logic  
+│   └── middleware/      # Middleware function tests
+├── e2e/                 # Complete user workflow tests
+│   └── e2e-guidance-complete-workflow.test.ts
+├── fixtures/            # Test data and schemas
+│   └── test-data.ts
+└── mocks/              # Service mocks (for unit tests only)
+    ├── databricks.mock.ts
+    └── redis.mock.ts
 ```
 
 ### Running Tests
+
+#### Integration & E2E Tests (Real Services)
 ```bash
-# Run all tests
-npm test
+# Start backend in test mode first
+NODE_ENV=test E2E_TEST_SECRET=test npm run dev
 
-# Run specific test suite
-npm run test:unit
+# In separate terminal, run integration tests
 npm run test:integration
-npm run test:e2e
 
-# Watch mode for development
-npm run test:watch
+# Run specific resilience tests
+npm run test:integration -- --testNamePattern="Session Start Resilience"
+
+# Run E2E workflow tests  
+npm run test:e2e
+```
+
+#### Unit Tests (Mocked Dependencies)
+```bash
+# Unit tests don't require backend server
+npm run test:unit
+
+# Watch mode for TDD
+npm run test:unit -- --watch
+```
+
+#### Complete Test Suite
+```bash
+# Run all test types
+npm test
 
 # Generate coverage report
 npm run test:coverage
+
+# Continuous integration mode
+npm run test:ci
 ```
 
-### Test Requirements
-- **Real Data Testing**: Tests use actual Databricks connections, not mocks
-- **End-to-End Validation**: Complete workflows from API to database
-- **Performance Testing**: Load testing for WebSocket connections
-- **Security Testing**: Authentication and authorization flows
+### Test Categories & Approach
+
+#### 🔗 **Integration Tests** → Real Database Connections
+- **Purpose**: Validate platform works with actual infrastructure
+- **Dependencies**: Real Databricks, Redis, WebSocket services
+- **Authentication**: Mocked middleware, real service calls
+- **Examples**: 
+  - `session-start-resilience.test.ts` - Tests retry infrastructure
+  - `ai-analysis-load.test.ts` - Load tests with real AI services
+  - `guidance-system-concurrent.test.ts` - Concurrent system validation
+
+#### 🔧 **Unit Tests** → Mocked Dependencies  
+- **Purpose**: Test business logic in isolation
+- **Dependencies**: Mocked services via `__tests__/mocks/`
+- **Authentication**: Mocked completely
+- **Examples**:
+  - Service method logic validation
+  - Controller request/response handling
+  - Middleware function behavior
+
+#### 🎭 **E2E Tests** → Full User Workflows
+- **Purpose**: Complete user journey validation  
+- **Dependencies**: Real services + WebSocket connections
+- **Authentication**: Test user sessions with real tokens
+- **Examples**:
+  - Teacher creates session → Students join → AI analysis → Guidance delivery
+
+### Test Requirements & Standards
+
+- ✅ **Real Data Testing**: Integration tests use actual Databricks connections
+- ✅ **Schema Compliance**: Tests validate against real database schemas  
+- ✅ **Performance Validation**: Load testing with actual service constraints
+- ✅ **Retry Infrastructure**: Tests resilience with real timeout scenarios
+- ✅ **Security Testing**: Authentication and authorization flows
+- ✅ **FERPA Compliance**: Audit logging and data protection validation
 
 ## Security & Compliance
 

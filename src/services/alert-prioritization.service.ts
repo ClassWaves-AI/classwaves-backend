@@ -255,7 +255,7 @@ export class AlertPrioritizationService {
     if (sessionId) {
       allAlerts = this.alertQueues.get(sessionId) || [];
     } else {
-      for (const alerts of this.alertQueues.values()) {
+      for (const alerts of Array.from(this.alertQueues.values())) {
         allAlerts.push(...alerts);
       }
     }
@@ -934,7 +934,7 @@ export class AlertPrioritizationService {
     const now = new Date();
     let cleanedCount = 0;
     
-    for (const [sessionId, alerts] of this.alertQueues.entries()) {
+    for (const [sessionId, alerts] of Array.from(this.alertQueues.entries())) {
       const activeAlerts = alerts.filter(a => {
         const isExpired = now.getTime() - a.scheduledDelivery.getTime() > this.config.responseTimeoutMs;
         if (isExpired) cleanedCount++;

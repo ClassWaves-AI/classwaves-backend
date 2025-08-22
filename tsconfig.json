@@ -22,6 +22,7 @@
     "noImplicitReturns": false,
     "noFallthroughCasesInSwitch": true,
     "allowSyntheticDefaultImports": true,
+    "downlevelIteration": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true

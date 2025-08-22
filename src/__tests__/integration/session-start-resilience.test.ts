@@ -90,6 +90,10 @@ describe('Session Start Resilience Integration Tests', () => {
         name: `Test Group ${groupId.slice(-1)}`,
         group_number: parseInt(groupId.slice(-1)),
         is_ready: Math.random() > 0.5, // Random readiness for testing
+        status: 'created',
+        max_size: 4,
+        current_size: 0,
+        auto_managed: true,
         created_at: new Date(),
         updated_at: new Date(),
       });

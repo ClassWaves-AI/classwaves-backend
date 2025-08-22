@@ -1,7 +1,7 @@
 import axios from 'axios';
-import FormData from 'form-data';
+import FormData = require('form-data');
 import Bottleneck from 'bottleneck';
-import client from 'prom-client';
+import * as client from 'prom-client';
 import { databricksService } from './databricks.service';
 import { redisService } from './redis.service';
 

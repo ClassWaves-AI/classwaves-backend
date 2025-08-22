@@ -55,7 +55,7 @@ describe('Real-time Analytics E2E Flow', () => {
     });
 
     await new Promise((resolve) => {
-      clientSocket.on('connect', resolve);
+      clientSocket.on('connect', () => resolve(undefined));
     });
 
     // Join session room
@@ -268,7 +268,7 @@ describe('Real-time Analytics E2E Flow', () => {
       });
 
       await new Promise((resolve) => {
-        client2.on('connect', resolve);
+        client2.on('connect', () => resolve(undefined));
       });
 
       client2.emit('join:session', { sessionId: testSession.id });
@@ -327,7 +327,7 @@ describe('Real-time Analytics E2E Flow', () => {
       });
 
       await new Promise((resolve) => {
-        clientSocket.on('connect', resolve);
+        clientSocket.on('connect', () => resolve(undefined));
       });
 
       clientSocket.emit('join:session', { sessionId: testSession.id });

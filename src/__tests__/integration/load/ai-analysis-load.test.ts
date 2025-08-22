@@ -86,7 +86,7 @@ describe('AI Analysis Load Tests', () => {
 
       console.log(`🧪 Load test: ${sessionCount} sessions, ${totalGroups} groups, Tier 1 analysis`);
 
-      const analysisPromises = [];
+      const analysisPromises: Promise<{sessionId: string, groupId: string, promptCount: number}>[] = [];
       const startTime = Date.now();
 
       // Create concurrent sessions with multiple groups each
@@ -107,43 +107,47 @@ describe('AI Analysis Load Tests', () => {
             }
 
             // Trigger analysis
-            if (aiAnalysisBufferService.shouldTriggerTier1Analysis(groupId)) {
-              const transcripts = aiAnalysisBufferService.getBufferedTranscripts(groupId);
+            const transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
+            if (transcripts.length > 0) {
               
               const result = await databricksAIService.analyzeTier1(transcripts, {
-                focusAreas: ['engagement', 'collaboration'],
-                sessionPhase: 'development',
-                subject: 'science'
+                groupId: groupId,
+                sessionId: sessionId,
+                focusAreas: ['topical_cohesion', 'conceptual_density']
               });
 
               // Generate prompts
               const prompts = await teacherPromptService.generatePrompts(
-                result.insights,
-                null,
+                result,
                 {
-                  sessionId,
-                  teacherId,
-                  groupId,
+                  sessionId: sessionId,
+                  groupId: groupId,
+                  teacherId: teacherId,
                   sessionPhase: 'development',
                   subject: 'science',
                   learningObjectives: ['Load testing'],
-                  currentTime: new Date(),
+
                   groupSize: 4,
                   sessionDuration: 30
+                },
+                {
+                  maxPrompts: 2,
+                  priorityFilter: 'all',
+                  includeEffectivenessScore: true
                 }
               );
 
               // Prioritize alerts
               for (const prompt of prompts) {
                 await alertPrioritizationService.prioritizeAlert(prompt, {
-                  currentSessionLoad: 'high',
-                  teacherEngagementLevel: 'active',
-                  recentAlertCount: 1,
+                  sessionId,
+                  teacherId,
+                  currentAlertCount: 1,
                   sessionPhase: 'development'
                 });
               }
 
-              aiAnalysisBufferService.markTier1Analyzed(groupId);
+              await aiAnalysisBufferService.markBufferAnalyzed('tier1', groupId, sessionId);
               return { sessionId, groupId, promptCount: prompts.length };
             }
             
@@ -177,12 +181,12 @@ describe('AI Analysis Load Tests', () => {
       console.log(`🎯 Throughput: ${(totalGroups / (totalTime / 1000)).toFixed(2)} groups/second`);
 
       // Verify system health
-      const bufferStatus = aiAnalysisBufferService.getBufferStatus();
-      expect(bufferStatus.tier1BufferCount).toBeGreaterThan(0);
-      expect(bufferStatus.totalTranscripts).toBeGreaterThan(0);
+      const bufferStatus = aiAnalysisBufferService.getBufferStats();
+      expect(bufferStatus.tier1.totalBuffers).toBeGreaterThan(0);
+      expect(bufferStatus.tier1.totalTranscripts + bufferStatus.tier2.totalTranscripts).toBeGreaterThan(0);
 
       // Cleanup
-      aiAnalysisBufferService.cleanupOldBuffers();
+      await aiAnalysisBufferService.cleanup();
     });
 
     it('should handle mixed Tier 1 and Tier 2 analysis under load', async () => {
@@ -192,7 +196,7 @@ describe('AI Analysis Load Tests', () => {
 
       console.log(`🧪 Mixed load test: ${sessionCount} sessions, ${totalGroups} groups, Tier 1+2 analysis`);
 
-      const analysisPromises = [];
+      const analysisPromises: Promise<{sessionId: string, groupId: string, promptCount: number, tier1: boolean, tier2: boolean}>[] = [];
       const startTime = Date.now();
 
       for (let sessionIndex = 0; sessionIndex < sessionCount; sessionIndex++) {
@@ -211,67 +215,76 @@ describe('AI Analysis Load Tests', () => {
               );
             }
 
-            const results = { tier1: false, tier2: false, prompts: 0 };
+            const results = { tier1: false, tier2: false, promptCount: 0 };
 
             // Tier 1 Analysis
-            if (aiAnalysisBufferService.shouldTriggerTier1Analysis(groupId)) {
-              const transcripts = aiAnalysisBufferService.getBufferedTranscripts(groupId);
+            const transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
+            if (transcripts.length > 0) {
               const tier1Result = await databricksAIService.analyzeTier1(transcripts, {
-                focusAreas: ['engagement', 'collaboration'],
-                sessionPhase: 'development',
-                subject: 'science'
+                groupId: groupId,
+                sessionId: sessionId,
+                focusAreas: ['topical_cohesion', 'conceptual_density']
               });
 
               const tier1Prompts = await teacherPromptService.generatePrompts(
-                tier1Result.insights,
-                null,
+                tier1Result,
                 {
-                  sessionId, teacherId, groupId,
+                  sessionId: sessionId,
+                  groupId: groupId,
+                  teacherId: teacherId,
                   sessionPhase: 'development',
                   subject: 'science',
                   learningObjectives: ['Mixed analysis testing'],
-                  currentTime: new Date(),
+
                   groupSize: 4,
                   sessionDuration: 30
+                },
+                {
+                  maxPrompts: 2,
+                  priorityFilter: 'all',
+                  includeEffectivenessScore: true
                 }
               );
 
               results.tier1 = true;
-              results.prompts += tier1Prompts.length;
-              aiAnalysisBufferService.markTier1Analyzed(groupId);
+              results.promptCount += tier1Prompts.length;
+              await aiAnalysisBufferService.markBufferAnalyzed('tier1', groupId, sessionId);
             }
 
             // Tier 2 Analysis
-            if (aiAnalysisBufferService.shouldTriggerTier2Analysis(sessionId)) {
-              const transcripts = aiAnalysisBufferService.getBufferedTranscripts(groupId);
-              const tier2Result = await databricksAIService.analyzeTier2(transcripts, {
-                analysisDepth: 'deep',
-                includeEmotionalArc: true,
-                includeLearningSignals: true,
-                sessionPhase: 'development',
-                subject: 'science'
+            const transcripts2 = await aiAnalysisBufferService.getBufferedTranscripts('tier2', groupId, sessionId);
+            if (transcripts2.length > 0) {
+              const tier2Result = await databricksAIService.analyzeTier2(transcripts2, {
+                sessionId: sessionId,
+                analysisDepth: 'comprehensive'
               });
 
               const tier2Prompts = await teacherPromptService.generatePrompts(
-                null,
-                tier2Result.insights,
+                tier2Result,
                 {
-                  sessionId, teacherId, groupId,
+                  sessionId: sessionId,
+                  groupId: groupId,
+                  teacherId: teacherId,
                   sessionPhase: 'development',
                   subject: 'science',
                   learningObjectives: ['Deep analysis testing'],
-                  currentTime: new Date(),
+
                   groupSize: 4,
                   sessionDuration: 30
+                },
+                {
+                  maxPrompts: 3,
+                  priorityFilter: 'high',
+                  includeEffectivenessScore: true
                 }
               );
 
               results.tier2 = true;
-              results.prompts += tier2Prompts.length;
-              aiAnalysisBufferService.markTier2Analyzed(sessionId);
+              results.promptCount += tier2Prompts.length;
+              await aiAnalysisBufferService.markBufferAnalyzed('tier2', groupId, sessionId);
             }
 
-            return { sessionId, groupId, ...results };
+            return { sessionId, groupId, promptCount: results.promptCount, tier1: results.tier1, tier2: results.tier2 };
           })();
 
           analysisPromises.push(analysisPromise);
@@ -287,7 +300,7 @@ describe('AI Analysis Load Tests', () => {
       
       const tier1Count = results.filter(r => r.tier1).length;
       const tier2Count = results.filter(r => r.tier2).length;
-      const totalPrompts = results.reduce((sum, r) => sum + r.prompts, 0);
+      const totalPrompts = results.reduce((sum, r) => sum + r.promptCount, 0);
 
       expect(tier1Count).toBeGreaterThan(0);
       expect(tier2Count).toBeGreaterThan(0);
@@ -323,11 +336,11 @@ describe('AI Analysis Load Tests', () => {
 
         // Check memory status periodically
         if (i % 25 === 0) {
-          const status = aiAnalysisBufferService.getBufferStatus();
-          console.log(`📊 Memory status at ${i} transcriptions: ${status.totalMemoryUsage} bytes, ${status.totalTranscripts} total`);
+          const status = aiAnalysisBufferService.getBufferStats();
+          console.log(`📊 Memory status at ${i} transcriptions: ${status.tier1.memoryUsageBytes + status.tier2.memoryUsageBytes} bytes, ${status.tier1.totalTranscripts + status.tier2.totalTranscripts} total`);
           
           // Memory should not grow unbounded
-          expect(status.totalMemoryUsage).toBeLessThan(10 * 1024 * 1024); // 10MB limit
+          expect(status.tier1.memoryUsageBytes + status.tier2.memoryUsageBytes).toBeLessThan(10 * 1024 * 1024); // 10MB limit
         }
 
         // Simulate real-time spacing
@@ -340,22 +353,22 @@ describe('AI Analysis Load Tests', () => {
       const processingTime = endTime - startTime;
 
       // Final memory check
-      const finalStatus = aiAnalysisBufferService.getBufferStatus();
-      expect(finalStatus.totalTranscripts).toBe(totalTranscriptions);
-      expect(finalStatus.totalMemoryUsage).toBeGreaterThan(0);
-      expect(finalStatus.totalMemoryUsage).toBeLessThan(10 * 1024 * 1024);
+      const finalStatus = aiAnalysisBufferService.getBufferStats();
+      expect(finalStatus.tier1.totalTranscripts + finalStatus.tier2.totalTranscripts).toBe(totalTranscriptions);
+      expect(finalStatus.tier1.memoryUsageBytes + finalStatus.tier2.memoryUsageBytes).toBeGreaterThan(0);
+      expect(finalStatus.tier1.memoryUsageBytes + finalStatus.tier2.memoryUsageBytes).toBeLessThan(10 * 1024 * 1024);
 
       // Performance should scale linearly
       const avgTimePerTranscription = processingTime / totalTranscriptions;
       expect(avgTimePerTranscription).toBeLessThan(10); // < 10ms per transcription
 
       console.log(`📊 Memory test results: ${processingTime}ms total, ${avgTimePerTranscription.toFixed(2)}ms per transcription`);
-      console.log(`💾 Final memory usage: ${finalStatus.totalMemoryUsage} bytes for ${totalTranscriptions} transcriptions`);
+      console.log(`💾 Final memory usage: ${finalStatus.tier1.memoryUsageBytes + finalStatus.tier2.memoryUsageBytes} bytes for ${totalTranscriptions} transcriptions`);
 
       // Cleanup should free memory
-      aiAnalysisBufferService.cleanupOldBuffers();
-      const cleanStatus = aiAnalysisBufferService.getBufferStatus();
-      expect(cleanStatus.totalMemoryUsage).toBe(0);
+      await aiAnalysisBufferService.cleanup();
+      const cleanStatus = aiAnalysisBufferService.getBufferStats();
+      expect(cleanStatus.tier1.memoryUsageBytes + cleanStatus.tier2.memoryUsageBytes).toBe(0);
     });
 
     it('should handle buffer cleanup efficiently under load', async () => {
@@ -381,28 +394,28 @@ describe('AI Analysis Load Tests', () => {
         }
       }
 
-      const beforeCleanup = aiAnalysisBufferService.getBufferStatus();
-      expect(beforeCleanup.tier1BufferCount).toBe(sessionCount * groupsPerSession);
-      expect(beforeCleanup.tier2BufferCount).toBe(sessionCount);
-      expect(beforeCleanup.totalTranscripts).toBe(sessionCount * groupsPerSession * transcriptionsPerGroup);
+      const beforeCleanup = aiAnalysisBufferService.getBufferStats();
+      expect(beforeCleanup.tier1.totalBuffers).toBe(sessionCount * groupsPerSession);
+      expect(beforeCleanup.tier2.totalBuffers).toBe(sessionCount);
+      expect(beforeCleanup.tier1.totalTranscripts + beforeCleanup.tier2.totalTranscripts).toBe(sessionCount * groupsPerSession * transcriptionsPerGroup);
 
-      console.log(`📊 Before cleanup: ${beforeCleanup.tier1BufferCount} T1 buffers, ${beforeCleanup.tier2BufferCount} T2 buffers`);
+      console.log(`📊 Before cleanup: ${beforeCleanup.tier1.totalBuffers} T1 buffers, ${beforeCleanup.tier2.totalBuffers} T2 buffers`);
 
       // Cleanup should be fast even with many buffers
       const cleanupStart = Date.now();
-      aiAnalysisBufferService.cleanupOldBuffers();
+      await aiAnalysisBufferService.cleanup();
       const cleanupTime = Date.now() - cleanupStart;
 
-      const afterCleanup = aiAnalysisBufferService.getBufferStatus();
+      const afterCleanup = aiAnalysisBufferService.getBufferStats();
       
       // All buffers should remain (they're not old enough)
-      expect(afterCleanup.tier1BufferCount).toBe(beforeCleanup.tier1BufferCount);
-      expect(afterCleanup.tier2BufferCount).toBe(beforeCleanup.tier2BufferCount);
+      expect(afterCleanup.tier1.totalBuffers).toBe(beforeCleanup.tier1.totalBuffers);
+      expect(afterCleanup.tier2.totalBuffers).toBe(beforeCleanup.tier2.totalBuffers);
 
       // Cleanup should be very fast
       expect(cleanupTime).toBeLessThan(100); // < 100ms for cleanup scan
 
-      console.log(`⚡ Cleanup performance: ${cleanupTime}ms for ${beforeCleanup.tier1BufferCount + beforeCleanup.tier2BufferCount} buffers`);
+      console.log(`⚡ Cleanup performance: ${cleanupTime}ms for ${beforeCleanup.tier1.totalBuffers + beforeCleanup.tier2.totalBuffers} buffers`);
     });
   });
 
@@ -443,7 +456,7 @@ describe('AI Analysis Load Tests', () => {
         };
       });
 
-      const analysisPromises = [];
+      const analysisPromises: Promise<{success: boolean, groupId: string, result?: any, error?: string}>[] = [];
 
       for (let s = 0; s < sessionCount; s++) {
         for (let g = 0; g < groupsPerSession; g++) {
@@ -458,18 +471,18 @@ describe('AI Analysis Load Tests', () => {
             );
 
             try {
-              const transcripts = aiAnalysisBufferService.getBufferedTranscripts(groupId);
+              const transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
               const result = await databricksAIService.analyzeTier1(transcripts, {
-                focusAreas: ['engagement'],
-                sessionPhase: 'development',
-                subject: 'science'
+                groupId: groupId,
+                sessionId: sessionId,
+                focusAreas: ['topical_cohesion']
               });
 
-              aiAnalysisBufferService.markTier1Analyzed(groupId);
+              await aiAnalysisBufferService.markBufferAnalyzed('tier1', groupId, sessionId);
               return { success: true, groupId, result };
             } catch (error) {
               // Service should continue operating despite failures
-              return { success: false, groupId, error: error.message };
+              return { success: false, groupId, error: (error as Error).message };
             }
           })();
 
@@ -493,20 +506,20 @@ describe('AI Analysis Load Tests', () => {
       console.log(`💪 System maintained ${(successfulResults.length / results.length * 100).toFixed(1)}% success rate under intermittent failures`);
 
       // Verify system state remains consistent
-      const bufferStatus = aiAnalysisBufferService.getBufferStatus();
-      expect(bufferStatus.tier1BufferCount).toBeGreaterThan(0);
+      const bufferStatus = aiAnalysisBufferService.getBufferStats();
+      expect(bufferStatus.tier1.totalBuffers).toBeGreaterThan(0);
     });
   });
 
   describe('Scaling and Throughput', () => {
     it('should demonstrate linear scaling with increased load', async () => {
       const loadLevels = [10, 25, 50]; // Different load levels to test
-      const throughputResults = [];
+      const throughputResults: Array<{groupCount: number, totalTime: number, throughput: number, avgTimePerGroup: number}> = [];
 
       for (const groupCount of loadLevels) {
         console.log(`🧪 Scaling test: ${groupCount} concurrent groups`);
 
-        const analysisPromises = [];
+        const analysisPromises: Promise<any>[] = [];
         const startTime = Date.now();
 
         for (let i = 0; i < groupCount; i++) {
@@ -520,14 +533,14 @@ describe('AI Analysis Load Tests', () => {
               'Scaling test transcription for throughput measurement and linear scaling validation.'
             );
 
-            const transcripts = aiAnalysisBufferService.getBufferedTranscripts(groupId);
+            const transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
             const result = await databricksAIService.analyzeTier1(transcripts, {
-              focusAreas: ['engagement'],
-              sessionPhase: 'development',
-              subject: 'science'
+              groupId: groupId,
+              sessionId: sessionId,
+              focusAreas: ['topical_cohesion']
             });
 
-            aiAnalysisBufferService.markTier1Analyzed(groupId);
+            await aiAnalysisBufferService.markBufferAnalyzed('tier1', groupId, sessionId);
             return result;
           })();
 
@@ -550,7 +563,7 @@ describe('AI Analysis Load Tests', () => {
         console.log(`📊 ${groupCount} groups: ${totalTime}ms, ${throughput.toFixed(2)} groups/sec`);
 
         // Clean up between tests
-        aiAnalysisBufferService.cleanupOldBuffers();
+        await aiAnalysisBufferService.cleanup();
       }
 
       // Verify scaling characteristics

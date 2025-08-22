@@ -1,5 +1,5 @@
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 import { Request } from 'express';
 import { Teacher, School } from '../types/auth.types';
 import { redisService } from './redis.service';
