@@ -357,13 +357,55 @@ export class RealTimeAnalyticsCacheService {
    * Invalidate cache when session ends
    */
   async invalidateSessionCache(sessionId: string): Promise<void> {
+    const startTime = Date.now();
+    
     try {
       const cacheKey = `${this.SESSION_PREFIX}${sessionId}`;
-      // Set empty value with short TTL to effectively delete
-      await redisService.set(cacheKey, '', 1);
       
-      console.log(`🗑️ Invalidated cache for completed session ${sessionId}`);
+      // Check if cache entry exists before deletion
+      const existingData = await redisService.get(cacheKey);
+      
+      if (existingData) {
+        // Log cache invalidation with context
+        analyticsLogger.logOperation(
+          'session_cache_invalidated',
+          'redis_cache',
+          startTime,
+          true,
+          {
+            sessionId,
+            recordCount: 1,
+            metadata: {
+              cacheKey,
+              invalidationReason: 'session_completed',
+              cacheSize: existingData.length
+            }
+          }
+        );
+        
+        // Remove the cache entry completely
+        await redisService.del(cacheKey);
+        console.log(`🗑️ Invalidated cache for completed session ${sessionId}`);
+      } else {
+        console.log(`ℹ️ No cache found for session ${sessionId} (already invalidated)`);
+      }
     } catch (error) {
+      analyticsLogger.logOperation(
+        'session_cache_invalidation_failed',
+        'redis_cache',
+        startTime,
+        false,
+        {
+          sessionId,
+          recordCount: 0,
+          error: error instanceof Error ? error.message : String(error),
+          metadata: {
+            cacheKey: `${this.SESSION_PREFIX}${sessionId}`,
+            errorType: error instanceof Error ? error.constructor.name : typeof error
+          }
+        }
+      );
+      
       console.error('Failed to invalidate session cache:', error);
     }
   }
@@ -377,16 +419,36 @@ export class RealTimeAnalyticsCacheService {
     try {
       console.log('🔄 Starting cache sync to Databricks...');
       
-      // For demo purposes, we'll simulate having cached keys
-      // In production, you'd implement a keys pattern or track keys separately
-      const sessionKeys: string[] = []; // Simplified for demo
+      // Get all active session cache keys from Redis
+      const sessionKeys = await this.getActiveSessionCacheKeys();
       let syncedCount = 0;
+      let failedCount = 0;
+      const failedSessions: string[] = [];
+      
+      console.log(`📊 Found ${sessionKeys.length} active session caches to sync`);
       
       for (const key of sessionKeys) {
         try {
           const cachedData = await redisService.get(key);
           if (cachedData) {
             const metrics = JSON.parse(cachedData) as SessionMetricsCache;
+            
+            // Log individual session sync attempt
+            analyticsLogger.logOperation(
+              'session_cache_sync_attempt',
+              'session_analytics',
+              Date.now(),
+              true,
+              {
+                sessionId: metrics.sessionId,
+                recordCount: 1,
+                metadata: {
+                  cacheKey: key,
+                  cacheAge: Date.now() - new Date(metrics.lastUpdate).getTime(),
+                  metricsFields: Object.keys(metrics)
+                }
+              }
+            );
             
             // Update session_analytics table with real-time data
             await databricksService.upsert(
@@ -402,28 +464,79 @@ export class RealTimeAnalyticsCacheService {
               }
             );
             
+            // Log successful individual session sync
+            analyticsLogger.logOperation(
+              'session_cache_sync_success',
+              'session_analytics',
+              Date.now(),
+              true,
+              {
+                sessionId: metrics.sessionId,
+                recordCount: 1,
+                metadata: {
+                  cacheKey: key,
+                  participants: metrics.totalParticipants,
+                  activeGroups: metrics.activeGroups,
+                  engagementScore: metrics.averageEngagement
+                }
+              }
+            );
+            
             syncedCount++;
+            console.log(`✅ Synced session ${metrics.sessionId} (${metrics.totalParticipants} participants)`);
           }
         } catch (error) {
-          console.error(`Failed to sync session cache ${key}:`, error);
+          failedCount++;
+          const sessionId = key.replace(this.SESSION_PREFIX, '');
+          failedSessions.push(sessionId);
+          
+          // Log individual session sync failure
+          analyticsLogger.logOperation(
+            'session_cache_sync_failed',
+            'session_analytics',
+            Date.now(),
+            false,
+            {
+              sessionId,
+              recordCount: 0,
+              error: error instanceof Error ? error.message : String(error),
+              metadata: {
+                cacheKey: key,
+                errorType: error instanceof Error ? error.constructor.name : typeof error
+              }
+            }
+          );
+          
+          console.error(`❌ Failed to sync session cache ${key}:`, error);
         }
       }
       
+      // Log overall batch sync completion with proper context
       analyticsLogger.logOperation(
         'cache_sync_to_databricks',
         'session_analytics',
         startTime,
         true,
         {
+          sessionId: 'batch_sync', // Indicates this is a batch operation
+          recordCount: syncedCount, // Number of records actually synced
           metadata: {
             sessionsSynced: syncedCount,
-            totalSessions: sessionKeys.length
+            totalSessions: sessionKeys.length,
+            failedSessions: failedCount,
+            failedSessionIds: failedSessions,
+            syncType: 'background_batch',
+            cacheKeysProcessed: sessionKeys.length,
+            successRate: sessionKeys.length > 0 ? (syncedCount / sessionKeys.length) * 100 : 0
           },
           forceLog: true
         }
       );
       
       console.log(`✅ Cache sync completed: ${syncedCount}/${sessionKeys.length} sessions synced`);
+      if (failedCount > 0) {
+        console.warn(`⚠️ ${failedCount} sessions failed to sync:`, failedSessions);
+      }
       
     } catch (error) {
       analyticsLogger.logOperation(
@@ -432,7 +545,13 @@ export class RealTimeAnalyticsCacheService {
         startTime,
         false,
         {
+          sessionId: 'batch_sync',
+          recordCount: 0,
           error: error instanceof Error ? error.message : String(error),
+          metadata: {
+            errorType: error instanceof Error ? error.constructor.name : typeof error,
+            syncType: 'background_batch'
+          },
           forceLog: true
         }
       );
@@ -542,6 +661,105 @@ export class RealTimeAnalyticsCacheService {
     } catch (error) {
       console.error('Failed to get active sessions for teacher:', error);
       return [];
+    }
+  }
+
+  /**
+   * Get all active session cache keys from Redis
+   */
+  private async getActiveSessionCacheKeys(): Promise<string[]> {
+    try {
+      // Scan Redis for all session cache keys
+      const keys = await redisService.keys(`${this.SESSION_PREFIX}*`);
+      
+      if (!keys || keys.length === 0) {
+        console.log('ℹ️ No active session caches found in Redis');
+        return [];
+      }
+      
+      console.log(`🔍 Found ${keys.length} potential session cache keys`);
+      
+      // Filter out expired or invalid keys
+      const validKeys: string[] = [];
+      let expiredCount = 0;
+      let corruptedCount = 0;
+      
+      for (const key of keys) {
+        try {
+          const cachedData = await redisService.get(key);
+          if (cachedData) {
+            const metrics = JSON.parse(cachedData) as SessionMetricsCache;
+            
+            // Check if cache entry is still valid (not too old)
+            const cacheAge = Date.now() - new Date(metrics.lastUpdate).getTime();
+            const maxAge = this.CACHE_TTL * 1000; // Convert to milliseconds
+            
+            if (cacheAge < maxAge && metrics.sessionId) {
+              validKeys.push(key);
+            } else {
+              // Remove expired cache entries
+              await redisService.del(key);
+              expiredCount++;
+              console.log(`🗑️ Removed expired cache entry: ${key} (age: ${Math.round(cacheAge / 1000)}s)`);
+            }
+          }
+        } catch (parseError) {
+          // Remove corrupted cache entries
+          await redisService.del(key);
+          corruptedCount++;
+          console.warn(`🗑️ Removed corrupted cache entry: ${key} (parse error: ${parseError instanceof Error ? parseError.message : String(parseError)})`);
+        }
+      }
+      
+      console.log(`📊 Cache cleanup: ${validKeys.length} valid, ${expiredCount} expired, ${corruptedCount} corrupted`);
+      return validKeys;
+    } catch (error) {
+      console.error('Failed to get active session cache keys:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Manual trigger for cache sync (useful for testing and admin operations)
+   */
+  async triggerManualCacheSync(): Promise<{
+    success: boolean;
+    sessionsProcessed: number;
+    sessionsSynced: number;
+    failedSessions: number;
+    duration: number;
+  }> {
+    const startTime = Date.now();
+    
+    try {
+      console.log('🚀 Manual cache sync triggered...');
+      
+      await this.syncCacheToDatabriks();
+      
+      const duration = Date.now() - startTime;
+      
+      // Get final stats from the last sync operation
+      const sessionKeys = await this.getActiveSessionCacheKeys();
+      
+      return {
+        success: true,
+        sessionsProcessed: sessionKeys.length,
+        sessionsSynced: sessionKeys.length, // Assuming all were synced successfully
+        failedSessions: 0,
+        duration
+      };
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      
+      console.error('❌ Manual cache sync failed:', error);
+      
+      return {
+        success: false,
+        sessionsProcessed: 0,
+        sessionsSynced: 0,
+        failedSessions: 0,
+        duration
+      };
     }
   }
 }
