@@ -14,7 +14,8 @@ import {
   updateSampleRate,
   triggerCleanup,
   getCostAnalysis,
-  setupPreAggregatedTables
+  setupPreAggregatedTables,
+  triggerCacheSync
 } from '../controllers/analytics-monitoring.controller';
 
 const router = Router();
@@ -70,5 +71,13 @@ router.get('/cost-analysis', getCostAnalysis);
  * Note: Job monitoring and triggering is now handled by Databricks Jobs UI
  */
 router.post('/setup-tables', setupPreAggregatedTables);
+
+/**
+ * POST /cache-sync
+ * Manually trigger cache synchronization to Databricks
+ * Admin-only endpoint for testing and maintenance
+ * Body: { force?: boolean } (default: false)
+ */
+router.post('/cache-sync', triggerCacheSync);
 
 export default router;
