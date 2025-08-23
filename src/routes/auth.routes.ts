@@ -97,6 +97,57 @@ router.post('/generate-test-token', (req, res, next) => {
   next();
 }, validate(generateTestTokenSchema), generateTestTokenHandler);
 
+// Simple test token endpoint for API audit system (development only)
+router.post('/test-token', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({
+      success: false,
+      error: 'NOT_ALLOWED_IN_PRODUCTION',
+      message: 'Test tokens are not allowed in production'
+    });
+  }
+
+  try {
+    const { email = 'test@classwaves.ai', role = 'teacher' } = req.body;
+    
+    // Create a test teacher and school for the token
+    const testTeacher = {
+      id: 'test-teacher-id',
+      email: email,
+      name: 'Test Teacher',
+      role: role,
+      access_level: 'full',
+    };
+
+    const testSchool = {
+      id: 'test-school-id',
+      name: 'Test School',
+      domain: 'testschool.edu',
+      subscription_tier: 'professional',
+    };
+
+    // Generate a real JWT token that will work with auth middleware
+    const { generateAccessToken, generateSessionId } = require('../utils/jwt.utils');
+    const sessionId = generateSessionId();
+    const accessToken = generateAccessToken(testTeacher, testSchool, sessionId);
+    
+    res.json({
+      success: true,
+      token: accessToken,
+      user: { email, role },
+      sessionId: sessionId,
+      expiresIn: 3600,
+      message: 'Real JWT test token generated for API audit'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'TOKEN_GENERATION_FAILED',
+      message: 'Failed to generate test token'
+    });
+  }
+});
+
 // ============================================================================
 // Health Monitoring Endpoints
 // ============================================================================

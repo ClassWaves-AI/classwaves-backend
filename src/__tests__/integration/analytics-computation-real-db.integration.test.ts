@@ -137,7 +137,7 @@ describe('Analytics Computation - Real Database Integration', () => {
 
   describe('Real Database Analytics Computation', () => {
     (SKIP_REAL_DB_TESTS ? it.skip : it)('should compute analytics with real session data', async () => {
-      // Create real test session with complete data (using actual schema)
+      // Create real test session with complete data (using actual schema - ALL 30 columns)
       const sessionData = {
         id: testSessionId,
         teacher_id: testTeacherId,
@@ -145,7 +145,11 @@ describe('Analytics Computation - Real Database Integration', () => {
         title: 'Integration Test Session',
         description: 'Real-time analytics integration test',
         status: 'ended',
+        scheduled_start: new Date(Date.now() - 60 * 60 * 1000), // 1 hour ago
+        actual_start: new Date(Date.now() - 45 * 60 * 1000), // 45 minutes ago
+        actual_end: new Date(),
         planned_duration_minutes: 45,
+        actual_duration_minutes: 45, // Match planned duration
         max_students: 30,
         target_group_size: 4,
         auto_group_enabled: true,
@@ -155,32 +159,36 @@ describe('Analytics Computation - Real Database Integration', () => {
         ferpa_compliant: true,
         coppa_compliant: true,
         recording_consent_obtained: true,
+        data_retention_date: new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), // 7 years from now
         total_groups: 3,
         total_students: 12,
+        access_code: 'TEST123',
+        end_reason: 'planned_completion',
+        teacher_notes: 'Integration test session for analytics validation',
         engagement_score: 78.5,
-        actual_start: new Date(Date.now() - 45 * 60 * 1000), // 45 minutes ago
-        actual_end: new Date(),
+        participation_rate: 85.0, // Critical field for analytics
         created_at: new Date(Date.now() - 50 * 60 * 1000), // 50 minutes ago
         updated_at: new Date()
       };
 
-      // Insert session into database
+      // Insert session into database with ALL 30 required columns
       await databricksService.query(
         `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-         (id, title, description, status, planned_duration_minutes, max_students, 
-          target_group_size, auto_group_enabled, teacher_id, school_id,
-          recording_enabled, transcription_enabled, ai_analysis_enabled,
-          ferpa_compliant, coppa_compliant, recording_consent_obtained,
-          total_groups, total_students, engagement_score,
-          actual_start, actual_end, created_at, updated_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [sessionData.id, sessionData.title, sessionData.description, sessionData.status, 
-         sessionData.planned_duration_minutes, sessionData.max_students, sessionData.target_group_size, 
-         sessionData.auto_group_enabled, sessionData.teacher_id, sessionData.school_id,
-         sessionData.recording_enabled, sessionData.transcription_enabled, sessionData.ai_analysis_enabled,
-         sessionData.ferpa_compliant, sessionData.coppa_compliant, sessionData.recording_consent_obtained,
-         sessionData.total_groups, sessionData.total_students, sessionData.engagement_score, 
-         sessionData.actual_start, sessionData.actual_end, sessionData.created_at, sessionData.updated_at]
+         (id, teacher_id, school_id, title, description, status, scheduled_start, actual_start, actual_end,
+          planned_duration_minutes, actual_duration_minutes, max_students, target_group_size, auto_group_enabled,
+          recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant, coppa_compliant,
+          recording_consent_obtained, data_retention_date, total_groups, total_students, access_code,
+          end_reason, teacher_notes, engagement_score, participation_rate, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionData.id, sessionData.teacher_id, sessionData.school_id, sessionData.title, sessionData.description, 
+         sessionData.status, sessionData.scheduled_start, sessionData.actual_start, sessionData.actual_end,
+         sessionData.planned_duration_minutes, sessionData.actual_duration_minutes, sessionData.max_students, 
+         sessionData.target_group_size, sessionData.auto_group_enabled, sessionData.recording_enabled, 
+         sessionData.transcription_enabled, sessionData.ai_analysis_enabled, sessionData.ferpa_compliant, 
+         sessionData.coppa_compliant, sessionData.recording_consent_obtained, sessionData.data_retention_date, 
+         sessionData.total_groups, sessionData.total_students, sessionData.access_code, sessionData.end_reason, 
+         sessionData.teacher_notes, sessionData.engagement_score, sessionData.participation_rate, 
+         sessionData.created_at, sessionData.updated_at]
       );
       createdTestData.sessionIds.push(testSessionId);
 
@@ -353,11 +361,18 @@ describe('Analytics Computation - Real Database Integration', () => {
       
       await databricksService.query(
         `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-         (id, teacher_id, school_id, title, status, planned_duration_minutes, max_students, target_group_size,
-          auto_group_enabled, recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant,
-          coppa_compliant, recording_consent_obtained, total_groups, total_students,
-          engagement_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [timeoutSessionId, testTeacherId, testSchoolId, 'Timeout Test', 'ended', 30, 20, 4, true, true, true, true, true, true, true, 0, 0, 0.0, new Date(), new Date()]
+         (id, teacher_id, school_id, title, description, status, scheduled_start, actual_start, actual_end,
+          planned_duration_minutes, actual_duration_minutes, max_students, target_group_size, auto_group_enabled,
+          recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant, coppa_compliant,
+          recording_consent_obtained, data_retention_date, total_groups, total_students, access_code,
+          end_reason, teacher_notes, engagement_score, participation_rate, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [timeoutSessionId, testTeacherId, testSchoolId, 'Timeout Test', 'Timeout test session', 'ended', 
+         new Date(Date.now() - 60 * 60 * 1000), new Date(Date.now() - 30 * 60 * 1000), new Date(),
+         30, 30, 20, 4, true, true, true, true, true, true, true, 
+         new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), 0, 0,
+         'TIMEOUT', 'planned_completion', 'Timeout test session', 0.0, 0.0,
+         new Date(), new Date()]
       );
       createdTestData.sessionIds.push(timeoutSessionId);
 
@@ -387,11 +402,18 @@ describe('Analytics Computation - Real Database Integration', () => {
       // Create session
       await databricksService.query(
         `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-         (id, teacher_id, school_id, title, status, planned_duration_minutes, max_students, target_group_size,
-          auto_group_enabled, recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant,
-          coppa_compliant, recording_consent_obtained, total_groups, total_students,
-          engagement_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [fallbackSessionId, testTeacherId, testSchoolId, 'Fallback Test', 'ended', 30, 20, 4, true, true, true, true, true, true, true, 2, 8, 72.5, new Date(), new Date()]
+         (id, teacher_id, school_id, title, description, status, scheduled_start, actual_start, actual_end,
+          planned_duration_minutes, actual_duration_minutes, max_students, target_group_size, auto_group_enabled,
+          recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant, coppa_compliant,
+          recording_consent_obtained, data_retention_date, total_groups, total_students, access_code,
+          end_reason, teacher_notes, engagement_score, participation_rate, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [fallbackSessionId, testTeacherId, testSchoolId, 'Fallback Test', 'Fallback test session', 'ended',
+         new Date(Date.now() - 60 * 60 * 1000), new Date(Date.now() - 30 * 60 * 1000), new Date(),
+         30, 30, 20, 4, true, true, true, true, true, true, true,
+         new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), 2, 8,
+         'FALLBACK', 'planned_completion', 'Fallback test session', 72.5, 85.0,
+         new Date(), new Date()]
       );
       createdTestData.sessionIds.push(fallbackSessionId);
 
@@ -492,18 +514,21 @@ describe('Analytics Computation - Real Database Integration', () => {
       );
       createdTestData.groupIds.push(problematicGroupId);
 
-      // Execute analytics computation
-      const result = await analyticsComputationService.computeSessionAnalytics(partialSessionId);
-      
-      // Should get some result (partial success, failure, or success)
-      if (result) {
-        expect(result.sessionAnalyticsOverview).toBeDefined();
-        expect(result.sessionAnalyticsOverview.sessionId).toBe(partialSessionId);
-        expect(result.computationMetadata.status).toMatch(/completed|partial|failed/);
+      // Execute analytics computation - now throws error instead of returning null
+      try {
+        const result = await analyticsComputationService.computeSessionAnalytics(partialSessionId);
         
-        console.log(`✅ Partial analytics test completed with status: ${result.computationMetadata.status}`);
-      } else {
-        console.log('✅ Analytics computation returned null due to problematic data');
+        // If we get here, computation succeeded (result is not null)
+        expect(result).toBeDefined();
+        expect(result!.sessionAnalyticsOverview).toBeDefined();
+        expect(result!.sessionAnalyticsOverview.sessionId).toBe(partialSessionId);
+        expect(result!.computationMetadata.status).toMatch(/completed|partial|failed/);
+        
+        console.log(`✅ Partial analytics test completed with status: ${result!.computationMetadata.status}`);
+      } catch (error: any) {
+        // Expected behavior - service now throws errors instead of returning null
+        console.log('✅ Analytics computation failed as expected with error:', error.message);
+        expect(error.message).toContain('Analytics computation failed for session');
       }
 
       console.log('✅ Partial failure recovery working correctly');
@@ -520,11 +545,17 @@ describe('Analytics Computation - Real Database Integration', () => {
         // Create minimal sessions
         await databricksService.query(
           `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-           (id, teacher_id, school_id, title, status, planned_duration_minutes, max_students, target_group_size,
-            auto_group_enabled, recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant,
-            coppa_compliant, recording_consent_obtained, total_groups, total_students,
-            engagement_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [sessionId, testTeacherId, testSchoolId, `Circuit Test ${i}`, 'ended', 30, 20, 4, true, true, true, true, true, true, true, 1, 4, 65.0, new Date(), new Date()]
+           (id, teacher_id, school_id, title, description, status, scheduled_start, actual_start, actual_end,
+            planned_duration_minutes, actual_duration_minutes, max_students, target_group_size, auto_group_enabled,
+            recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant, coppa_compliant,
+            recording_consent_obtained, data_retention_date, total_groups, total_students, access_code,
+            end_reason, teacher_notes, engagement_score, participation_rate, created_at, updated_at) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [sessionId, testTeacherId, testSchoolId, `Circuit Test ${i}`, `Circuit test session ${i}`, 'ended',
+           new Date(Date.now() - 60 * 60 * 1000), new Date(Date.now() - 30 * 60 * 1000), new Date(),
+           30, 30, 20, 4, true, true, true, true, true, true, true,
+           new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), 1, 4, 'CIRCUIT', 'planned_completion',
+           `Circuit test session ${i}`, 65.0, 70.0, new Date(), new Date()]
         );
         createdTestData.sessionIds.push(sessionId);
       }
@@ -571,11 +602,17 @@ describe('Analytics Computation - Real Database Integration', () => {
       // Create session with substantial data
       await databricksService.query(
         `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-         (id, teacher_id, school_id, title, status, planned_duration_minutes, max_students, target_group_size,
-          auto_group_enabled, recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant,
-          coppa_compliant, recording_consent_obtained, total_groups, total_students,
-          engagement_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [perfSessionId, testTeacherId, testSchoolId, 'Performance Test', 'ended', 60, 30, 4, true, true, true, true, true, true, true, 5, 20, 82.5, new Date(), new Date()]
+         (id, teacher_id, school_id, title, description, status, scheduled_start, actual_start, actual_end,
+          planned_duration_minutes, actual_duration_minutes, max_students, target_group_size, auto_group_enabled,
+          recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant, coppa_compliant,
+          recording_consent_obtained, data_retention_date, total_groups, total_students, access_code,
+          end_reason, teacher_notes, engagement_score, participation_rate, created_at, updated_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [perfSessionId, testTeacherId, testSchoolId, 'Performance Test', 'Performance test session', 'ended',
+         new Date(Date.now() - 60 * 60 * 1000), new Date(Date.now() - 60 * 60 * 1000), new Date(),
+         60, 60, 30, 4, true, true, true, true, true, true, true,
+         new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), 5, 20, 'PERF', 'planned_completion',
+         'Performance test session', 82.5, 85.0, new Date(), new Date()]
       );
       createdTestData.sessionIds.push(perfSessionId);
 
@@ -637,11 +674,17 @@ describe('Analytics Computation - Real Database Integration', () => {
         
         await databricksService.query(
           `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-           (id, teacher_id, school_id, title, status, planned_duration_minutes, max_students, target_group_size,
-            auto_group_enabled, recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant,
-            coppa_compliant, recording_consent_obtained, total_groups, total_students,
-            engagement_score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [sessionId, testTeacherId, testSchoolId, `Concurrent Test ${i}`, 'ended', 45, 20, 4, true, true, true, true, true, true, true, 1, 4, 75.0, new Date(), new Date()]
+           (id, teacher_id, school_id, title, description, status, scheduled_start, actual_start, actual_end,
+            planned_duration_minutes, actual_duration_minutes, max_students, target_group_size, auto_group_enabled,
+            recording_enabled, transcription_enabled, ai_analysis_enabled, ferpa_compliant, coppa_compliant,
+            recording_consent_obtained, data_retention_date, total_groups, total_students, access_code,
+            end_reason, teacher_notes, engagement_score, participation_rate, created_at, updated_at) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [sessionId, testTeacherId, testSchoolId, `Concurrent Test ${i}`, `Concurrent test session ${i}`, 'ended',
+           new Date(Date.now() - 60 * 60 * 1000), new Date(Date.now() - 45 * 60 * 1000), new Date(),
+           45, 45, 20, 4, true, true, true, true, true, true, true,
+           new Date(Date.now() + 7 * 365 * 24 * 60 * 60 * 1000), 1, 4, 'CONCURRENT', 'planned_completion',
+           `Concurrent test session ${i}`, 75.0, 80.0, new Date(), new Date()]
         );
         createdTestData.sessionIds.push(sessionId);
 

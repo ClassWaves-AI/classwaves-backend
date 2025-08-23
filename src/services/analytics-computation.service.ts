@@ -71,6 +71,15 @@ export class AnalyticsComputationService {
         totalStudents: sessionData.total_students
       });
 
+      // Validate session data completeness for analytics computation
+      console.log(`🔍 Validating session data completeness...`);
+      const validationResult = this.validateSessionDataForAnalytics(sessionData);
+      if (!validationResult.isValid) {
+        console.error(`❌ Session data validation failed:`, validationResult.errors);
+        throw new Error(`Session data incomplete for analytics: ${validationResult.errors.join(', ')}`);
+      }
+      console.log(`✅ Session data validation passed`);
+
       // Compute analytics components in parallel for performance
       console.log(`🔄 Computing analytics components in parallel...`);
       const [membershipSummary, engagementMetrics, timelineAnalysis, groupPerformance] = await Promise.all([
@@ -193,8 +202,14 @@ export class AnalyticsComputationService {
         console.error(`❌ Failed to mark computation as failed:`, markFailedError);
       }
       
-      console.error(`❌ Analytics computation failed for session ${sessionId} - RETURNING NULL`);
-      return null;
+      // Instead of returning null, throw a descriptive error for better debugging
+      const errorMessage = `Analytics computation failed for session ${sessionId} after ${processingTime}ms`;
+      const analyticsError = new Error(errorMessage);
+      (analyticsError as any).sessionId = sessionId;
+      (analyticsError as any).computationId = computationId;
+      (analyticsError as any).processingTime = processingTime;
+      (analyticsError as any).originalError = error;
+      throw analyticsError;
     }
   }
 
@@ -531,7 +546,9 @@ export class AnalyticsComputationService {
 
   private async fetchSessionData(sessionId: string): Promise<any> {
     return await databricksService.queryOne(`
-      SELECT id, teacher_id, school_id, topic, status, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?
+      SELECT id, teacher_id, school_id, title, status, actual_start, actual_end, actual_duration_minutes,
+             total_students, total_groups, engagement_score, participation_rate
+      FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?
     `, [sessionId]);
   }
 
@@ -623,6 +640,54 @@ export class AnalyticsComputationService {
       console.error(`❌ Failed to mark computation as failed:`, failureError);
       // Don't throw - this is a secondary operation
     }
+  }
+
+  /**
+   * Validate session data completeness for analytics computation
+   */
+  private validateSessionDataForAnalytics(sessionData: any): { isValid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    
+    // Required fields for analytics computation
+    const requiredFields = [
+      'id', 'teacher_id', 'school_id', 'status', 'total_students', 'total_groups',
+      'engagement_score', 'participation_rate', 'actual_start', 'actual_end'
+    ];
+    
+    for (const field of requiredFields) {
+      if (sessionData[field] === undefined || sessionData[field] === null) {
+        errors.push(`Missing required field: ${field}`);
+      }
+    }
+    
+    // Validate numeric fields
+    if (sessionData.total_students !== undefined && sessionData.total_students < 0) {
+      errors.push('total_students must be non-negative');
+    }
+    
+    if (sessionData.total_groups !== undefined && sessionData.total_groups < 0) {
+      errors.push('total_groups must be non-negative');
+    }
+    
+    if (sessionData.engagement_score !== undefined && (sessionData.engagement_score < 0 || sessionData.engagement_score > 100)) {
+      errors.push('engagement_score must be between 0 and 100');
+    }
+    
+    if (sessionData.participation_rate !== undefined && (sessionData.participation_rate < 0 || sessionData.participation_rate > 100)) {
+      errors.push('participation_rate must be between 0 and 100');
+    }
+    
+    // Validate date fields
+    if (sessionData.actual_start && sessionData.actual_end) {
+      if (new Date(sessionData.actual_start) >= new Date(sessionData.actual_end)) {
+        errors.push('actual_start must be before actual_end');
+      }
+    }
+    
+    return {
+      isValid: errors.length === 0,
+      errors
+    };
   }
 }
 

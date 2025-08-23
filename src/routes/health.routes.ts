@@ -11,17 +11,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireAnyAdmin } from '../middleware/admin-route-security.middleware';
-import {
-  getBasicHealth,
-  getGuidanceHealth,
-  getComponentHealth,
-  getSystemAlerts,
-  getPerformanceTrends,
-  resolveAlert,
-  forceHealthCheck,
-  validateAnalyticsTracking,
-  validateAnalyticsComponent
-} from '../controllers/health.controller';
+import { healthController } from '../controllers/health.controller';
 
 const router = Router();
 
@@ -33,62 +23,30 @@ const router = Router();
  * GET /api/v1/health
  * Basic health check - no authentication required
  */
-router.get('/', getBasicHealth);
-
-// ============================================================================
-// Authenticated Health Endpoints
-// ============================================================================
+router.get('/', healthController.getHealthCheck.bind(healthController));
 
 /**
- * GET /api/v1/health/guidance
- * Detailed teacher guidance system health (teachers and admins)
+ * GET /api/v1/health/detailed
+ * Detailed system health check
  */
-router.get('/guidance', authenticate, getGuidanceHealth as any);
-
-// ============================================================================
-// Admin-Only Health Endpoints
-// ============================================================================
+router.get('/detailed', healthController.getHealthCheck.bind(healthController));
 
 /**
- * GET /api/v1/health/components
- * Individual component health status (admin only)
+ * GET /api/v1/health/websocket
+ * WebSocket namespace health check - no authentication required
  */
-router.get('/components', authenticate, getComponentHealth as any);
+router.get('/websocket', healthController.getWebSocketHealth.bind(healthController));
 
 /**
- * GET /api/v1/health/alerts
- * Active system alerts (admin only)
+ * GET /api/v1/health/errors
+ * Error summary and logs
  */
-router.get('/alerts', authenticate, getSystemAlerts as any);
+router.get('/errors', healthController.getErrorSummary.bind(healthController));
 
 /**
- * GET /api/v1/health/trends
- * System performance trends (admin only)
+ * POST /api/v1/health/errors/clear
+ * Clear error logs (admin only)
  */
-router.get('/trends', authenticate, getPerformanceTrends as any);
-
-/**
- * POST /api/v1/health/alerts/:alertId/resolve
- * Resolve a system alert (admin only)
- */
-router.post('/alerts/:alertId/resolve', authenticate, resolveAlert as any);
-
-/**
- * POST /api/v1/health/check
- * Force a comprehensive health check (admin only)
- */
-router.post('/check', authenticate, forceHealthCheck as any);
-
-/**
- * POST /api/v1/health/validate/analytics
- * Validate analytics tracking system (admin only)
- */
-router.post('/validate/analytics', authenticate, validateAnalyticsTracking as any);
-
-/**
- * POST /api/v1/health/validate/analytics/:component
- * Validate specific analytics component (admin only)
- */
-router.post('/validate/analytics/:component', authenticate, validateAnalyticsComponent as any);
+router.post('/errors/clear', authenticate, healthController.clearErrorLogs.bind(healthController));
 
 export default router;

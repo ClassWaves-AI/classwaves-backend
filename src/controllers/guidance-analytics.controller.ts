@@ -1352,7 +1352,7 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       // Try to get computed analytics first (preferred path)
       const analyticsData = await databricksService.queryOne(`
         SELECT analytics_data, computed_at, status
-        FROM classwaves.analytics.session_metrics 
+        FROM classwaves.analytics.session_analytics 
         WHERE session_id = ? AND analysis_type = 'final_summary'
         ORDER BY computed_at DESC 
         LIMIT 1

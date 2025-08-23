@@ -522,15 +522,15 @@ export async function secureLogout(req: Request, res: Response): Promise<Respons
 export async function generateTestTokenHandler(req: Request, res: Response): Promise<Response> {
   console.log('🔧 DEBUG: Starting generateTestTokenHandler');
   
-  // Only allow in test environment
-  if (process.env.NODE_ENV !== 'test') {
+  // Allow in test and development environments
+  if (process.env.NODE_ENV === 'production') {
     console.log('🔧 DEBUG: Environment check failed - NODE_ENV:', process.env.NODE_ENV);
     return res.status(404).json({
       error: 'NOT_FOUND',
-      message: 'Endpoint not available in this environment',
+      message: 'Endpoint not available in production environment',
     });
   }
-  console.log('🔧 DEBUG: Environment check passed - NODE_ENV: test');
+  console.log('🔧 DEBUG: Environment check passed - NODE_ENV:', process.env.NODE_ENV);
 
   try {
     const { secretKey } = req.body;

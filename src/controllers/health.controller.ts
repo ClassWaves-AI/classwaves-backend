@@ -3,389 +3,413 @@
  * 
  * REST endpoints for monitoring system health:
  * - GET /api/v1/health - Overall system health
+ * - GET /api/v1/health/websocket - WebSocket namespace health
  * - GET /api/v1/health/guidance - Teacher guidance system health
  * - GET /api/v1/health/components - Individual component health
  * - GET /api/v1/health/alerts - Active system alerts
  */
 
 import { Request, Response } from 'express';
-import { guidanceSystemHealthService } from '../services/guidance-system-health.service';
-import { analyticsTrackingValidator } from '../services/analytics-tracking-validator.service';
-import { AuthRequest } from '../types/auth.types';
+import { databricksService } from '../services/databricks.service';
+import { redisService } from '../services/redis.service';
+import { errorLoggingMiddleware } from '../middleware/error-logging.middleware';
+import { getNamespacedWebSocketService } from '../services/websocket';
 
-// ============================================================================
-// System Health Endpoints
-// ============================================================================
+interface ServiceHealth {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  responseTime: number;
+  lastCheck: string;
+  details?: any;
+}
 
-/**
- * GET /api/v1/health
- * 
- * Basic health check endpoint with timeout protection
- */
-export const getBasicHealth = async (req: Request, res: Response): Promise<Response> => {
-  // Set timeout for this endpoint specifically
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Health check timeout')), 2000); // 2 second timeout
-  });
+interface SystemHealth {
+  overall: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  uptime: number;
+  memory: NodeJS.MemoryUsage;
+  services: {
+    redis: ServiceHealth;
+    databricks: ServiceHealth;
+    database: ServiceHealth;
+  };
+  errors: {
+    total: number;
+    recent: number;
+    byEndpoint: Record<string, number>;
+    byType: Record<string, number>;
+  };
+  recommendations: string[];
+}
 
-  try {
-    // Race between health check and timeout
-    const health = await Promise.race([
-      guidanceSystemHealthService.getSystemHealth(),
-      timeoutPromise
+class HealthController {
+  private static instance: HealthController;
+  private lastHealthCheck: SystemHealth | null = null;
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+
+  static getInstance(): HealthController {
+    if (!HealthController.instance) {
+      HealthController.instance = new HealthController();
+    }
+    return HealthController.instance;
+  }
+
+  private async checkRedisHealth(): Promise<ServiceHealth> {
+    const startTime = Date.now();
+    try {
+      await redisService.ping();
+      const responseTime = Date.now() - startTime;
+      
+      return {
+        status: 'healthy',
+        responseTime,
+        lastCheck: new Date().toISOString(),
+        details: {
+          connection: 'active',
+          memory: 'available',
+          keys: 'available'
+        }
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        responseTime: Date.now() - startTime,
+        lastCheck: new Date().toISOString(),
+        details: { error: error instanceof Error ? error.message : String(error) }
+      };
+    }
+  }
+
+  private async checkDatabricksHealth(): Promise<ServiceHealth> {
+    const startTime = Date.now();
+    try {
+      const result = await databricksService.query('SELECT 1 as health_check, current_timestamp() as server_time');
+      const responseTime = Date.now() - startTime;
+      
+      return {
+        status: 'healthy',
+        responseTime,
+        lastCheck: new Date().toISOString(),
+        details: {
+          connection: 'active',
+          serverTime: result[0]?.server_time,
+          warehouse: 'connected'
+        }
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        responseTime: Date.now() - startTime,
+        lastCheck: new Date().toISOString(),
+        details: { error: error instanceof Error ? error.message : String(error) }
+      };
+    }
+  }
+
+  private async checkDatabaseHealth(): Promise<ServiceHealth> {
+    const startTime = Date.now();
+    try {
+      // Check if critical tables exist and are accessible
+      const criticalTables = [
+        'classwaves.analytics.session_analytics',
+        'classwaves.analytics.session_metrics',
+        'classwaves.sessions.classroom_sessions',
+        'classwaves.users.teachers'
+      ];
+
+      const tableChecks = await Promise.allSettled(
+        criticalTables.map(async (table) => {
+          const result = await databricksService.query(`SELECT COUNT(*) as count FROM ${table} LIMIT 1`);
+          return { table, accessible: true, count: result[0]?.count };
+        })
+      );
+
+      const responseTime = Date.now() - startTime;
+      const failedTables = tableChecks.filter(result => result.status === 'rejected');
+      
+      return {
+        status: failedTables.length === 0 ? 'healthy' : 'degraded',
+        responseTime,
+        lastCheck: new Date().toISOString(),
+        details: {
+          tables: tableChecks.map((result, index) => ({
+            table: criticalTables[index],
+            status: result.status === 'fulfilled' ? 'accessible' : 'inaccessible',
+            details: result.status === 'fulfilled' ? result.value : result.reason
+          }))
+        }
+      };
+    } catch (error) {
+      return {
+        status: 'unhealthy',
+        responseTime: Date.now() - startTime,
+        lastCheck: new Date().toISOString(),
+        details: { error: error instanceof Error ? error.message : String(error) }
+      };
+    }
+  }
+
+  private generateRecommendations(health: SystemHealth): string[] {
+    const recommendations: string[] = [];
+
+    if (health.services.redis.status !== 'healthy') {
+      recommendations.push('Redis connection issues detected. Check Redis service and configuration.');
+    }
+
+    if (health.services.databricks.status !== 'healthy') {
+      recommendations.push('Databricks connection issues detected. Verify credentials and network connectivity.');
+    }
+
+    if (health.services.database.status !== 'healthy') {
+      recommendations.push('Database accessibility issues detected. Check table permissions and schema consistency.');
+    }
+
+    if (health.errors.total > 100) {
+      recommendations.push('High error rate detected. Review recent error logs for patterns.');
+    }
+
+    if (health.memory.heapUsed > 500 * 1024 * 1024) { // 500MB
+      recommendations.push('High memory usage detected. Consider memory optimization or restart.');
+    }
+
+    if (health.uptime > 86400) { // 24 hours
+      recommendations.push('Server has been running for over 24 hours. Consider scheduled restart for stability.');
+    }
+
+    return recommendations;
+  }
+
+  async getSystemHealth(): Promise<SystemHealth> {
+    const [redisHealth, databricksHealth, databaseHealth] = await Promise.all([
+      this.checkRedisHealth(),
+      this.checkDatabricksHealth(),
+      this.checkDatabaseHealth()
     ]);
+
+    const errorSummary = errorLoggingMiddleware.getErrorSummary();
     
-    const basicHealth = {
-      status: health.overall.status,
+    // Determine overall health
+    const serviceStatuses = [redisHealth.status, databricksHealth.status, databaseHealth.status];
+    const overall = serviceStatuses.every(s => s === 'healthy') ? 'healthy' 
+                   : serviceStatuses.some(s => s === 'unhealthy') ? 'unhealthy' 
+                   : 'degraded';
+
+    const health: SystemHealth = {
+      overall,
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
-      version: process.env.npm_package_version || '1.0.0'
+      memory: process.memoryUsage(),
+      services: {
+        redis: redisHealth,
+        databricks: databricksHealth,
+        database: databaseHealth
+      },
+      errors: {
+        total: errorSummary.totalErrors,
+        recent: errorSummary.recentErrors.length,
+        byEndpoint: errorSummary.errorsByEndpoint,
+        byType: errorSummary.errorsByType
+      },
+      recommendations: []
     };
 
-    // Return appropriate HTTP status based on health
-    const statusCode = health.overall.status === 'healthy' ? 200 : 
-                      health.overall.status === 'degraded' ? 200 : 503;
+    health.recommendations = this.generateRecommendations(health);
+    this.lastHealthCheck = health;
 
-    return res.status(statusCode).json(basicHealth);
-    
-  } catch (error) {
-    console.error('Health check failed:', error);
-    
-    // Return minimal health status if detailed check fails
-    return res.status(200).json({
-      status: 'degraded',
-      error: error instanceof Error ? error.message : 'Health check failed',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      version: process.env.npm_package_version || '1.0.0',
-      fallback: true
-    });
+    return health;
   }
-};
 
-/**
- * GET /api/v1/health/guidance
- * 
- * Detailed teacher guidance system health
- */
-export const getGuidanceHealth = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access for detailed health info
-    if (req.user?.role !== 'admin' && req.user?.role !== 'teacher') {
-      return res.status(403).json({
+  async getHealthCheck(req: Request, res: Response): Promise<Response> {
+    try {
+      const health = await this.getSystemHealth();
+      
+      const statusCode = health.overall === 'healthy' ? 200 : 
+                        health.overall === 'degraded' ? 200 : 503;
+
+      return res.status(statusCode).json({
+        success: true,
+        data: health
+      });
+    } catch (error) {
+      console.error('Health check failed:', error);
+      return res.status(503).json({
         success: false,
-        error: 'Access denied: Admin or teacher role required'
+        error: {
+          code: 'HEALTH_CHECK_FAILED',
+          message: 'Failed to perform health check',
+          details: error instanceof Error ? error.message : String(error)
+        }
       });
     }
-
-    const health = guidanceSystemHealthService.getSystemHealth();
-    
-    return res.json({
-      success: true,
-      health,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Guidance health check failed:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to retrieve guidance system health'
-    });
   }
-};
 
-/**
- * GET /api/v1/health/components
- * 
- * Individual component health status
- */
-export const getComponentHealth = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied: Admin role required'
-      });
-    }
-
-    const health = guidanceSystemHealthService.getSystemHealth();
-    const { component } = req.query;
-    
-    if (component && typeof component === 'string') {
-      const componentHealth = guidanceSystemHealthService.getComponentHealth(component);
-      if (!componentHealth) {
-        return res.status(404).json({
-          success: false,
-          error: `Component '${component}' not found`
-        });
-      }
+  async getErrorSummary(req: Request, res: Response): Promise<Response> {
+    try {
+      const errorSummary = errorLoggingMiddleware.getErrorSummary();
       
       return res.json({
         success: true,
-        component,
-        health: componentHealth,
-        timestamp: new Date().toISOString()
+        data: errorSummary
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'ERROR_SUMMARY_FAILED',
+          message: 'Failed to get error summary',
+          details: error instanceof Error ? error.message : String(error)
+        }
       });
     }
-    
-    return res.json({
-      success: true,
-      components: health.components,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Component health check failed:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to retrieve component health'
-    });
   }
-};
 
-/**
- * GET /api/v1/health/alerts
- * 
- * Active system alerts
- */
-export const getSystemAlerts = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
+  async clearErrorLogs(req: Request, res: Response): Promise<Response> {
+    try {
+      errorLoggingMiddleware.clearLogs();
+      
+      return res.json({
+        success: true,
+        message: 'Error logs cleared successfully'
+      });
+    } catch (error) {
+      return res.status(500).json({
         success: false,
-        error: 'Access denied: Admin role required'
+        error: {
+          code: 'CLEAR_LOGS_FAILED',
+          message: 'Failed to clear error logs',
+          details: error instanceof Error ? error.message : String(error)
+        }
       });
     }
-
-    const activeAlerts = guidanceSystemHealthService.getActiveAlerts();
-    const { level } = req.query;
-    
-    let filteredAlerts = activeAlerts;
-    if (level && ['warning', 'critical'].includes(level as string)) {
-      filteredAlerts = activeAlerts.filter(alert => alert.level === level);
-    }
-    
-    return res.json({
-      success: true,
-      alerts: filteredAlerts,
-      totalActive: activeAlerts.length,
-      criticalCount: activeAlerts.filter(a => a.level === 'critical').length,
-      warningCount: activeAlerts.filter(a => a.level === 'warning').length,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Failed to retrieve system alerts:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to retrieve system alerts'
-    });
   }
-};
 
-/**
- * GET /api/v1/health/trends
- * 
- * System performance trends
- */
-export const getPerformanceTrends = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
+  async getWebSocketHealth(req: Request, res: Response): Promise<Response> {
+    try {
+      const startTime = Date.now();
+      
+      // Get WebSocket service instance
+      const wsService = getNamespacedWebSocketService();
+      if (!wsService) {
+        return res.status(503).json({
+          success: false,
+          error: {
+            code: 'WEBSOCKET_SERVICE_UNAVAILABLE',
+            message: 'WebSocket service is not initialized',
+            timestamp: new Date().toISOString()
+          }
+        });
+      }
+
+      // Get namespace information
+      const io = wsService.getIO();
+      const sessionsService = wsService.getSessionsService();
+      const guidanceService = wsService.getGuidanceService();
+
+      // Check Redis connection status
+      const redisConnected = redisService.isConnected();
+      const redisAdapter = redisConnected ? 'enabled' : 'degraded';
+
+      // Get namespace statistics
+      const sessionsNamespace = io.of('/sessions');
+      const guidanceNamespace = io.of('/guidance');
+
+      const sessionsStats = {
+        status: 'healthy' as const,
+        namespace: '/sessions',
+        purpose: 'Session management and real-time updates',
+        connectedUsers: sessionsNamespace.sockets.size,
+        connectedSockets: sessionsNamespace.sockets.size,
+        rooms: Array.from(sessionsNamespace.adapter.rooms.keys())
+      };
+
+      const guidanceStats = {
+        status: 'healthy' as const,
+        namespace: '/guidance',
+        purpose: 'Teacher guidance and AI insights',
+        connectedUsers: guidanceNamespace.sockets.size,
+        connectedSockets: guidanceNamespace.sockets.size,
+        rooms: Array.from(guidanceNamespace.adapter.rooms.keys())
+      };
+
+      // Calculate overall status
+      const overallStatus = redisConnected ? 'healthy' : 'degraded';
+
+      // Performance metrics (simplified for now)
+      const performance = {
+        totalConnections: sessionsNamespace.sockets.size + guidanceNamespace.sockets.size,
+        totalReconnections: 0, // Would need to track this in the service
+        averageResponseTime: Math.max(1, Date.now() - startTime), // Ensure minimum of 1ms
+        messageThroughput: 0, // Would need to track this in the service
+        errorRate: 0 // Would need to track this in the service
+      };
+
+      const healthData = {
+        status: overallStatus,
+        timestamp: new Date().toISOString(),
+        uptime: Math.floor(process.uptime()),
+        namespaces: {
+          sessions: sessionsStats,
+          guidance: guidanceStats
+        },
+        redis: {
+          connected: redisConnected,
+          adapter: redisAdapter,
+          details: {
+            connection: redisConnected ? 'active' : 'disconnected',
+            adapter: redisAdapter
+          }
+        },
+        performance
+      };
+
+      const statusCode = overallStatus === 'healthy' ? 200 : 200; // Always return 200 for health endpoints
+
+      return res.status(statusCode).json({
+        success: true,
+        data: healthData
+      });
+
+    } catch (error) {
+      console.error('WebSocket health check failed:', error);
+      return res.status(503).json({
         success: false,
-        error: 'Access denied: Admin role required'
+        error: {
+          code: 'WEBSOCKET_HEALTH_CHECK_FAILED',
+          message: 'Failed to perform WebSocket health check',
+          details: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString()
+        }
       });
     }
-
-    const { timeframe = 'hour' } = req.query;
-    const validTimeframes = ['hour', 'day', 'week'];
-    
-    if (!validTimeframes.includes(timeframe as string)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid timeframe. Must be one of: hour, day, week'
-      });
-    }
-    
-    const trends = guidanceSystemHealthService.getPerformanceTrends(timeframe as any);
-    
-    return res.json({
-      success: true,
-      trends,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Failed to retrieve performance trends:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to retrieve performance trends'
-    });
   }
-};
 
-/**
- * POST /api/v1/health/alerts/:alertId/resolve
- * 
- * Resolve a system alert
- */
-export const resolveAlert = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied: Admin role required'
-      });
+  startPeriodicHealthCheck(intervalMs: number = 300000): void { // 5 minutes default
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
     }
 
-    const { alertId } = req.params;
-    const { resolution } = req.body;
-    
-    if (!resolution || typeof resolution !== 'string') {
-      return res.status(400).json({
-        success: false,
-        error: 'Resolution description is required'
-      });
-    }
-    
-    await guidanceSystemHealthService.resolveAlert(alertId, resolution);
-    
-    return res.json({
-      success: true,
-      message: 'Alert resolved successfully',
-      alertId,
-      resolvedBy: req.user.id,
-      resolvedAt: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Failed to resolve alert:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Failed to resolve alert'
-    });
+    this.healthCheckInterval = setInterval(async () => {
+      try {
+        const health = await this.getSystemHealth();
+        
+        if (health.overall !== 'healthy') {
+          console.warn('⚠️ System health degraded:', {
+            overall: health.overall,
+            recommendations: health.recommendations,
+            errors: health.errors.total
+          });
+        }
+      } catch (error) {
+        console.error('❌ Periodic health check failed:', error);
+      }
+    }, intervalMs);
   }
-};
 
-/**
- * POST /api/v1/health/check
- * 
- * Force a comprehensive health check
- */
-export const forceHealthCheck = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied: Admin role required'
-      });
+  stopPeriodicHealthCheck(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
     }
-
-    console.log(`🏥 Manual health check initiated by admin ${req.user.id}`);
-    
-    const health = await guidanceSystemHealthService.performHealthCheck();
-    
-    return res.json({
-      success: true,
-      message: 'Health check completed',
-      health,
-      initiatedBy: req.user.id,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Manual health check failed:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Health check failed',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
   }
-};
+}
 
-/**
- * POST /api/v1/health/validate/analytics
- * 
- * Validate analytics tracking system
- */
-export const validateAnalyticsTracking = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied: Admin role required'
-      });
-    }
-
-    console.log(`📊 Analytics validation initiated by admin ${req.user.id}`);
-    
-    const validationReport = await analyticsTrackingValidator.validateAnalyticsTracking();
-    
-    // Cleanup test data
-    await analyticsTrackingValidator.cleanup();
-    
-    return res.json({
-      success: validationReport.overall.passed,
-      message: 'Analytics validation completed',
-      report: validationReport,
-      initiatedBy: req.user.id,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Analytics validation failed:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Analytics validation failed',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-};
-
-/**
- * POST /api/v1/health/validate/analytics/:component
- * 
- * Validate specific analytics component
- */
-export const validateAnalyticsComponent = async (req: AuthRequest, res: Response): Promise<Response> => {
-  try {
-    // Verify user has admin access
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied: Admin role required'
-      });
-    }
-
-    const { component } = req.params;
-    
-    console.log(`📊 Analytics component validation initiated by admin ${req.user.id}: ${component}`);
-    
-    const results = await analyticsTrackingValidator.testComponent(component);
-    
-    return res.json({
-      success: results.every(r => r.passed),
-      message: `Component validation completed: ${component}`,
-      results,
-      component,
-      initiatedBy: req.user.id,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error(`Analytics component validation failed for ${req.params.component}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: 'Component validation failed',
-      component: req.params.component,
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-};
+export const healthController = HealthController.getInstance();

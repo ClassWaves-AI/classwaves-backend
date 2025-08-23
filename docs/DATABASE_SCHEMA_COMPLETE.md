@@ -1,6 +1,6 @@
 # ClassWaves Database Schema Documentation
 
-**Generated:** 2025-08-22T21:14:42.884Z
+**Generated:** 2025-08-23T06:47:03.561Z
 **Purpose:** Complete documentation of all database schemas, tables, and columns
 
 ## Overview
@@ -16,15 +16,15 @@ This document provides a comprehensive view of the ClassWaves database structure
 |--------|--------|------------|------------------|---------------|
 | `admin` | 2 | 1 | 1 | 2025-08-03 |
 | `ai_insights` | 5 | 0 | 0 | Unknown |
-| `analytics` | 10 | 153 | 6 | 2025-08-22 |
+| `analytics` | 10 | 155 | 6 | 2025-08-23 |
 | `audio` | 1 | 0 | 0 | Unknown |
 | `communication` | 1 | 0 | 0 | Unknown |
-| `compliance` | 4 | 1,941 | 1 | 2025-08-22 |
+| `compliance` | 4 | 1,961 | 1 | 2025-08-22 |
 | `information_schema` | 28 | 0 | 0 | Unknown |
 | `notifications` | 2 | 0 | 0 | Unknown |
 | `operational` | 3 | 0 | 0 | Unknown |
-| `sessions` | 5 | 1,417 | 5 | 2025-08-22 |
-| `users` | 7 | 167 | 4 | 2025-08-22 |
+| `sessions` | 5 | 1,439 | 5 | 2025-08-23 |
+| `users` | 7 | 175 | 4 | 2025-08-23 |
 
 
 ---
@@ -327,8 +327,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.analytics.session_analytics_cache`
 **Columns:** 25
-**Row Count:** 11
-**Last Updated:** 2025-08-22
+**Row Count:** 13
+**Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -556,7 +556,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.compliance.audit_log`
 **Columns:** 17
-**Row Count:** 1,941
+**Row Count:** 1,961
 **Last Updated:** 2025-08-22
 
 | Column | Type | Nullable | Comment |
@@ -1407,8 +1407,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.sessions.transcriptions`
 **Columns:** 17
-**Row Count:** 144
-**Last Updated:** 2025-08-22
+**Row Count:** 166
+**Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1495,8 +1495,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.users.schools`
 **Columns:** 19
-**Row Count:** 65
-**Last Updated:** 2025-08-22
+**Row Count:** 67
+**Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1572,8 +1572,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.users.students`
 **Columns:** 14
-**Row Count:** 31
-**Last Updated:** 2025-08-22
+**Row Count:** 35
+**Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1637,8 +1637,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.users.teachers`
 **Columns:** 21
-**Row Count:** 69
-**Last Updated:** 2025-08-22
+**Row Count:** 71
+**Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|

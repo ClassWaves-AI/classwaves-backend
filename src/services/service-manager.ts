@@ -40,8 +40,8 @@ class ServiceManager {
       allHealthy = false;
     }
 
-    // Initialize Databricks (skip in test environment)
-    if (process.env.NODE_ENV !== 'test' && process.env.DATABRICKS_ENABLED !== 'false') {
+    // Initialize Databricks (skip in test environment unless explicitly enabled)
+    if ((process.env.NODE_ENV !== 'test' || process.env.DATABRICKS_ENABLED === 'true') && process.env.DATABRICKS_ENABLED !== 'false') {
       try {
         this.updateServiceStatus('databricks', 'initializing');
         await databricksService.connect();
@@ -53,8 +53,13 @@ class ServiceManager {
         allHealthy = false;
       }
     } else {
-      this.updateServiceStatus('databricks', 'healthy', 'Skipped in test environment');
-      console.log('⚠️ Databricks service skipped (test environment)');
+      if (process.env.NODE_ENV === 'test' && process.env.DATABRICKS_ENABLED === 'true') {
+        this.updateServiceStatus('databricks', 'unhealthy', 'Failed to initialize in test mode');
+        console.log('❌ Databricks service failed to initialize in test mode');
+      } else {
+        this.updateServiceStatus('databricks', 'healthy', 'Skipped in test environment');
+        console.log('⚠️ Databricks service skipped (test environment)');
+      }
     }
 
     // Initialize Email Service

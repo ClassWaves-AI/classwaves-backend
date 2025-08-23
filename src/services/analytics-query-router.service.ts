@@ -40,28 +40,28 @@ export class AnalyticsQueryRouterService {
   private readonly strategies = {
     'dashboard_metrics': {
       name: 'dashboard_metrics_cache',
-      tableName: 'dashboard_metrics_hourly',
+      tableName: 'classwaves.users.dashboard_metrics_hourly',
       priority: 1,
       queryPatterns: ['dashboard_metrics', 'hourly_metrics', 'school_performance'],
       fallbackStrategy: 'source'
     },
     'session_analytics': {
       name: 'session_analytics_cache',
-      tableName: 'session_analytics_cache',
+      tableName: 'classwaves.analytics.session_analytics_cache',
       priority: 2,
       queryPatterns: ['session_analytics', 'session_overview', 'session_metrics'], // ✅ Updated to include correct table name
       fallbackStrategy: 'source'
     },
     'group_analytics': {
       name: 'group_analytics_cache',
-      tableName: 'group_metrics', // ✅ Updated to use correct table name
+      tableName: 'classwaves.analytics.group_metrics', // ✅ Updated to use correct table name
       priority: 3,
       queryPatterns: ['group_analytics', 'group_performance', 'group_metrics'],
       fallbackStrategy: 'source'
     },
     'teacher_analytics': {
       name: 'teacher_analytics_cache',
-      tableName: 'teacher_analytics_summary',
+      tableName: 'classwaves.users.teacher_analytics_summary',
       priority: 4,
       queryPatterns: ['teacher_analytics', 'teacher_performance', 'teacher_metrics'],
       fallbackStrategy: 'source'
@@ -76,83 +76,25 @@ export class AnalyticsQueryRouterService {
     timeframe: string,
     includeComparisons: boolean = false
   ): Promise<any> {
-    const queryStartTime = Date.now();
-    const decision = await this.makeRoutingDecision('teacher_analytics', { teacherId, timeframe });
-
+    console.log('🔄 Starting teacher analytics query routing');
+    console.log('🔧 DEBUG: Bypassing routing decision for debugging');
+    
     try {
-      let result;
+      // TEMPORARILY BYPASS ROUTING DECISION FOR DEBUGGING
+      console.log('🔧 DEBUG: Going directly to source query');
+      const result = await this.executeTeacherAnalyticsFromSource(teacherId, timeframe, includeComparisons);
       
-      if (decision.usePreAggregated) {
-        result = await this.executeTeacherAnalyticsFromSummary(teacherId, timeframe, includeComparisons);
-        
-        // Record successful pre-aggregated query
-        queryCostMonitorService.recordQuery({
-          queryId: `teacher_analytics_${teacherId}_${Date.now()}`,
-          queryName: 'teacher_analytics_pre_aggregated',
-          executionTime: Date.now() - queryStartTime,
-          dataScannedGB: 2.5, // Estimated based on pre-aggregated table size
-          queryType: 'analytics',
-          cacheHit: false,
-          optimizationUsed: 'pre-aggregation'
-        });
-        
-      } else {
-        result = await this.executeTeacherAnalyticsFromSource(teacherId, timeframe, includeComparisons);
-        
-        // Record fallback to source query
-        queryCostMonitorService.recordQuery({
-          queryId: `teacher_analytics_source_${teacherId}_${Date.now()}`,
-          queryName: 'teacher_analytics_source',
-          executionTime: Date.now() - queryStartTime,
-          dataScannedGB: 18.5, // Estimated based on source tables scan
-          queryType: 'analytics',
-          cacheHit: false,
-          optimizationUsed: 'none'
-        });
-      }
-
-      analyticsLogger.logOperation(
-        'teacher_analytics_query_routed',
-        decision.tableName,
-        queryStartTime,
-        true,
-        {
-          teacherId,
-          metadata: {
-            routingDecision: decision.reason,
-            usePreAggregated: decision.usePreAggregated,
-            estimatedSavings: decision.estimatedSavings,
-            resultCount: Array.isArray(result) ? result.length : 1
-          }
-        }
-      );
-
+      console.log('🔧 DEBUG: Source query completed successfully');
       return result;
       
     } catch (error) {
-      // If pre-aggregated query fails, fallback to source
-      if (decision.usePreAggregated) {
-        console.warn('Pre-aggregated query failed, falling back to source:', error);
-        
-        const fallbackResult = await this.executeTeacherAnalyticsFromSource(teacherId, timeframe, includeComparisons);
-        
-        analyticsLogger.logOperation(
-          'teacher_analytics_fallback',
-          'source_tables',
-          queryStartTime,
-          true,
-          {
-            teacherId,
-            metadata: {
-              originalError: error instanceof Error ? error.message : String(error),
-              fallbackSuccessful: true
-            }
-          }
-        );
-        
-        return fallbackResult;
-      }
-      
+      console.error('❌ Teacher analytics query failed:', error);
+      console.error('🔧 DEBUG: Error details:', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        teacherId,
+        timeframe
+      });
       throw error;
     }
   }
@@ -380,7 +322,7 @@ export class AnalyticsQueryRouterService {
       let freshnessQuery = '';
       
       switch (tableName) {
-        case 'teacher_analytics_summary':
+        case 'classwaves.users.teacher_analytics_summary':
           freshnessQuery = `
             SELECT TIMESTAMPDIFF(HOUR, MAX(calculated_at), CURRENT_TIMESTAMP()) as age_hours
             FROM ${tableName}
@@ -388,7 +330,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'dashboard_metrics_hourly':
+        case 'classwaves.users.dashboard_metrics_hourly':
           freshnessQuery = `
             SELECT TIMESTAMPDIFF(HOUR, MAX(metric_hour), CURRENT_TIMESTAMP()) as age_hours
             FROM ${tableName}
@@ -396,7 +338,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'session_analytics_cache':
+        case 'classwaves.analytics.session_analytics_cache':
           freshnessQuery = `
             SELECT TIMESTAMPDIFF(HOUR, MAX(last_updated), CURRENT_TIMESTAMP()) as age_hours
             FROM ${tableName}
@@ -404,7 +346,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'group_metrics':
+        case 'classwaves.analytics.group_metrics':
           freshnessQuery = `
             SELECT TIMESTAMPDIFF(HOUR, MAX(calculation_timestamp), CURRENT_TIMESTAMP()) as age_hours
             FROM ${tableName}
@@ -459,7 +401,7 @@ export class AnalyticsQueryRouterService {
       let countQuery = '';
       
       switch (tableName) {
-        case 'teacher_analytics_summary':
+        case 'classwaves.users.teacher_analytics_summary':
           countQuery = `
             SELECT COUNT(*) as record_count
             FROM ${tableName}
@@ -467,7 +409,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'dashboard_metrics_hourly':
+        case 'classwaves.users.dashboard_metrics_hourly':
           countQuery = `
             SELECT COUNT(*) as record_count
             FROM ${tableName}
@@ -475,7 +417,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'session_analytics_cache':
+        case 'classwaves.analytics.session_analytics_cache':
           countQuery = `
             SELECT COUNT(*) as record_count
             FROM ${tableName}
@@ -575,7 +517,7 @@ export class AnalyticsQueryRouterService {
           expires_at,
           last_updated,
           created_at
-        FROM classwaves.users.session_analytics_cache
+        FROM classwaves.analytics.session_analytics_cache
         WHERE session_id = ?
       `;
 
@@ -592,12 +534,51 @@ export class AnalyticsQueryRouterService {
   // Fallback methods (source table queries) - use existing analytics tables
   private async executeTeacherAnalyticsFromSource(teacherId: string, timeframe: string, includeComparisons: boolean): Promise<any> {
     console.log('🔄 Executing teacher analytics from source tables');
+    console.log('🔧 DEBUG: teacherId:', teacherId, 'timeframe:', timeframe);
     
     try {
       const interval = this.getDatabricksIntervalFromTimeframe(timeframe);
+      console.log('🔧 DEBUG: Calculated interval:', interval);
       
-      // Query existing session_metrics table for basic teacher analytics
-      // ✅ FIXED: Join with classroom_sessions to get teacher_id and use correct field names
+      // First, test a simple query to verify Databricks connection
+      console.log('🔧 DEBUG: Testing basic Databricks connection...');
+      try {
+        const testResult = await databricksService.query('SELECT 1 as test_value');
+        console.log('🔧 DEBUG: Basic Databricks query successful:', testResult);
+      } catch (testError) {
+        console.error('❌ Basic Databricks query failed:', testError);
+        throw new Error(`Databricks connection test failed: ${testError}`);
+      }
+      
+      // Now test if the classroom_sessions table exists and has data
+      console.log('🔧 DEBUG: Testing classroom_sessions table access...');
+      try {
+        const sessionsTest = await databricksService.query(`
+          SELECT COUNT(*) as session_count 
+          FROM classwaves.sessions.classroom_sessions 
+          WHERE teacher_id = ?
+        `, [teacherId]);
+        console.log('🔧 DEBUG: Classroom sessions query successful:', sessionsTest);
+      } catch (sessionsError) {
+        console.error('❌ Classroom sessions query failed:', sessionsError);
+        throw new Error(`Classroom sessions query failed: ${sessionsError}`);
+      }
+      
+      // Now test if the session_metrics table exists and has data
+      console.log('🔧 DEBUG: Testing session_metrics table access...');
+      try {
+        const metricsTest = await databricksService.query(`
+          SELECT COUNT(*) as metrics_count 
+          FROM classwaves.analytics.session_metrics
+        `);
+        console.log('🔧 DEBUG: Session metrics query successful:', metricsTest);
+      } catch (metricsError) {
+        console.error('❌ Session metrics query failed:', metricsError);
+        throw new Error(`Session metrics query failed: ${metricsError}`);
+      }
+      
+      // If we get here, both tables are accessible, so try the full query
+      console.log('🔧 DEBUG: Executing full analytics query...');
       const sessionMetrics = await databricksService.query(`
         SELECT 
           sm.session_id,
@@ -611,9 +592,12 @@ export class AnalyticsQueryRouterService {
         FROM classwaves.analytics.session_metrics sm
         JOIN classwaves.sessions.classroom_sessions cs ON sm.session_id = cs.id
         WHERE cs.teacher_id = ?
-          AND DATE(sm.created_at) >= date_sub(CURRENT_DATE(), ${interval})
+          AND sm.created_at >= DATEADD(day, -${interval}, CURRENT_DATE())
         ORDER BY sm.created_at DESC
       `, [teacherId]);
+      
+      console.log('🔧 DEBUG: Full SQL query completed, result count:', sessionMetrics?.length || 0);
+      console.log('🔧 DEBUG: First result sample:', sessionMetrics?.[0]);
 
       // Return simplified analytics data
       return {
@@ -627,22 +611,29 @@ export class AnalyticsQueryRouterService {
           categoryBreakdown: {}
         },
         effectivenessData: {
-          overallScore: sessionMetrics.length > 0 ? 75 : 0,
+          overallScore: sessionMetrics && sessionMetrics.length > 0 ? 75 : 0,
           engagementImprovement: 0,
           outcomeImprovement: 0,
           discussionImprovement: 0,
           adaptationSpeed: 0
         },
         sessionSummaries: {
-          totalSessions: sessionMetrics.length,
-          averageQuality: sessionMetrics.length > 0 ? 78 : 0,
+          totalSessions: sessionMetrics ? sessionMetrics.length : 0,
+          averageQuality: sessionMetrics && sessionMetrics.length > 0 ? 78 : 0,
           topStrategies: [],
           improvementAreas: [],
           trends: {}
         }
       };
     } catch (error) {
-      console.error('Failed to execute teacher analytics from source:', error);
+      console.error('❌ Failed to execute teacher analytics from source:', error);
+      console.error('🔧 DEBUG: Error details:', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        teacherId,
+        timeframe
+      });
+      
       // Return minimal fallback data
       return {
         teacherId,

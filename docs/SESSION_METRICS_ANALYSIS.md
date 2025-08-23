@@ -1,6 +1,6 @@
 # Session Metrics Data Flow Analysis
 
-**Generated:** 2025-08-22T21:14:42.912Z
+**Generated:** 2025-08-23T06:47:03.569Z
 **Purpose:** Analyze how session metrics should flow across different tables
 
 ## Key Tables for Session Data

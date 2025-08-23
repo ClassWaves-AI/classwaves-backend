@@ -2,6 +2,7 @@ import { createServer } from 'http';
 import app from './app';
 import { serviceManager } from './services/service-manager';
 import { initializeNamespacedWebSocket } from './services/websocket';
+import { healthController } from './controllers/health.controller';
 
 // Robust port parsing to guard against malformed env (e.g., '3000DATABRICKS_...')
 const envPort = process.env.PORT;
@@ -54,6 +55,10 @@ async function startServer() {
       console.log(`📍 Environment: ${process.env.NODE_ENV}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/api/v1/health`);
       console.log(`🔌 WebSocket endpoint: ws://localhost:${PORT}`);
+      
+      // Start periodic health monitoring
+      healthController.startPeriodicHealthCheck();
+      console.log('🏥 Periodic health monitoring started (5-minute intervals)');
       
       // Log final service health status
       if (serviceManager.isHealthy()) {

@@ -26,13 +26,15 @@ import { openAIWhisperService } from './services/openai-whisper.service';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
+import { errorLoggingHandler } from './middleware/error-logging.middleware';
 import client from 'prom-client';
 
 const app = express();
 
 // In test environment, trust proxy so req.ip parsing matches x-forwarded-for
 if (process.env.NODE_ENV === 'test') {
-  app.set('trust proxy', true);
+  // Use more restrictive trust proxy setting to avoid rate limiter validation errors
+  app.set('trust proxy', 'loopback');
 }
 
 // CRITICAL DEBUG: Add global error handling to catch uncaught exceptions
@@ -340,8 +342,8 @@ app.get('/api/v1/health', async (_req, res) => {
       checks.services.redis = 'unhealthy';
     }
 
-    // Skip Databricks health check in test mode
-    if (process.env.NODE_ENV === 'test' || process.env.DATABRICKS_ENABLED === 'false') {
+    // Skip Databricks health check in test mode unless explicitly enabled
+    if ((process.env.NODE_ENV === 'test' && process.env.DATABRICKS_ENABLED !== 'true') || process.env.DATABRICKS_ENABLED === 'false') {
       checks.services.databricks = 'disabled';
     } else {
       try {
@@ -409,6 +411,9 @@ app.use((_req, res) => {
     message: 'The requested resource was not found',
   });
 });
+
+// Error logging middleware (must come before error handling)
+app.use(errorLoggingHandler);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
