@@ -1,7 +1,9 @@
-import 'dotenv/config';
-
 // Set test environment
 process.env.NODE_ENV = 'test';
+
+// Load test-specific environment variables
+import { config } from 'dotenv';
+config({ path: '.env.test' });
 
 // Extend Jest matchers
 declare global {
