@@ -12,6 +12,8 @@ import {
 import { databricksService } from '../../../services/databricks.service';
 import { websocketService } from '../../../services/websocket.service';
 import { redisService } from '../../../services/redis.service';
+import { RetryService } from '../../../services/retry.service';
+import { queryCacheService } from '../../../services/query-cache.service';
 import { 
   createMockRequest, 
   createMockResponse, 
@@ -25,6 +27,9 @@ import { AuthRequest } from '../../../types/auth.types';
 jest.mock('../../../services/databricks.service');
 jest.mock('../../../services/websocket.service');
 jest.mock('../../../services/redis.service');
+jest.mock('../../../utils/analytics-logger');
+jest.mock('../../../services/retry.service');
+jest.mock('../../../services/query-cache.service');
 
 describe('Session Controller', () => {
   let mockReq: Partial<Request>;
@@ -457,9 +462,108 @@ describe('Session Controller', () => {
     });
   });
 
-  describe('Session Lifecycle', () => {
-    it('should start session without requiring student presence', async () => {
+  describe('Session Gating', () => {
+    it('should return 409 when groups are not ready (SG-BE-01, SG-BE-03)', async () => {
       const sessionId = 'session-123';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'created',
+        title: 'Test Session'
+      };
+
+      // Mock RetryService.retryDatabaseOperation calls in sequence
+      (RetryService.retryDatabaseOperation as jest.Mock)
+        .mockResolvedValueOnce(mockSession)  // Session lookup
+        .mockResolvedValueOnce({ ready_groups_count: 1 })  // Ready groups count (1 ready)
+        .mockResolvedValueOnce({ total_groups_count: 3 })  // Total groups count (3 total)
+        .mockResolvedValueOnce([  // Not ready groups details
+          { id: 'group-1', name: 'Group A' },
+          { id: 'group-2', name: 'Group B' }
+        ]);
+
+      await startSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(mockRes.status).toHaveBeenCalledWith(409);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: false,
+        error: {
+          code: 'GROUPS_NOT_READY',
+          message: 'Cannot start session: 2 of 3 groups are not ready',
+          readyCount: 1,
+          totalCount: 3,
+          notReadyGroups: [
+            { id: 'group-1', name: 'Group A' },
+            { id: 'group-2', name: 'Group B' }
+          ]
+        }
+      });
+
+      // Should not update session status when gated
+      expect(databricksService.update).not.toHaveBeenCalled();
+    });
+
+    it('should start session when all groups are ready (SG-BE-01)', async () => {
+      const sessionId = 'session-all-ready';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'created',
+        title: 'All Ready Session',
+        school_id: 'school-123'
+      };
+
+      const mockFullSession = {
+        ...mockSession,
+        status: 'active',
+        groups: []
+      };
+
+      // Mock ALL RetryService calls in sequence
+      (RetryService.retryDatabaseOperation as jest.Mock)
+        .mockResolvedValueOnce(mockSession)  // 1. Session lookup
+        .mockResolvedValueOnce({ ready_groups_count: 2 })  // 2. Ready groups count 
+        .mockResolvedValueOnce({ total_groups_count: 2 })  // 3. Total groups count - all ready!
+        .mockResolvedValueOnce(true)  // 4. Update session to active
+        .mockResolvedValueOnce(true)  // 5. Record audit log 
+        .mockResolvedValueOnce(mockFullSession);  // 6. Get session with groups
+
+      // Mock other retry methods
+      (RetryService.retryRedisOperation as jest.Mock).mockResolvedValue(true);
+      (RetryService.withRetry as jest.Mock).mockResolvedValue(true);
+
+      // Mock other services
+      (databricksService.update as jest.Mock).mockResolvedValue(true);
+      (databricksService.recordAuditLog as jest.Mock).mockResolvedValue(true);
+      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(true);
+
+      // Mock WebSocket service
+      const mockEmit = jest.fn();
+      const mockTo = jest.fn().mockReturnValue({ emit: mockEmit });
+      (websocketService.io as any) = { to: mockTo };
+      (websocketService.emitToSession as jest.Mock) = jest.fn().mockResolvedValue(true);
+
+      await startSession(mockReq as AuthRequest, mockRes as Response);
+
+      // Verify it returns the success response (default 200 status)
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          session: mockFullSession,
+          websocketUrl: `wss://ws.classwaves.com/session/${sessionId}`,
+          realtimeToken: 'rt_token_' + sessionId
+        }
+      });
+    });
+  });
+
+  describe('Session Lifecycle', () => {
+    it('should start session when all groups are ready', async () => {
+      const sessionId = 'session-lifecycle-test';
       mockReq = createAuthenticatedRequest(mockTeacher, {
         params: { sessionId },
       });
@@ -472,17 +576,31 @@ describe('Session Controller', () => {
         planned_duration_minutes: 45
       };
 
-      const mockGroups = [
-        { id: 'group-1', is_ready: false, leader_id: 'student-1' },
-        { id: 'group-2', is_ready: true, leader_id: 'student-2' }
-      ];
+      // Mock RetryService calls for session gating checks
+      (RetryService.retryDatabaseOperation as jest.Mock)
+        .mockResolvedValueOnce(mockSession)  // Session lookup
+        .mockResolvedValueOnce({ ready_groups_count: 2 })  // Ready groups count (2 ready) - all groups ready
+        .mockResolvedValueOnce({ total_groups_count: 2 })  // Total groups count (2 total) - all groups ready
+        .mockResolvedValueOnce(true);  // Update session to active (called after gating passes)
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
-      (databricksService.query as jest.Mock).mockResolvedValueOnce(mockGroups);
+      // Mock other required services
       (databricksService.update as jest.Mock).mockResolvedValue(true);
       (databricksService.insert as jest.Mock).mockResolvedValue(true);
+      (databricksService.queryOne as jest.Mock).mockResolvedValue(mockSession);
 
-      await startSession(mockReq as AuthRequest, mockRes as Response);
+      // Mock websocket service
+      (websocketService.io as any) = { to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
+
+      // Mock query cache service
+      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(true);
+
+      // Add error handling to see what's failing
+      try {
+        await startSession(mockReq as AuthRequest, mockRes as Response);
+      } catch (error) {
+        console.error('startSession error:', error);
+        throw error;
+      }
 
       expect(databricksService.update).toHaveBeenCalledWith(
         'classroom_sessions',
