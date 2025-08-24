@@ -1,0 +1,1112 @@
+{
+  "metadata": {
+    "feature_id": "SESSION-GATING-V1",
+    "feature_name": "Session Start Readiness Gating + Auto Mic Activation",
+    "status": "Ready for Architecture Investigation",
+    "repositories": [
+      "classwaves-backend",
+      "classwaves-frontend",
+      "classwaves-student"
+    ],
+    "jira_ticket": "CW-124",
+    "date_finalized": "2025-08-23"
+  },
+  "document": {
+    "title": "Master Implementation Plan: Session Start Readiness Gating",
+    "status_note": "Finalized for Implementation",
+    "note": "This document is the final, comprehensive implementation plan. It integrates strategic requirements, tactical execution steps, AI-agent-optimized semantic tags, and a phased branching strategy to ensure clarity and precision from planning through deployment.",
+    "critical_database_note": "🚨 CRITICAL: ALWAYS consult classwaves-backend/docs/DATABASE_SCHEMA_COMPLETE.md for current database schema before implementing any database operations. The schema documentation contains 68 tables across 11 schemas and is the authoritative source for all table structures, column types, and relationships. Never assume schema details - always verify against the live documentation.",
+    "executive_summary": {
+      "objective": "Require all group leaders to mark Ready before a session can start; auto-activate microphones for group leaders on session start to stream/transcribe audio into the AI pipeline.",
+      "business_value": "Ensures a clean, synchronized start across all groups, reduces teacher orchestration effort, and avoids dead air or missed content at session start. Includes robust error handling and a teacher override to prevent technical issues from derailing a lesson.",
+      "compliance": "Enforces explicit device permission before participation; maintains FERPA/COPPA practices by not persisting raw audio to disk, keeping PII out of logs, and providing continuous privacy transparency."
+    },
+    "phased_branching_strategy": [
+      {
+        "phase": 0,
+        "branch_name": "architecture-investigation",
+        "repository": "all",
+        "purpose": "Required meta-expert architecture investigation to understand current session flow, WebSocket patterns, and identify precise integration points."
+      },
+      {
+        "phase": 1,
+        "branch_name": "feature/be-core-gating-logic",
+        "repository": "classwaves-backend",
+        "purpose": "Establishes the foundational API and state logic."
+      },
+      {
+        "phase": 1,
+        "branch_name": "feature/st-permission-readiness-flow",
+        "repository": "classwaves-student",
+        "purpose": "Builds the essential student permission and ready flow."
+      },
+      {
+        "phase": 2,
+        "branch_name": "feature/be-realtime-events",
+        "repository": "classwaves-backend",
+        "purpose": "Adds real-time events and enhanced WebSocket handling."
+      },
+      {
+        "phase": 2,
+        "branch_name": "feature/fe-readiness-display",
+        "repository": "classwaves-frontend",
+        "purpose": "Creates the core teacher UI for monitoring groups."
+      },
+      {
+        "phase": 2,
+        "branch_name": "feature/st-wavelistener-autostart",
+        "repository": "classwaves-student",
+        "purpose": "Implements the automatic microphone activation."
+      },
+      {
+        "phase": 3,
+        "branch_name": "feature/fe-advanced-state-ui",
+        "repository": "classwaves-frontend",
+        "purpose": "Adds advanced state indicators and enhanced UX features."
+      },
+      {
+        "phase": 3,
+        "branch_name": "feature/st-resilience-and-recovery",
+        "repository": "classwaves-student",
+        "purpose": "Handles advanced error cases and session rejoin."
+      },
+      {
+        "phase": 3,
+        "branch_name": "feature/platform-polish-and-optimizations",
+        "repository": "all",
+        "purpose": "Implements final UX, performance, and WebSocket tuning."
+      }
+    ],
+    "scope_checklist_authoritative": true,
+    "scopes": {
+      "architecture_investigation": {
+        "agent_context": "ARCHITECTURE_INVESTIGATION",
+        "repository": "all",
+        "tasks": [
+          {
+            "id": "SG-ARCH-01",
+            "scope": "INVESTIGATION",
+            "type": "CODEBASE_SEARCH",
+            "description": "Map current session start flow: How are sessions started and what endpoints control session status?",
+            "search_queries": [
+              "How are sessions started and what endpoints control session status?",
+              "Where is POST /api/v1/sessions/:id/start implemented and what validation exists?"
+            ],
+            "expected_files": [
+              "classwaves-backend/src/controllers/session.controller.ts",
+              "classwaves-backend/src/routes/session.routes.ts"
+            ],
+            "completed": true,
+            "completion_notes": "✅ FOUND: startSession() in session.controller.ts, /api/v1/sessions/:id/start endpoint exists, session.routes.ts has POST route"
+          },
+          {
+            "id": "SG-ARCH-02",
+            "scope": "INVESTIGATION",
+            "type": "CODEBASE_SEARCH",
+            "description": "Map current group leader readiness: How do students mark themselves as Ready and how is this tracked?",
+            "search_queries": [
+              "Where do we manage group leaders and their ready status?",
+              "How do student devices indicate Ready and where is is_ready stored?"
+            ],
+            "expected_files": [
+              "classwaves-backend/src/controllers/session.controller.ts",
+              "classwaves-student/src/stores/student-store.ts"
+            ],
+            "completed": true,
+            "completion_notes": "✅ FOUND: LeaderReadyControl.tsx component, student-store.ts has isReady tracking, handleGroupLeaderReady WebSocket handler, is_ready database column"
+          },
+          {
+            "id": "SG-ARCH-03",
+            "scope": "INVESTIGATION",
+            "type": "CODEBASE_SEARCH",
+            "description": "Map WebSocket events: What events exist for group status changes and session status?",
+            "search_queries": [
+              "What WebSocket events exist for group:leader_ready, group:status_changed, session:status_changed?",
+              "How are real-time updates sent to teacher UI when student readiness changes?"
+            ],
+            "expected_files": [
+              "classwaves-backend/src/services/websocket/sessions-namespace.service.ts",
+              "classwaves-frontend/src/features/sessions/hooks/use-sessions-websocket.ts"
+            ],
+            "completed": true,
+            "completion_notes": "✅ FOUND: group:leader_ready and group:status_changed events exist in sessions-namespace.service.ts, WebSocket infrastructure is working"
+          },
+          {
+            "id": "SG-ARCH-04",
+            "scope": "INVESTIGATION",
+            "type": "CODEBASE_SEARCH",
+            "description": "Map teacher session UI: Where is Start Session button and how does it get group statuses?",
+            "search_queries": [
+              "Where is the teacher session page implemented and where is the Start Session button?",
+              "How does teacher UI display group statuses and readiness?"
+            ],
+            "expected_files": [
+              "classwaves-frontend/src/app/dashboard/sessions/[id]/page.tsx",
+              "classwaves-frontend/src/features/sessions/components/SessionGroupCard.tsx"
+            ],
+            "completed": true,
+            "completion_notes": "✅ FOUND: SessionDetailPage in [id]/page.tsx, SessionGroupCard component exists, sessionApi.startSession() method exists"
+          },
+          {
+            "id": "SG-ARCH-05",
+            "scope": "INVESTIGATION",
+            "type": "CODEBASE_SEARCH",
+            "description": "Map audio recording flow: How does WaveListener start/stop and connect to transcription pipeline?",
+            "search_queries": [
+              "How do group leaders mark themselves Ready and how do microphones get activated?",
+              "How are student microphone audio streams handled and how does transcription start?"
+            ],
+            "expected_files": [
+              "classwaves-student/src/features/audio-recording/hooks/use-audio-recorder.ts",
+              "classwaves-backend/src/services/transcription.service.ts"
+            ],
+            "completed": true,
+            "completion_notes": "✅ FOUND: LeaderReadyControl component with markLeaderReady WebSocket call, audio stream handlers exist in WebSocket service"
+          },
+          {
+            "id": "SG-ARCH-06",
+            "scope": "INVESTIGATION",
+            "type": "CODEBASE_SEARCH",
+            "description": "Map permission handling: How are microphone permissions requested and managed?",
+            "search_queries": [
+              "How are microphone permissions requested in student app?",
+              "What happens when permission is denied or revoked during session?"
+            ],
+            "expected_files": [
+              "classwaves-student/src/hooks/use-media-devices.ts",
+              "classwaves-student/src/lib/permissions.ts"
+            ],
+            "completed": true,
+            "completion_notes": "✅ FOUND: Student app has media device handling infrastructure, permission flows exist in student store and WebSocket service"
+          },
+          {
+            "id": "SG-ARCH-07",
+            "scope": "INVESTIGATION",
+            "type": "FILE_ANALYSIS",
+            "description": "Analyze database schema: Verify student_groups.is_ready column exists and understand data model",
+            "analysis_targets": [
+              "classwaves-shared/src/types/",
+              "classwaves-backend/docs/DATABASE_SCHEMA_COMPLETE.md"
+            ],
+            "schema_validation_queries": [
+              "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = 'student_groups' AND column_name = 'is_ready'",
+              "SELECT COUNT(*) as groups_with_leaders FROM classwaves.sessions.student_groups WHERE leader_id IS NOT NULL",
+              "SELECT COUNT(*) as ready_groups FROM classwaves.sessions.student_groups WHERE is_ready = true"
+            ],
+            "critical_schema_notes": [
+              "ALWAYS consult classwaves-backend/docs/DATABASE_SCHEMA_COMPLETE.md for current schema",
+              "student_groups.is_ready is the source of truth for session start gating",
+              "Verify leader_id exists before setting is_ready = true",
+              "Check foreign key relationships: student_groups.session_id → classroom_sessions.id"
+            ],
+            "completed": true,
+            "completion_notes": "✅ VERIFIED: student_groups table has is_ready boolean column, leader_id column exists, 351 rows with 21 columns total"
+          }
+        ]
+      },
+      "backend_implementation": {
+        "agent_context": "BACKEND_IMPLEMENTATION",
+        "repository": "classwaves-backend",
+        "tasks": [
+          {
+            "id": "SG-BE-01",
+            "scope": "BACKEND",
+            "type": "API_CHANGE",
+            "description": "Gate POST /api/v1/sessions/:id/start if any group is not Ready.",
+            "implementation_details": {
+              "file": "classwaves-backend/src/controllers/session.controller.ts",
+              "function": "startSession",
+              "validation_logic": "Check student_groups.is_ready = true for all groups in session",
+              "sql_query": "SELECT COUNT(*) as ready_count FROM student_groups WHERE session_id = ? AND is_ready = true",
+              "gate_condition": "ready_count !== total_groups_count"
+            },
+            "completed": true,
+            "completion_notes": "✅ IMPLEMENTED: Added readiness validation gate in startSession() - sessions blocked when readyGroupsAtStart !== totalGroups - Git: 102c388"
+          },
+
+          {
+            "id": "SG-BE-03",
+            "scope": "BACKEND",
+            "type": "API_RESPONSE",
+            "description": "Return 409 GROUPS_NOT_READY with { readyGroupsAtStart, totalGroups, notReadyGroups: [{ id, name }] } when groups are not ready.",
+            "implementation_details": {
+              "file": "classwaves-backend/src/controllers/session.controller.ts",
+              "function": "startSession",
+              "error_code": "GROUPS_NOT_READY",
+              "response_structure": "{ error: 'GROUPS_NOT_READY', readyCount: number, totalCount: number, notReadyGroups: GroupInfo[] }"
+            },
+            "completed": true,
+            "completion_notes": "✅ IMPLEMENTED: Added detailed 409 error response with readyCount, totalCount, and notReadyGroups array - Git: 102c388"
+          },
+          {
+            "id": "SG-BE-04",
+            "scope": "BACKEND",
+            "type": "OBSERVABILITY",
+            "description": "Add metric counter session_start_gated_total with session_id label.",
+            "completed": true,
+            "completion_notes": "✅ IMPLEMENTED: Added session gating analytics logging via existing analyticsLogger with sessionId metadata - Git: 102c388"
+          },
+          {
+            "id": "SG-BE-05",
+            "scope": "BACKEND",
+            "type": "WEBSOCKET_HANDLER",
+            "description": "Ensure group:leader_ready WS handler is idempotent to prevent duplicate analytics or state changes on client retries.",
+            "implementation_details": {
+              "file": "classwaves-backend/src/services/websocket/sessions-namespace.service.ts",
+              "handler": "onGroupLeaderReady",
+              "idempotency_key": "${sessionId}-${groupId}-${timestamp}"
+            },
+            "completed": false
+          },
+          {
+            "id": "SG-BE-06",
+            "scope": "BACKEND",
+            "type": "WEBSOCKET_EVENT",
+            "description": "Verify existing WS events work: group:leader_ready, group:status_changed, session:status_changed.",
+            "completed": false
+          },
+          {
+            "id": "SG-BE-07",
+            "scope": "BACKEND",
+            "type": "WEBSOCKET_EVENT",
+            "description": "Enhance group:status_changed event to support a new 'issue' status.",
+            "completed": false
+          },
+          {
+            "id": "SG-BE-08",
+            "scope": "BACKEND",
+            "type": "ERROR_HANDLING",
+            "description": "Add graceful error handling for WebSocket broadcast failures during session start.",
+            "completed": false
+          },
+          {
+            "id": "SG-BE-09",
+            "scope": "BACKEND",
+            "type": "API_ENDPOINT",
+            "description": "Implement a state reconciliation endpoint for client/server state sync.",
+            "completed": false
+          }
+        ]
+      },
+      "teacher_ui": {
+        "agent_context": "TEACHER_UI",
+        "repository": "classwaves-frontend",
+        "tasks": [
+          {
+            "id": "SG-FE-01",
+            "scope": "FRONTEND",
+            "type": "UI_COMPONENT",
+            "description": "Disable Start button until all groups are Ready; show ready/total badge with group names.",
+            "implementation_details": {
+              "file": "classwaves-frontend/src/app/dashboard/sessions/[id]/page.tsx",
+              "component": "SessionPage",
+              "state_computation": "allGroupsReady = groups.every(g => g.status === 'ready')",
+              "button_state": "disabled={!allGroupsReady}",
+              "badge_component": "<ReadinessBadge ready={readyCount} total={totalCount} />"
+            },
+            "completed": false
+          },
+
+          {
+            "id": "SG-FE-03",
+            "scope": "FRONTEND",
+            "type": "UI_COMPONENT",
+            "description": "Handle 409 with a contextual toast showing which specific groups are not Ready.",
+            "implementation_details": {
+              "file": "classwaves-frontend/src/app/dashboard/sessions/[id]/page.tsx",
+              "error_handler": "handleStartSessionError",
+              "toast_message": "Cannot start: Groups not ready: ${notReadyGroups.map(g => g.name).join(', ')}",
+              "toast_component": "toast.error(message, { duration: 5000, action: 'Help Students' })"
+            },
+            "dependencies": ["SG-BE-03"],
+            "completed": false
+          },
+          {
+            "id": "SG-FE-04",
+            "scope": "FRONTEND",
+            "type": "UI_STATE",
+            "description": "Live readiness updates via WS group:status_changed with debounced state batching.",
+            "completed": false
+          },
+          {
+            "id": "SG-FE-05",
+            "scope": "FRONTEND",
+            "type": "UI_COMPONENT",
+            "description": "Implement simplified teacher state indicators: 🟡 Joining, 🟠 Connected, 🟢 Ready, 🔴 Active, ⏸️ Paused, ⚠️ Issue.",
+            "dependencies": ["SG-BE-07"],
+            "completed": false
+          },
+          {
+            "id": "SG-FE-06",
+            "scope": "FRONTEND",
+            "type": "UI_COMPONENT",
+            "description": "Visually reflect the 'issue' state (⚠️) for a group when that status is received.",
+            "dependencies": ["SG-FE-05"],
+            "completed": false
+          },
+          {
+            "id": "SG-FE-07",
+            "scope": "FRONTEND",
+            "type": "UI_INTERACTION",
+            "description": "Add \"Help\" button next to not-ready groups that sends targeted guidance prompts to students.",
+            "completed": false
+          },
+          {
+            "id": "SG-FE-08",
+            "scope": "FRONTEND",
+            "type": "UI_ANIMATION",
+            "description": "Show real-time countdown when session is starting: \"Session starts in 3...2...1...\"",
+            "completed": false
+          },
+          {
+            "id": "SG-FE-09",
+            "scope": "FRONTEND",
+            "type": "UI_COPY",
+            "description": "Add contextual messaging: \"3 of 4 groups ready - you're almost there!\"",
+            "completed": false
+          },
+          {
+            "id": "SG-FE-10",
+            "scope": "FRONTEND",
+            "type": "UI_FEEDBACK",
+            "description": "Add session start celebration: \"🎉 All groups ready! Starting collaborative session\"",
+            "completed": false
+          },
+          {
+            "id": "SG-FE-11",
+            "scope": "FRONTEND",
+            "type": "UI_STATE",
+            "description": "Handle WebSocket disconnects gracefully, with an immediate state fetch on reconnect to ensure UI consistency.",
+            "dependencies": ["SG-BE-09"],
+            "completed": false
+          }
+        ]
+      },
+      "student_app": {
+        "agent_context": "STUDENT_APP",
+        "repository": "classwaves-student",
+        "tasks": [
+          {
+            "id": "SG-ST-01",
+            "scope": "STUDENT_APP",
+            "type": "UI_MODAL",
+            "description": "Pre-permission explanation modal: \"WaveListener needs mic access to capture discussion.\"",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-02",
+            "scope": "STUDENT_APP",
+            "type": "PERMISSIONS",
+            "description": "Proactively check mic permission on load using the Permissions API to show contextual UI from the start.",
+            "completed": true,
+            "completion_notes": "✅ IMPLEMENTED: Proactive microphone permission checking on component load - Git: 55a12c4"
+          },
+          {
+            "id": "SG-ST-03",
+            "scope": "STUDENT_APP",
+            "type": "PERMISSIONS",
+            "description": "Require mic permission before marking Ready=true; block on denial with clear messaging.",
+            "implementation_details": {
+              "file": "classwaves-student/src/components/ReadyToggle.tsx",
+              "permission_check": "const hasPermission = await navigator.mediaDevices.getUserMedia({ audio: true })",
+              "error_handling": "catch (error) { showPermissionDeniedModal(error) }",
+              "ready_gate": "setReady(true) only if permission granted",
+              "websocket_emit": "socket.emit('group:leader_ready', { sessionId, groupId, isReady: true })"
+            },
+            "completed": true,
+            "completion_notes": "✅ IMPLEMENTED: Require mic permission before marking Ready=true with enhanced UX - Git: 55a12c4"
+          },
+          {
+            "id": "SG-ST-04",
+            "scope": "STUDENT_APP",
+            "type": "UI_COMPONENT",
+            "description": "Enhanced permission denial flow: prominent banner + browser-specific instructions.",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-05",
+            "scope": "STUDENT_APP",
+            "type": "UI_INTERACTION",
+            "description": "Implement \"Grant Permission\" button with fallback help text.",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-06",
+            "scope": "STUDENT_APP",
+            "type": "UI_FEEDBACK",
+            "description": "Add success feedback: \"✅ WaveListener is ready! You can now mark your group as Ready.\"",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-07",
+            "scope": "STUDENT_APP",
+            "type": "UI_STATE",
+            "description": "Allow leaders to toggle their Ready state freely before the session starts. The Ready toggle is disabled only after the session status becomes active.",
+            "completed": true,
+            "completion_notes": "✅ IMPLEMENTED: Ready toggle functionality preserved and enhanced with permission awareness - Git: 55a12c4"
+          },
+          {
+            "id": "SG-ST-08",
+            "scope": "STUDENT_APP",
+            "type": "UI_FEEDBACK",
+            "description": "Implement progress indicators during state transitions: \"Requesting microphone...\" → \"WaveListener Ready.\"",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-09",
+            "scope": "STUDENT_APP",
+            "type": "AUDIO_RECORDING",
+            "description": "Auto-start WaveListener on session:status_changed → active with 3-2-1 countdown.",
+            "implementation_details": {
+              "file": "classwaves-student/src/hooks/use-session-audio-control.ts",
+              "websocket_listener": "socket.on('session:status_changed', handleSessionStatusChange)",
+              "auto_start_logic": "if (status === 'active' && isReady) { startCountdownThenRecord() }",
+              "countdown_component": "<CountdownOverlay count={3} onComplete={startWaveListener} />",
+              "audio_start": "audioRecorder.start() -> emit('audio:stream_started')"
+            },
+            "dependencies": ["SG-BE-06"],
+            "completed": false
+          },
+          {
+            "id": "SG-ST-10",
+            "scope": "STUDENT_APP",
+            "type": "UI_FEEDBACK",
+            "description": "Visual/audio feedback when WaveListener activates (pulse animation, brief tone).",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-11",
+            "scope": "STUDENT_APP",
+            "type": "ERROR_HANDLING",
+            "description": "Robust handling for mid-session permission revocation or mic failure, emitting a wavelistener:issue event and updating the UI to a persistent \"Issue\" state.",
+            "dependencies": ["SG-WS-02", "SG-BE-07"],
+            "completed": false
+          },
+          {
+            "id": "SG-ST-12",
+            "scope": "STUDENT_APP",
+            "type": "UI_INTERACTION",
+            "description": "Provide clear Pause/Resume controls for WaveListener when active.",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-13",
+            "scope": "STUDENT_APP",
+            "type": "AUDIO_RECORDING",
+            "description": "Auto-end WaveListener on session end, group end, or page leave (beforeunload).",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-14",
+            "scope": "STUDENT_APP",
+            "type": "UI_STATE",
+            "description": "Implement session persistence: allow rejoin same group/state after accidental close.",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-15",
+            "scope": "STUDENT_APP",
+            "type": "UI_MODAL",
+            "description": "Add \"What is WaveListener?\" modal explaining the AI system on first join.",
+            "completed": false
+          },
+          {
+            "id": "SG-ST-16",
+            "scope": "STUDENT_APP",
+            "type": "UI_COMPONENT",
+            "description": "Add a persistent, non-intrusive icon/link in the UI for students to access the \"What is WaveListener?\" modal at any time.",
+            "dependencies": ["SG-ST-15"],
+            "completed": false
+          }
+        ]
+      },
+      "realtime": {
+        "agent_context": "REALTIME",
+        "repository": "all",
+        "tasks": [
+          {
+            "id": "SG-WS-01",
+            "scope": "WEBSOCKET",
+            "type": "PERFORMANCE",
+            "description": "Optimize for large sessions: debounce rapid state changes, batch updates.",
+            "completed": false
+          },
+          {
+            "id": "SG-WS-02",
+            "scope": "WEBSOCKET",
+            "type": "WEBSOCKET_EVENT",
+            "description": "Define and implement wavelistener:issue event from student to server.",
+            "completed": false
+          },
+          {
+            "id": "SG-WS-03",
+            "scope": "WEBSOCKET",
+            "type": "RESILIENCE",
+            "description": "Implement graceful degradation when WebSocket fails.",
+            "completed": false
+          },
+          {
+            "id": "SG-WS-04",
+            "scope": "WEBSOCKET",
+            "type": "RESILIENCE",
+            "description": "Implement periodic (e.g., 30s) and event-driven (on WS reconnect, tab refocus) state reconciliation to ensure state integrity.",
+            "dependencies": ["SG-BE-09"],
+            "completed": false
+          },
+          {
+            "id": "SG-WS-05",
+            "scope": "WEBSOCKET",
+            "type": "PERFORMANCE",
+            "description": "Handle WebSocket event storms (100+ students) with rate limiting.",
+            "completed": false
+          }
+        ]
+      },
+      "ux_enhancements": {
+        "agent_context": "ENHANCEMENTS_AND_OPTIMIZATIONS",
+        "user_experience": [
+          {
+            "id": "SG-UX-01",
+            "scope": "FRONTEND",
+            "type": "UI_COPY",
+            "description": "Context-aware messaging: \"Session starts in 2 minutes - make sure WaveListener is ready!\"",
+            "completed": false
+          },
+          {
+            "id": "SG-UX-02",
+            "scope": "FRONTEND",
+            "type": "UI_COPY",
+            "description": "Time-aware prompts and positive social nudging (e.g., \"You're almost there!\").",
+            "completed": false
+          },
+          {
+            "id": "SG-UX-03",
+            "scope": "STUDENT_APP",
+            "type": "UI_COPY",
+            "description": "Helpful hints: \"Keep your device close for best WaveListener quality.\"",
+            "completed": false
+          },
+          {
+            "id": "SG-UX-04",
+            "scope": "ALL",
+            "type": "ERROR_HANDLING",
+            "description": "Error recovery flows: if WaveListener fails, provide \"rejoin\" or \"re-grant permission\" flows rather than a dead-end.",
+            "completed": false
+          },
+          {
+            "id": "SG-UX-05",
+            "scope": "STUDENT_APP",
+            "type": "ACCESSIBILITY",
+            "description": "Progressive enhancement: core flow works without audio feedback (respecting browser auto-play policies).",
+            "completed": false
+          }
+        ],
+        "performance_optimizations": [
+          {
+            "id": "SG-PF-01",
+            "scope": "STUDENT_APP",
+            "type": "PERFORMANCE",
+            "description": "Pre-warm audio pipeline: establish audio WS connection on 'Ready' to minimize start latency when the session becomes active.",
+            "completed": false
+          },
+          {
+            "id": "SG-PF-02",
+            "scope": "WEBSOCKET",
+            "type": "PERFORMANCE",
+            "description": "WebSocket connection pooling and reconnection with exponential backoff.",
+            "completed": false
+          },
+          {
+            "id": "SG-PF-03",
+            "scope": "ALL",
+            "type": "PERFORMANCE",
+            "description": "Client-side state caching with smart cache invalidation.",
+            "completed": false
+          },
+          {
+            "id": "SG-PF-04",
+            "scope": "STUDENT_APP",
+            "type": "PERFORMANCE",
+            "description": "Audio stream startup latency optimization (<500ms target).",
+            "completed": false
+          }
+        ]
+      },
+      "testing_and_quality_assurance": {
+        "agent_context": "TESTING",
+        "tasks": [
+          {
+            "id": "SG-QA-01",
+            "scope": "BACKEND",
+            "type": "TEST_CASE",
+            "description": "Backend unit tests: Jest for startSession 409/200 paths with comprehensive edge cases.",
+            "implementation_details": {
+              "file": "classwaves-backend/src/__tests__/controllers/session.controller.test.ts",
+              "test_cases": [
+                "returns 200 when all groups ready",
+                "returns 409 when 1+ groups not ready",
+                "returns 404 for non-existent session",
+                "returns 400 for invalid session state",
+                "handles concurrent start requests correctly"
+              ],
+              "mock_data": "3 groups: 2 ready, 1 not ready",
+              "assertions": "response.body.readyCount === 2, response.body.totalCount === 3"
+            },
+            "completed": false
+          },
+          {
+            "id": "SG-QA-02",
+            "scope": "BACKEND",
+            "type": "TEST_CASE",
+            "description": "Backend integration tests: Multi-group readiness simulation via WS/kiosk API.",
+            "completed": false
+          },
+          {
+            "id": "SG-QA-03",
+            "scope": "FRONTEND",
+            "type": "TEST_CASE",
+            "description": "Teacher UI unit tests: RTL for Start button states (disabled, enabled, override), 409 handling, WS updates, and the new issue state display.",
+            "completed": false
+          },
+          {
+            "id": "SG-QA-04",
+            "scope": "STUDENT_APP",
+            "type": "TEST_CASE",
+            "description": "Student unit tests: Permission flows (including proactive checks), state transitions, pre-session ready/un-ready toggle, and error recovery.",
+            "completed": false
+          },
+          {
+            "id": "SG-QA-05",
+            "scope": "ALL",
+            "type": "TEST_CASE",
+            "description": "E2E Playwright tests: Full teacher+student flow with comprehensive scenarios including network resilience.",
+            "implementation_details": {
+              "file": "classwaves-frontend/tests/e2e/session-gating-flow.spec.ts",
+              "test_scenarios": [
+                "Teacher sees Start disabled until all groups ready",
+                "Start button enables when last group becomes ready",
+                "WaveListener auto-starts on session start",
+                "Permission denial blocks Ready state",
+                "Mid-session permission revocation shows Issue state",
+                "Network disconnect/reconnect preserves state",
+                "Multiple students joining/leaving maintains accuracy",
+                "Audio stream starts within 500ms of session start"
+              ],
+              "multi_browser_setup": "Teacher Chrome + 4 Student Firefox instances",
+              "real_data": "Uses actual WebSocket connections, no mocking",
+              "performance_assertions": "Start latency < 500ms, UI updates < 100ms"
+            },
+            "completed": false
+          },
+          {
+            "id": "SG-QA-06",
+            "scope": "ALL",
+            "type": "TEST_CASE",
+            "description": "Load testing: 100+ concurrent students with state changes and audio streams.",
+            "completed": false
+          },
+          {
+            "id": "SG-QA-07",
+            "scope": "ALL",
+            "type": "TEST_CASE",
+            "description": "Browser compatibility: Chrome, Safari, Edge, Firefox on desktop and mobile.",
+            "completed": false
+          }
+        ]
+      }
+    },
+    "functional_requirements": [
+      "A session cannot start until all configured groups' leaders are Ready.",
+      "Teacher sees real-time readiness by group and an overall X/Y Ready indicator, including an Issue state.",
+      "On session start, each Ready group leader’s device starts audio streaming automatically.",
+      "Student leader cannot mark Ready unless the browser grants microphone permission.",
+      "Gating is enforced server-side; the UI reflectively disables the Start button.",
+      "When a leader joins a session, their status is connected until they mark Ready.",
+      "Leaders can toggle their Ready state on and off before the session begins. Once the session is active, they can only Pause or Resume their active stream.",
+      "Microphone use auto-ends when the group or session ends, or if the student leaves the page.",
+      "UI affordances must exist for students to re-request microphone permissions after an initial denial or mid-session revocation."
+    ],
+    "non_functional_requirements": {
+      "compliance": "No PII in logs; no raw audio writes to disk; honor parental consent settings.",
+      "audit_trail_events": [
+        "session.started",
+        "student.joined_session",
+        "student.mic_permission_granted",
+        "student.ready_status_set",
+        "wavelistener.stream_started",
+        "wavelistener.stream_ended",
+        "wavelistener.stream_issue"
+      ],
+      "notes": "Audit trail must include significant, non-PII state transitions."
+    },
+    "websocket_events": {
+      "student_to_server": [
+        {
+          "event": "group:leader_ready",
+          "payload": "{ sessionId, groupId, isReady }"
+        },
+        {
+          "event": "wavelistener:issue",
+          "payload": "{ groupId, reason }",
+          "reason_enums": [
+            "permission_revoked",
+            "stream_failed"
+          ]
+        }
+      ],
+      "server_to_all": [
+        {
+          "event": "group:status_changed",
+          "payload": "{ groupId, status }",
+          "status_enums": [
+            "connected",
+            "ready",
+            "active",
+            "paused",
+            "issue"
+          ]
+        },
+        {
+          "event": "session:status_changed",
+          "payload": "{ sessionId, status }"
+        }
+      ]
+    },
+    "error_handling_and_edge_cases": [
+      {
+        "scenario": "Permission Revoked After Ready",
+        "description": "Student leader revokes microphone permission after marking Ready",
+        "detection": "navigator.mediaDevices.ondevicechange + permission re-check",
+        "client_action": "Update UI to Issue state, emit wavelistener:issue event",
+        "server_action": "Broadcast group:status_changed with status: 'issue'",
+        "teacher_ui": "Show ⚠️ Issue indicator with 'Mic Access Lost' message",
+        "recovery": "'Grant Permission' button with explicit retry flow"
+      },
+      {
+        "scenario": "WebSocket Disconnection During Session Start",
+        "description": "WebSocket fails during critical readiness coordination",
+        "detection": "WebSocket onerror + connection state monitoring",
+        "fallback_mechanism": "HTTP polling every 2s with state reconciliation endpoint",
+        "client_recovery": "Auto-reconnect with exponential backoff (1s, 2s, 4s, 8s max)",
+        "data_consistency": "Compare local state with server state on reconnect"
+      },
+      {
+        "scenario": "Concurrent Session Start Attempts",
+        "description": "Multiple teachers try to start same session simultaneously",
+        "prevention": "Database-level session.status constraint + optimistic locking",
+        "race_condition_handling": "First wins, others get 409 with current session state",
+        "audit_logging": "Log all start attempts with teacher_id and timestamp"
+      },
+      {
+        "scenario": "Student Browser Crash/Close During Session",
+        "description": "Student unexpectedly leaves during active WaveListener session",
+        "detection": "WebSocket disconnect + heartbeat timeout (30s)",
+        "cleanup_action": "Mark group as 'disconnected', stop expecting audio stream",
+        "teacher_notification": "Toast: 'Group [X] disconnected - audio capture paused'",
+        "rejoin_flow": "Preserve group assignment, restore to last known state"
+      },
+      {
+        "scenario": "Audio Device Hardware Failure",
+        "description": "Microphone hardware becomes unavailable mid-session",
+        "detection": "MediaRecorder.onerror + getUserMedia re-test",
+        "immediate_action": "Stop current stream, emit wavelistener:issue",
+        "retry_mechanism": "'Try Different Microphone' button with device enumeration",
+        "graceful_degradation": "Continue session for other groups, mark this group as Issue"
+      },
+      {
+        "scenario": "Mass Permission Denial (Multiple Students)",
+        "description": "Institutional browser policy blocks microphone for all students",
+        "detection": "Pattern: >50% groups get permission denied within 5min",
+        "teacher_alert": "Banner: 'Multiple permission issues detected - IT support may be needed'",
+        "troubleshooting_guide": "Link to device settings, browser settings, admin contact",
+        "session_continuity": "Allow session to continue with available groups"
+      },
+      {
+        "scenario": "Database Consistency Issues",
+        "description": "student_groups.is_ready out of sync with WebSocket state",
+        "detection": "Periodic state reconciliation (every 30s during pre-session)",
+        "sync_mechanism": "GET /api/v1/sessions/:id/groups/status endpoint",
+        "conflict_resolution": "Database state is authoritative, update WebSocket clients",
+        "monitoring": "Alert on >5% state mismatches across sessions"
+      },
+      {
+        "scenario": "High Latency Network (>2s)",
+        "description": "Slow network causes delayed readiness updates and poor UX",
+        "detection": "WebSocket ping/pong RTT monitoring",
+        "ui_adaptation": "Show 'Network Slow' indicator, increase timeout thresholds",
+        "optimization": "Batch multiple readiness changes, compress WebSocket payloads",
+        "fallback": "Degrade to HTTP polling with longer intervals"
+      },
+      {
+        "scenario": "Student Joins After Session Started",
+        "description": "Late-arriving student tries to join active session",
+        "policy_decision": "Allow join but require explicit teacher approval",
+        "teacher_notification": "Modal: '[Student] wants to join active session - Allow?'",
+        "join_flow": "Skip Ready requirement, immediately start WaveListener if approved",
+        "audit_trail": "Log late joins with timestamps for compliance"
+      },
+      {
+        "scenario": "Session State Corruption",
+        "description": "Backend session status becomes invalid (e.g., active but no groups)",
+        "detection": "Data validation on session operations + health checks",
+        "automatic_repair": "Reset to valid state based on group statuses",
+        "manual_intervention": "Admin endpoint to force session state reset",
+        "prevention": "Strict state machine validation + database constraints"
+      }
+    ],
+    "decisions": [
+      {
+        "index": 1,
+        "title": "Force start override",
+        "value": "NO",
+        "details": "No teacher override. Sessions must wait for all group leaders to be Ready. This ensures synchronized start and full participation."
+      },
+      {
+        "index": 2,
+        "title": "Leader State Control",
+        "details": "Leaders can toggle Ready/Not-Ready freely before the session starts. Once the session is active, they can only Pause/Resume the audio stream."
+      },
+      {
+        "index": 3,
+        "title": "Grace Periods",
+        "details": "No grace periods. A hard gate is used, balanced by teacher override capability."
+      },
+      {
+        "index": 4,
+        "title": "Browser/device constraints",
+        "details": "Design with progressive enhancement and robust permission-retry flows."
+      },
+      {
+        "index": 5,
+        "title": "Teacher Visibility",
+        "details": "Teacher must see which specific groups are Ready, Connected, or have an Issue."
+      },
+      {
+        "index": 6,
+        "title": "Tenant policy variance",
+        "details": "None. This is a platform-wide workflow."
+      }
+    ],
+    "database_schema_reference": {
+      "authoritative_schema_document": "classwaves-backend/docs/DATABASE_SCHEMA_COMPLETE.md",
+      "critical_tables_for_session_gating": {
+        "sessions.student_groups": {
+          "table_name": "classwaves.sessions.student_groups",
+          "critical_columns": {
+            "id": "string - Primary key for group identification",
+            "session_id": "string - Links group to classroom session",
+            "name": "string - Human-readable group name",
+            "group_number": "int - Sequential group identifier",
+            "status": "string - Group status (connected, ready, active, paused, issue)",
+            "leader_id": "string - Student ID of group leader (nullable)",
+            "is_ready": "boolean - CRITICAL: Controls session start gating (true/false)",
+            "current_size": "int - Number of students currently in group",
+            "max_size": "int - Maximum allowed group size",
+            "created_at": "timestamp - Group creation timestamp",
+            "updated_at": "timestamp - Last modification timestamp"
+          },
+          "row_count": 351,
+          "last_updated": "2025-08-22",
+          "total_columns": 21
+        },
+        "sessions.classroom_sessions": {
+          "table_name": "classwaves.sessions.classroom_sessions", 
+          "critical_columns": {
+            "id": "string - Primary key for session identification",
+            "school_id": "string - Links session to school",
+            "teacher_id": "string - Teacher who created the session",
+            "status": "string - Session status (pending, active, paused, ended)",
+            "start_time": "timestamp - When session actually started",
+            "end_time": "timestamp - When session ended",
+            "created_at": "timestamp - Session creation timestamp"
+          }
+        },
+        "sessions.student_group_members": {
+          "table_name": "classwaves.sessions.student_group_members",
+          "critical_columns": {
+            "session_id": "string - Links member to session",
+            "group_id": "string - Links member to group", 
+            "student_id": "string - Student identifier",
+            "created_at": "timestamp - When student joined group"
+          }
+        }
+      },
+      "schema_validation_commands": [
+        "# Verify student_groups table has is_ready column",
+        "npm run db:describe -- student_groups",
+        "# Check current readiness status across all groups",
+        "SELECT session_id, name, is_ready, leader_id, current_size FROM classwaves.sessions.student_groups WHERE is_ready = false",
+        "# Validate group leader assignments",
+        "SELECT sg.id, sg.name, sg.leader_id, sg.is_ready, sgm.student_id FROM classwaves.sessions.student_groups sg LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id WHERE sg.leader_id IS NOT NULL"
+      ],
+      "schema_constraints_and_relationships": {
+        "foreign_keys": [
+          "student_groups.session_id → classroom_sessions.id",
+          "student_groups.leader_id → users.students.id (nullable)",
+          "student_group_members.session_id → classroom_sessions.id",
+          "student_group_members.group_id → student_groups.id"
+        ],
+        "business_rules": [
+          "is_ready can only be true if leader_id is not null",
+          "group status must be one of: connected, ready, active, paused, issue",
+          "session cannot start unless all groups have is_ready = true",
+          "leader_id must reference a valid student in student_group_members"
+        ]
+      }
+    },
+    "technical_implementation_guide": {
+      "development_environment_setup": [
+        "cd /Users/rtaroncher/Documents/SandBoxAI/ClassWaves",
+        "ls -la"
+      ],
+      "branching_workflow": [
+        "# Backend",
+        "cd classwaves-backend",
+        "git checkout release/current && git pull",
+        "git checkout -b feature/be-core-gating-logic",
+        "git push -u origin feature/be-core-gating-logic",
+        "# Frontend",
+        "cd ../classwaves-frontend",
+        "git checkout release/current && git pull",
+        "git checkout -b feature/fe-readiness-display",
+        "git push -u origin feature/fe-readiness-display",
+        "# Student",
+        "cd ../classwaves-student",
+        "git checkout release/current && git pull",
+        "git checkout -b feature/st-permission-readiness-flow",
+        "git push -u origin feature/st-permission-readiness-flow"
+      ],
+      "file_navigation_and_key_locations": {
+        "database_schema_authority": [
+          "classwaves-backend/docs/DATABASE_SCHEMA_COMPLETE.md - 🚨 ALWAYS CONSULT FIRST for current schema"
+        ],
+        "classwaves-backend/src": [
+          "controllers/session.controller.ts - startSession function modification",
+          "services/websocket/sessions-namespace.service.ts - onGroupLeaderReady handler",
+          "routes/session.routes.ts - endpoint validation middleware",
+          "middleware/session-validation.middleware.ts - readiness gate logic",
+          "services/session-readiness.service.ts - readiness calculation logic",
+          "__tests__/integration/session-gating.test.ts - comprehensive test coverage",
+          "__tests__/e2e/session-start-gating.e2e.test.ts - full flow testing"
+        ],
+        "classwaves-frontend/src": [
+          "app/dashboard/sessions/[id]/page.tsx - main session page with Start button",
+          "features/sessions/components/SessionGroupCard.tsx - group status display",
+          "features/sessions/components/StartSessionButton.tsx - gated start control",
+          "features/sessions/components/ReadinessBadge.tsx - ready/total indicator",
+          "features/sessions/hooks/use-sessions-websocket.ts - WebSocket event handling",
+          "features/sessions/hooks/use-session-readiness.ts - readiness state logic",
+          "lib/websocket/sessions-websocket.service.ts - WebSocket service layer",
+          "__tests__/features/sessions/session-gating.test.tsx - component tests"
+        ],
+        "classwaves-student/src": [
+          "app/session/[sessionId]/page.tsx - main student session page",
+          "components/ReadyToggle.tsx - leader ready/not-ready control",
+          "components/PermissionRequestModal.tsx - mic permission flow",
+          "components/WaveListenerStatus.tsx - audio status indicator",
+          "features/audio-recording/hooks/use-audio-recorder.ts - WaveListener control",
+          "hooks/use-session-audio-control.ts - auto-start/stop logic",
+          "hooks/use-permission-manager.ts - permission state management",
+          "lib/permissions.ts - browser permission utilities",
+          "stores/student-store.ts - student session state",
+          "__tests__/components/ready-toggle.test.tsx - permission and ready tests"
+        ]
+      },
+      "code_quality_standards_and_patterns": {
+        "typescript_standards": {
+          "strict_mode": "Enable strict: true in tsconfig.json",
+          "no_any_policy": "Use unknown and type narrowing instead of any",
+          "interface_naming": "Use PascalCase for interfaces (SessionReadiness, GroupStatus)",
+          "enum_usage": "Use const assertions or union types over enums where possible"
+        },
+        "import_organization": {
+          "external_first": "React, Next.js, third-party libraries",
+          "internal_paths": "@/components, @/hooks, @/lib, @/types",
+          "relative_last": "./local-file, ../parent-file",
+          "type_imports": "import type { SessionStatus } from '@/types/session'"
+        },
+        "component_patterns": {
+          "props_interface": "Always define Props interface for components",
+          "error_boundaries": "Wrap async operations in try-catch with user-friendly errors",
+          "loading_states": "Show loading indicators for async operations > 200ms",
+          "accessibility": "Include aria-labels for dynamic status indicators"
+        },
+        "pre_commit_checklist": [
+          "npm run lint:fix",
+          "npm run type-check",
+          "npm test -- --changed-files",
+          "grep -r \"console.log\" src/ --exclude-dir=__tests__",
+          "grep -r \"any\" src/ --exclude=\"*.test.*\" # Check for any type usage",
+          "npm run build # Ensure production build succeeds"
+        ],
+        "commit_message_format": {
+          "subject": "feat(session-gating): implement readiness-based session start gating",
+          "body": [
+            "Implements task SG-BE-01: Gate session start on all-groups-ready",
+            "Implements task SG-FE-01: Disable Start button until all groups ready",
+            "Implements task SG-ST-03: Require mic permission before Ready state",
+            "Implements task SG-ST-09: Auto-start WaveListener on session start",
+            "",
+            "- Backend: Added readiness validation to startSession endpoint",
+            "- Frontend: Enhanced teacher UI with real-time readiness indicators", 
+            "- Student: Integrated permission flow with ready state management",
+            "- WebSocket: Enhanced group status change events",
+            "",
+            "Breaking Changes: None",
+            "Performance Impact: <200ms latency for readiness updates"
+          ],
+          "footer": {
+            "Closes": "CW-124",
+            "Tests": "Added 15 unit tests, 8 integration tests, 12 E2E scenarios",
+            "Reviewed-by": "AI Agent + Human Review Required",
+            "Performance-tested": "100 concurrent students, <500ms start latency"
+          }
+        }
+      },
+      "testing_commands_and_requirements": {
+        "backend_testing": [
+          "cd classwaves-backend",
+          "npm test -- src/controllers/session.controller.test.ts",
+          "npm run test:integration"
+        ],
+        "frontend_testing": [
+          "cd classwaves-frontend",
+          "npm test -- src/features/sessions/",
+          "npm run test:e2e"
+        ]
+      },
+      "service_management_and_debugging": {
+        "start_services": [
+          "cd classwaves-backend && npm run dev # port 3000",
+          "cd classwaves-frontend && npm run dev # port 3001",
+          "cd classwaves-student && npm run dev # port 3003"
+        ],
+        "debugging_websocket_issues": [
+          "localStorage.setItem('debug', 'websocket:*,socket.io*');"
+        ],
+              "debugging_permission_issues": [
+        "navigator.permissions.query({ name: 'microphone' }).then(result => { console.log('Mic permission state:', result.state); });",
+        "navigator.mediaDevices.enumerateDevices().then(devices => console.log('Audio devices:', devices.filter(d => d.kind === 'audioinput')));",
+        "localStorage.setItem('debug', 'permissions:*,audio:*');"
+      ],
+      "performance_monitoring": [
+        "// WebSocket latency",
+        "performance.mark('ws-ready-start'); /* on ready toggle */",
+        "performance.mark('ws-ready-end'); /* on server confirmation */",
+        "performance.measure('ready-latency', 'ws-ready-start', 'ws-ready-end');",
+        "// Audio start latency",
+        "performance.mark('audio-start-trigger'); /* on session start */",
+        "performance.mark('audio-stream-active'); /* on first audio chunk */",
+        "performance.measure('audio-start-latency', 'audio-start-trigger', 'audio-stream-active');"
+      ],
+      "success_metrics": [
+        "Ready state propagation: < 200ms from student toggle to teacher UI update",
+        "Session start latency: < 500ms from button click to WaveListener active",
+        "State consistency: > 99.9% accuracy between client and server state",
+        "Error recovery: > 95% success rate for permission re-grant flows",
+        "Concurrent load: Support 100+ students without degradation"
+      ]
+      }
+    }
+  }
+}
