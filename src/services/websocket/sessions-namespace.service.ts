@@ -19,6 +19,14 @@ interface SessionStatusData {
   teacher_notes?: string;
 }
 
+interface GroupStatusData {
+  groupId: string;
+  sessionId: string;
+  status: 'connected' | 'ready' | 'active' | 'paused' | 'issue';
+  isReady?: boolean;
+  issueReason?: string;
+}
+
 export class SessionsNamespaceService extends NamespaceBaseService {
   protected getNamespaceName(): string {
     return '/sessions';
@@ -50,18 +58,18 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       await this.handleGroupLeave(socket, data);
     });
 
-    socket.on('group:status_update', async (data: { 
-      groupId: string; 
-      sessionId: string; 
-      status: string; 
-      isReady?: boolean;
-    }) => {
+    socket.on('group:status_update', async (data: GroupStatusData) => {
       await this.handleGroupStatusUpdate(socket, data);
     });
 
     // Group leader ready signal
     socket.on('group:leader_ready', async (data: { sessionId: string; groupId: string; ready: boolean }) => {
       await this.handleGroupLeaderReady(socket, data);
+    });
+
+    // WaveListener issue reporting
+    socket.on('wavelistener:issue', async (data: { sessionId: string; groupId: string; reason: 'permission_revoked' | 'stream_failed' | 'device_error' }) => {
+      await this.handleWaveListenerIssue(socket, data);
     });
 
     // Audio streaming events
@@ -316,35 +324,90 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     }
   }
 
-  private async handleGroupStatusUpdate(socket: Socket, data: { 
-    groupId: string; 
-    sessionId: string; 
-    status: string; 
-    isReady?: boolean;
-  }) {
+  private async handleGroupStatusUpdate(socket: Socket, data: GroupStatusData) {
     try {
-      // Update group status in database
-      await databricksService.update('student_groups', data.groupId, {
-        status: data.status,
-        is_ready: data.isReady !== undefined ? data.isReady : null
-      });
+      // Validate status value
+      const validStatuses = ['connected', 'ready', 'active', 'paused', 'issue'];
+      if (!validStatuses.includes(data.status)) {
+        socket.emit('error', {
+          code: 'INVALID_STATUS',
+          message: `Invalid status '${data.status}'. Must be one of: ${validStatuses.join(', ')}`
+        });
+        return;
+      }
 
-      // Broadcast to session and group members
-      this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', {
+      // Verify group exists and belongs to session
+      const group = await databricksService.queryOne(`
+        SELECT id, session_id, name, status as current_status
+        FROM classwaves.sessions.student_groups 
+        WHERE id = ? AND session_id = ?
+      `, [data.groupId, data.sessionId]);
+      
+      if (!group) {
+        socket.emit('error', {
+          code: 'GROUP_NOT_FOUND',
+          message: 'Group not found in specified session'
+        });
+        return;
+      }
+
+      // Prepare database update with enhanced issue tracking
+      const updateData: any = {
+        status: data.status,
+        updated_at: new Date()
+      };
+
+      // Handle readiness state for specific statuses
+      if (data.status === 'ready') {
+        updateData.is_ready = true;
+      } else if (data.status === 'issue') {
+        updateData.is_ready = false;
+        // Store issue reason if provided
+        if (data.issueReason) {
+          updateData.issue_reason = data.issueReason;
+          updateData.issue_reported_at = new Date();
+        }
+      } else if (data.isReady !== undefined) {
+        updateData.is_ready = data.isReady;
+      }
+
+      // Update group status in database
+      await databricksService.update('student_groups', data.groupId, updateData);
+
+      // Prepare broadcast payload with enhanced issue information
+      const broadcastPayload = {
         groupId: data.groupId,
         sessionId: data.sessionId,
         status: data.status,
-        isReady: data.isReady,
-        updatedBy: socket.data.userId
-      });
+        isReady: updateData.is_ready,
+        updatedBy: socket.data.userId,
+        timestamp: new Date().toISOString(),
+        ...(data.status === 'issue' && data.issueReason && { issueReason: data.issueReason })
+      };
 
-      this.emitToRoom(`group:${data.groupId}`, 'group:status_update', {
+      // Broadcast to session participants (including teacher dashboard)
+      const sessionBroadcastSuccess = this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', broadcastPayload);
+      
+      // Broadcast to group members with additional context
+      const groupBroadcastSuccess = this.emitToRoom(`group:${data.groupId}`, 'group:status_update', {
         groupId: data.groupId,
         status: data.status,
-        isReady: data.isReady
+        isReady: updateData.is_ready,
+        ...(data.status === 'issue' && data.issueReason && { issueReason: data.issueReason })
       });
 
-      console.log(`Sessions namespace: Group ${data.groupId} status updated to ${data.status}`);
+      // Log broadcast failures for monitoring
+      if (!sessionBroadcastSuccess || !groupBroadcastSuccess) {
+        console.error(`Broadcast failures for group status update:`, {
+          sessionBroadcast: sessionBroadcastSuccess,
+          groupBroadcast: groupBroadcastSuccess,
+          sessionId: data.sessionId,
+          groupId: data.groupId,
+          status: data.status
+        });
+      }
+
+      console.log(`Sessions namespace: Group ${group.name} status updated to ${data.status}${data.issueReason ? ` (reason: ${data.issueReason})` : ''}`);
     } catch (error) {
       console.error('Group status update error:', error);
       socket.emit('error', { 
@@ -356,9 +419,12 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
   private async handleGroupLeaderReady(socket: Socket, data: { sessionId: string; groupId: string; ready: boolean }) {
     try {
-      // Validate that group exists and belongs to session
+      // Generate idempotency key for this operation
+      const idempotencyKey = `${data.sessionId}-${data.groupId}-${data.ready ? 'ready' : 'not-ready'}`;
+      
+      // Validate that group exists and belongs to session, and get current readiness state
       const group = await databricksService.queryOne(`
-        SELECT leader_id, session_id, name 
+        SELECT leader_id, session_id, name, is_ready
         FROM classwaves.sessions.student_groups 
         WHERE id = ? AND session_id = ?
       `, [data.groupId, data.sessionId]);
@@ -371,24 +437,125 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // Update group readiness status
+      // Idempotency check: if state hasn't changed, skip database update and broadcast
+      if (group.is_ready === data.ready) {
+        console.log(`Sessions namespace: Group ${group.name} readiness state unchanged (${data.ready ? 'ready' : 'not ready'}) - idempotent skip`);
+        
+        // Still emit confirmation to requesting client for UX consistency
+        socket.emit('group:leader_ready_confirmed', {
+          groupId: data.groupId,
+          sessionId: data.sessionId,
+          isReady: data.ready,
+          idempotencyKey
+        });
+        return;
+      }
+
+      // State has changed - proceed with update
       await databricksService.update('student_groups', data.groupId, {
         is_ready: data.ready,
+        updated_at: new Date()
       });
       
       // Broadcast group status change to all session participants (including teacher dashboard)
-      this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', {
+      const broadcastSuccess = this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', {
         groupId: data.groupId,
-        status: data.ready ? 'ready' : 'waiting',
-        isReady: data.ready
+        status: data.ready ? 'ready' : 'connected',
+        isReady: data.ready,
+        idempotencyKey
+      });
+
+      // Log broadcast failure for monitoring
+      if (!broadcastSuccess) {
+        console.error(`Failed to broadcast group readiness change for session ${data.sessionId}, group ${data.groupId}`);
+      }
+      
+      // Emit confirmation to requesting client
+      socket.emit('group:leader_ready_confirmed', {
+        groupId: data.groupId,
+        sessionId: data.sessionId,
+        isReady: data.ready,
+        idempotencyKey
       });
       
-      console.log(`Sessions namespace: Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
+      console.log(`Sessions namespace: Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId} [${idempotencyKey}]`);
     } catch (error) {
       console.error('Sessions namespace: Group leader ready error:', error);
       socket.emit('error', {
         code: 'LEADER_READY_FAILED',
         message: 'Failed to update leader readiness',
+      });
+    }
+  }
+
+  private async handleWaveListenerIssue(socket: Socket, data: { sessionId: string; groupId: string; reason: 'permission_revoked' | 'stream_failed' | 'device_error' }) {
+    try {
+      // Verify group exists and belongs to session
+      const group = await databricksService.queryOne(`
+        SELECT id, session_id, name 
+        FROM classwaves.sessions.student_groups 
+        WHERE id = ? AND session_id = ?
+      `, [data.groupId, data.sessionId]);
+      
+      if (!group) {
+        socket.emit('error', {
+          code: 'GROUP_NOT_FOUND',
+          message: 'Group not found in specified session'
+        });
+        return;
+      }
+
+      // Update group to issue status with reason
+      await databricksService.update('student_groups', data.groupId, {
+        status: 'issue',
+        is_ready: false,
+        issue_reason: data.reason,
+        issue_reported_at: new Date(),
+        updated_at: new Date()
+      });
+
+      // Broadcast issue status to all session participants
+      const sessionIssueBroadcast = this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', {
+        groupId: data.groupId,
+        sessionId: data.sessionId,
+        status: 'issue',
+        isReady: false,
+        issueReason: data.reason,
+        reportedBy: socket.data.userId,
+        timestamp: new Date().toISOString()
+      });
+
+      // Notify group members about the issue
+      const groupIssueBroadcast = this.emitToRoom(`group:${data.groupId}`, 'wavelistener:issue_reported', {
+        groupId: data.groupId,
+        reason: data.reason,
+        reportedBy: socket.data.userId,
+        timestamp: new Date().toISOString()
+      });
+
+      // Critical issue broadcasts must succeed - log failures for immediate attention
+      if (!sessionIssueBroadcast || !groupIssueBroadcast) {
+        console.error(`CRITICAL: Failed to broadcast WaveListener issue for group ${group.name}:`, {
+          sessionBroadcast: sessionIssueBroadcast,
+          groupBroadcast: groupIssueBroadcast,
+          reason: data.reason,
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Send confirmation back to reporting client
+      socket.emit('wavelistener:issue_acknowledged', {
+        groupId: data.groupId,
+        sessionId: data.sessionId,
+        reason: data.reason
+      });
+
+      console.log(`Sessions namespace: WaveListener issue reported for group ${group.name}: ${data.reason}`);
+    } catch (error) {
+      console.error('WaveListener issue handling error:', error);
+      socket.emit('error', {
+        code: 'WAVELISTENER_ISSUE_FAILED',
+        message: 'Failed to report WaveListener issue'
       });
     }
   }

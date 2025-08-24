@@ -11,7 +11,8 @@ import {
   getSessionAnalytics,
   joinSession,
   getSessionParticipants,
-  resendSessionEmail
+  resendSessionEmail,
+  getGroupsStatus
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -39,6 +40,9 @@ router.post('/:sessionId/join', joinSession);
 
 // Participants (teacher auth)
 router.get('/:sessionId/participants', authenticate, getSessionParticipants);
+
+// State reconciliation endpoint for WebSocket sync
+router.get('/:sessionId/groups/status', authenticate, getGroupsStatus);
 
 // Email notification endpoints
 router.post('/:sessionId/resend-email', authenticate, resendSessionEmail);

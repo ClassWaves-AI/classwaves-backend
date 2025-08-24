@@ -1174,6 +1174,107 @@ export async function getSession(req: Request, res: Response): Promise<Response>
 }
 
 /**
+ * Get groups status for state reconciliation
+ * Used by clients to sync their local state with server state
+ */
+export async function getGroupsStatus(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    const sessionId = req.params.sessionId || req.params.id;
+
+    // Verify session ownership
+    const session = await databricksService.queryOne(
+      `SELECT id, teacher_id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+      [sessionId, teacher.id]
+    );
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'SESSION_NOT_FOUND',
+          message: 'Session not found or access denied'
+        }
+      });
+    }
+
+    // Get current group statuses with comprehensive state information
+    const groups = await databricksService.query(`
+      SELECT 
+        sg.id,
+        sg.name,
+        sg.status,
+        sg.is_ready,
+        sg.leader_id,
+        sg.current_size,
+        sg.max_size,
+        sg.group_number,
+        sg.issue_reason,
+        sg.issue_reported_at,
+        sg.updated_at,
+        COUNT(sgm.student_id) as actual_member_count,
+        CASE WHEN sg.leader_id IS NOT NULL THEN 1 ELSE 0 END as has_leader
+      FROM ${databricksConfig.catalog}.sessions.student_groups sg
+      LEFT JOIN ${databricksConfig.catalog}.sessions.student_group_members sgm ON sg.id = sgm.group_id
+      WHERE sg.session_id = ?
+      GROUP BY sg.id, sg.name, sg.status, sg.is_ready, sg.leader_id, sg.current_size, 
+               sg.max_size, sg.group_number, sg.issue_reason, sg.issue_reported_at, sg.updated_at
+      ORDER BY sg.group_number
+    `, [sessionId]);
+
+    // Calculate readiness summary
+    const totalGroups = groups.length;
+    const readyGroups = groups.filter((g: any) => g.is_ready === true).length;
+    const issueGroups = groups.filter((g: any) => g.status === 'issue').length;
+    const allGroupsReady = readyGroups === totalGroups && totalGroups > 0;
+
+    // Format response for client consumption
+    const groupsStatus = groups.map((group: any) => ({
+      id: group.id,
+      name: group.name,
+      status: group.status || 'connected', // Default status if null
+      isReady: Boolean(group.is_ready),
+      hasLeader: Boolean(group.has_leader),
+      leaderId: group.leader_id || null,
+      memberCount: group.actual_member_count || 0,
+      maxSize: group.max_size || 4,
+      groupNumber: group.group_number,
+      issueReason: group.issue_reason || null,
+      issueReportedAt: group.issue_reported_at || null,
+      lastUpdated: group.updated_at
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        sessionId,
+        sessionStatus: session.status,
+        groups: groupsStatus,
+        summary: {
+          totalGroups,
+          readyGroups,
+          issueGroups,
+          allGroupsReady,
+          canStartSession: allGroupsReady && session.status === 'pending'
+        },
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching groups status:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'GROUPS_STATUS_FETCH_FAILED',
+        message: 'Failed to fetch groups status'
+      }
+    });
+  }
+}
+
+/**
  * Start a session - Phase 5: Returns full session, records readiness metrics
  * Enhanced with retry + timeout guards for reliability (Task 2.3)
  */
