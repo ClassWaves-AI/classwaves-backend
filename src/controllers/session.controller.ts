@@ -22,6 +22,8 @@ import {
   logQueryOptimization
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
+import { analyticsLogger } from '../utils/analytics-logger';
+import { RetryService } from '../services/retry.service';
 
 /**
  * Store session access code in Redis for student leader joining
@@ -1183,8 +1185,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId;
     
-    // Import RetryService for resilience
-    const { RetryService } = await import('../services/retry.service');
+    // Use RetryService for resilience
     
     // Verify session belongs to teacher - with retry and timeout
     const session = await RetryService.retryDatabaseOperation(
@@ -1240,6 +1241,59 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     const totalGroups = totalGroupsResult?.total_groups_count || 0;
     const startedWithoutReadyGroups = readyGroupsAtStart < totalGroups;
 
+    // SG-BE-01: Gate session start if not all groups are ready
+    if (readyGroupsAtStart !== totalGroups) {
+      // SG-BE-03: Get details of groups that are not ready for detailed error response  
+      const notReadyGroupsResult = await RetryService.retryDatabaseOperation(
+        () => databricksService.query(
+          `SELECT id, name, is_ready 
+           FROM ${databricksConfig.catalog}.sessions.student_groups 
+           WHERE session_id = ? AND is_ready = false`,
+          [sessionId]
+        ),
+        'get-not-ready-groups'
+      );
+
+      const notReadyGroups = notReadyGroupsResult?.map((group: any) => ({
+        id: group.id,
+        name: group.name
+      })) || [];
+
+      // SG-BE-04: Record session gating metric
+      try {
+        // Use existing analytics logger for observability
+        analyticsLogger.logOperation(
+          'session_start_gated',
+          'classroom_sessions',
+          Date.now(),
+          true,
+          {
+            sessionId,
+            metadata: {
+              readyCount: readyGroupsAtStart,
+              totalCount: totalGroups,
+              notReadyGroupsCount: totalGroups - readyGroupsAtStart
+            },
+            forceLog: true // Always log session gating events
+          }
+        );
+      } catch (metricsError) {
+        console.warn('⚠️ Session gating metrics recording failed (non-critical):', metricsError);
+      }
+
+      // SG-BE-03: Return 409 GROUPS_NOT_READY with detailed response
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: 'GROUPS_NOT_READY',
+          message: `Cannot start session: ${totalGroups - readyGroupsAtStart} of ${totalGroups} groups are not ready`,
+          readyCount: readyGroupsAtStart,
+          totalCount: totalGroups,
+          notReadyGroups
+        }
+      });
+    }
+
     // Update session status and actual_start - with retry and timeout
     const startedAt = new Date();
     await RetryService.retryDatabaseOperation(
@@ -1253,7 +1307,6 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     
     // CRITICAL FIX: Invalidate session cache to ensure fresh data
     try {
-      const { queryCacheService } = await import('../services/query-cache.service');
       // Invalidate all session-detail cache entries for this session
       const cachePattern = `session-detail:*${sessionId}*`;
       await queryCacheService.invalidateCache(cachePattern);
@@ -1264,7 +1317,6 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     }
     
     // Broadcast session status change to all connected WebSocket clients - with graceful degradation
-    const { websocketService } = await import('../services/websocket.service');
     if (websocketService.io) {
       try {
         await RetryService.withRetry(
