@@ -180,8 +180,51 @@ export abstract class NamespaceBaseService {
     return true;
   }
 
-  protected emitToRoom(room: string, event: string, data: any): void {
-    this.namespace.to(room).emit(event, data);
+  protected emitToRoom(room: string, event: string, data: any): boolean {
+    try {
+      // Get room participants count for monitoring
+      const roomObj = this.namespace.adapter.rooms.get(room);
+      const participantCount = roomObj ? roomObj.size : 0;
+      
+      if (participantCount === 0) {
+        console.warn(`WebSocket: Attempted to emit '${event}' to empty room '${room}'`);
+        return false;
+      }
+
+      // Emit to room with error boundary
+      this.namespace.to(room).emit(event, data);
+      
+      // Log successful broadcasts for critical events
+      if (['group:status_changed', 'session:status_changed', 'wavelistener:issue_reported'].includes(event)) {
+        console.log(`WebSocket: Successfully broadcast '${event}' to room '${room}' (${participantCount} participants)`);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error(`WebSocket broadcast failure:`, {
+        room,
+        event,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString()
+      });
+
+      // Attempt fallback broadcast without room filtering
+      try {
+        // For critical events, attempt direct emission to all connected sockets
+        if (['group:status_changed', 'session:status_changed'].includes(event)) {
+          console.log(`WebSocket: Attempting fallback broadcast for critical event '${event}'`);
+          this.namespace.emit(event, { ...data, fallbackBroadcast: true });
+        }
+      } catch (fallbackError) {
+        console.error(`WebSocket fallback broadcast also failed:`, {
+          room,
+          event,
+          fallbackError: fallbackError instanceof Error ? fallbackError.message : 'Unknown fallback error'
+        });
+      }
+      
+      return false;
+    }
   }
 
   protected getUserSocketCount(userId: string): number {
