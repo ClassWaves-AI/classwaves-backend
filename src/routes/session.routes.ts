@@ -12,7 +12,8 @@ import {
   joinSession,
   getSessionParticipants,
   resendSessionEmail,
-  getGroupsStatus
+  getGroupsStatus,
+  clearSessionListCache
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -46,5 +47,8 @@ router.get('/:sessionId/groups/status', authenticate, getGroupsStatus);
 
 // Email notification endpoints
 router.post('/:sessionId/resend-email', authenticate, resendSessionEmail);
+
+// Temporary cache clearing endpoint (for debugging/fixing cache issues)
+router.post('/admin/clear-cache', authenticate, clearSessionListCache);
 
 export default router;

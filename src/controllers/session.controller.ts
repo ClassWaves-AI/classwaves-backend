@@ -108,6 +108,7 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     // Map DB rows to frontend contract and fetch access codes from Redis
     const sessions = await Promise.all((rawSessions || []).map(async (s: any) => {
       const accessCode = await getAccessCodeBySession(s.id);
+      console.log('🔍 DEBUG: Mapping session:', s.id, 'group_count:', s.group_count, 'student_count:', s.student_count);
       return {
         id: s.id,
         accessCode, // Retrieved from Redis
@@ -121,11 +122,11 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
         actualStart: s.actual_start ? new Date(s.actual_start).toISOString() : undefined,
         plannedDuration: s.planned_duration_minutes,
         groups: {
-          total: (s.group_count ?? s.total_groups ?? 0) as number,
+          total: (s.group_count ?? 0) as number,
           active: 0,
         },
         students: {
-          total: (s.student_count ?? s.total_students ?? 0) as number,
+          total: (s.student_count ?? 0) as number,
           active: 0,
         },
         analytics: {
@@ -679,6 +680,15 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     // 8. Fetch complete session with groups for response
     const session = await getSessionWithGroups(sessionId, teacher.id);
 
+    // 9. Invalidate session list cache so new session appears immediately
+    try {
+      const cachePattern = `session-list:*`;
+      await queryCacheService.invalidateCache(cachePattern);
+      console.log('🗑️ Invalidated session list cache after session creation');
+    } catch (error) {
+      console.warn('⚠️ Cache invalidation failed (non-critical):', error);
+    }
+
     return res.status(201).json({
       success: true,
       data: {
@@ -981,7 +991,9 @@ async function getTeacherSessionsOptimized(teacherId: string, limit: number): Pr
   const queryBuilder = buildSessionListQuery();
   
   const sql = `
-    ${queryBuilder.sql}
+    ${queryBuilder.sql},
+    g.group_count,
+    g.student_count
     FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
     LEFT JOIN (
       SELECT 
@@ -1003,6 +1015,9 @@ async function getTeacherSessionsOptimized(teacherId: string, limit: number): Pr
   console.log('🔍 DEBUG: Query result count:', result?.length || 0);
   if (result && result.length > 0) {
     console.log('🔍 DEBUG: First result teacher_id:', result[0].teacher_id);
+    console.log('🔍 DEBUG: First result group_count:', result[0].group_count);
+    console.log('🔍 DEBUG: First result student_count:', result[0].student_count);
+    console.log('🔍 DEBUG: First result keys:', Object.keys(result[0]));
   }
   
   return result;
@@ -1168,6 +1183,46 @@ export async function getSession(req: Request, res: Response): Promise<Response>
       error: {
         code: 'SESSION_FETCH_FAILED',
         message: 'Failed to fetch session',
+      },
+    });
+  }
+}
+
+/**
+ * Clear session list cache (temporary fix for cache invalidation issues)
+ * TODO: Remove this endpoint after cache versioning is implemented
+ */
+export async function clearSessionListCache(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    
+    // Only allow admins or in development
+    if (teacher.role !== 'admin' && teacher.role !== 'super_admin' && process.env.NODE_ENV !== 'development') {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Access denied',
+        },
+      });
+    }
+    
+    const cachePattern = `session-list:*`;
+    await queryCacheService.invalidateCache(cachePattern);
+    console.log('🗑️ Manual cache clear performed by:', teacher.email);
+    
+    return res.json({
+      success: true,
+      message: 'Session list cache cleared successfully',
+    });
+  } catch (error) {
+    console.error('Error clearing cache:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'CACHE_CLEAR_FAILED',
+        message: 'Failed to clear cache',
       },
     });
   }
