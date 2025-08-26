@@ -80,7 +80,7 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
-    console.log('🔍 DEBUG: listSessions called with teacher:', teacher.id);
+    console.log('🔍 DEBUG: listSessions called with teacher:', teacher.id, 'email:', teacher.email, 'role:', teacher.role);
     
     // Get query parameters
     const page = parseInt(req.query.page as string) || 1;
