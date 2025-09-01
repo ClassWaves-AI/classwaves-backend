@@ -122,17 +122,28 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // Verify session belongs to authenticated user
-      const session = await databricksService.queryOne(
-        `SELECT id, status, teacher_id FROM classwaves.sessions.classroom_sessions 
-         WHERE id = ? AND teacher_id = ?`,
-        [sessionId, socket.data.userId]
-      );
+      // Verify session exists and user has access (teachers own sessions, super_admin can access any session)
+      let session;
+      if (socket.data.role === 'super_admin') {
+        // Super admin can join any session
+        session = await databricksService.queryOne(
+          `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
+           WHERE id = ?`,
+          [sessionId]
+        );
+      } else {
+        // Regular users (teachers/admin) must own the session  
+        session = await databricksService.queryOne(
+          `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
+           WHERE id = ? AND teacher_id = ?`,
+          [sessionId, socket.data.userId]
+        );
+      }
 
       if (!session) {
         socket.emit('error', { 
           code: 'SESSION_NOT_FOUND', 
-          message: 'Session not found or not owned by user' 
+          message: socket.data.role === 'super_admin' ? 'Session not found' : 'Session not found or not owned by user'
         });
         return;
       }
@@ -207,17 +218,28 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // Verify ownership
-      const session = await databricksService.queryOne(
-        `SELECT id FROM classwaves.sessions.classroom_sessions 
-         WHERE id = ? AND teacher_id = ?`,
-        [sessionId, socket.data.userId]
-      );
+      // Verify ownership or super_admin access
+      let session;
+      if (socket.data.role === 'super_admin') {
+        // Super admin can update any session
+        session = await databricksService.queryOne(
+          `SELECT id FROM classwaves.sessions.classroom_sessions 
+           WHERE id = ?`,
+          [sessionId]
+        );
+      } else {
+        // Regular users must own the session
+        session = await databricksService.queryOne(
+          `SELECT id FROM classwaves.sessions.classroom_sessions 
+           WHERE id = ? AND teacher_id = ?`,
+          [sessionId, socket.data.userId]
+        );
+      }
 
       if (!session) {
         socket.emit('error', { 
           code: 'SESSION_NOT_FOUND', 
-          message: 'Session not found or not owned by user' 
+          message: socket.data.role === 'super_admin' ? 'Session not found' : 'Session not found or not owned by user'
         });
         return;
       }

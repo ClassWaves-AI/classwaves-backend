@@ -63,10 +63,11 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
 
     // Check ownership - teacher must own the session
     if (session.teacher_id !== authReq.user.id) {
-      // Additional check: admin users can access sessions from their school
-      if (authReq.user.role === 'admin' && session.school_id === authReq.user.school_id) {
-        // Admin access granted - continue
-        console.log(`🔐 Admin access granted for session ${sessionId} by user ${authReq.user.id}`);
+      // Additional check: admin users can access sessions from their school, super_admin can access any session
+      if ((authReq.user.role === 'admin' && session.school_id === authReq.user.school_id) || 
+          authReq.user.role === 'super_admin') {
+        // Admin/Super admin access granted - continue
+        console.log(`🔐 ${authReq.user.role} access granted for session ${sessionId} by user ${authReq.user.id}`);
       } else {
         // Record unauthorized access attempt for security monitoring
         console.warn(`⚠️ Unauthorized session access attempt:`, {
@@ -91,8 +92,8 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
       }
     }
 
-    // School-level verification for additional security
-    if (session.school_id !== authReq.user.school_id) {
+    // School-level verification for additional security (super_admin users bypass this check)
+    if (authReq.user.role !== 'super_admin' && session.school_id !== authReq.user.school_id) {
       console.error(`🚨 Security violation: Cross-school session access attempt:`, {
         userId: authReq.user.id,
         userSchool: authReq.user.school_id,

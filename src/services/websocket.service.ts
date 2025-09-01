@@ -233,9 +233,9 @@ export class WebSocketService {
         // Verify JWT token
         const payload = verifyToken(token);
         
-        // Verify session exists for teacher/admin; students don't maintain secure sessions
+        // Verify session exists for teacher/admin/super_admin; students don't maintain secure sessions
         let sessionOk = false;
-        if (payload.role === 'teacher' || payload.role === 'admin') {
+        if (payload.role === 'teacher' || payload.role === 'admin' || payload.role === 'super_admin') {
           const sessionData = await redisService.getSession(payload.sessionId);
           if (sessionData) {
             sessionOk = true;
@@ -396,11 +396,16 @@ export class WebSocketService {
           }
           
           // Broadcast group status change to teacher clients
-          this.io.to(`session:${data.sessionId}`).emit('group:status_changed', {
+          const broadcastEvent = {
             groupId: data.groupId,
             status: data.ready ? 'ready' : 'waiting',
             isReady: data.ready
-          });
+          };
+          
+          console.log(`🎯 [WEBSOCKET DEBUG] Broadcasting group:status_changed to session:${data.sessionId}`);
+          console.log(`🎯 [WEBSOCKET DEBUG] Broadcast payload:`, broadcastEvent);
+          
+          this.io.to(`session:${data.sessionId}`).emit('group:status_changed', broadcastEvent);
           
           console.log(`🎯 Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
         } catch (error) {

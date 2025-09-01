@@ -11,7 +11,7 @@ import { redisService } from '../redis.service';
 
 export interface SecurityContext {
   userId: string;
-  role: 'teacher' | 'student' | 'admin';
+  role: 'teacher' | 'student' | 'admin' | 'super_admin';
   schoolId?: string;
   sessionId?: string;
   authenticatedAt: Date;
@@ -20,7 +20,7 @@ export interface SecurityContext {
 }
 
 export interface NamespaceSecurityConfig {
-  allowedRoles: Array<'teacher' | 'student' | 'admin'>;
+  allowedRoles: Array<'teacher' | 'student' | 'admin' | 'super_admin'>;
   requireSchoolVerification: boolean;
   requireSessionAccess: boolean;
   maxConnectionsPerUser: number;
@@ -38,15 +38,15 @@ export interface SecurityValidationResult {
 export class WebSocketSecurityValidator {
   private readonly NAMESPACE_CONFIGS: Record<string, NamespaceSecurityConfig> = {
     '/sessions': {
-      allowedRoles: ['teacher', 'student'],
+      allowedRoles: ['teacher', 'admin', 'super_admin'],
       requireSchoolVerification: true,
       requireSessionAccess: false,
-      maxConnectionsPerUser: 5, // Allow multiple tabs/devices
+      maxConnectionsPerUser: process.env.NODE_ENV === 'development' ? 50 : 5, // Higher limit for dev
       rateLimitWindow: 60,
       rateLimitMaxRequests: 100
     },
     '/guidance': {
-      allowedRoles: ['teacher', 'admin'],
+      allowedRoles: ['teacher', 'admin', 'super_admin'],
       requireSchoolVerification: true,
       requireSessionAccess: false,
       maxConnectionsPerUser: 3, // More restrictive for guidance
@@ -54,7 +54,7 @@ export class WebSocketSecurityValidator {
       rateLimitMaxRequests: 50
     },
     '/admin': {
-      allowedRoles: ['admin'],
+      allowedRoles: ['admin', 'super_admin'],
       requireSchoolVerification: false, // Admins can access cross-school
       requireSessionAccess: false,
       maxConnectionsPerUser: 2,
@@ -256,7 +256,7 @@ export class WebSocketSecurityValidator {
 
     try {
       let userQuery: string;
-      if (securityContext.role === 'teacher' || securityContext.role === 'admin') {
+      if (securityContext.role === 'teacher' || securityContext.role === 'admin' || securityContext.role === 'super_admin') {
         userQuery = `
           SELECT t.id, t.school_id, s.subscription_status 
           FROM classwaves.users.teachers t
@@ -312,14 +312,21 @@ export class WebSocketSecurityValidator {
     sessionId: string
   ): Promise<SecurityValidationResult> {
     try {
-      if (securityContext.role === 'teacher' || securityContext.role === 'admin') {
-        // Teachers can access sessions they own or in their school
-        const sessionAccess = await databricksService.queryOne(`
+      if (securityContext.role === 'teacher' || securityContext.role === 'admin' || securityContext.role === 'super_admin') {
+        // Teachers/admins can access sessions they own or in their school, super_admin can access any session
+        let sessionQuery = `
           SELECT id, teacher_id, school_id, status
           FROM classwaves.sessions.classroom_sessions
-          WHERE id = ? AND (teacher_id = ? OR school_id = ?)
-          AND status IN ('scheduled', 'active', 'paused')
-        `, [sessionId, securityContext.userId, securityContext.schoolId || '']);
+          WHERE id = ? AND status IN ('scheduled', 'active', 'paused')
+        `;
+        let queryParams = [sessionId];
+        
+        if (securityContext.role !== 'super_admin') {
+          sessionQuery += ` AND (teacher_id = ? OR school_id = ?)`;
+          queryParams.push(securityContext.userId, securityContext.schoolId || '');
+        }
+        
+        const sessionAccess = await databricksService.queryOne(sessionQuery, queryParams);
 
         if (!sessionAccess) {
           return {
@@ -386,9 +393,42 @@ export class WebSocketSecurityValidator {
       // Store in audit log (async, don't block)
       setImmediate(async () => {
         try {
-          await databricksService.insert('classwaves.security.websocket_security_events', securityEvent);
+          // Route security events to existing audit_log table with proper structure
+          const auditLogEntry = {
+            id: securityEvent.id,
+            actor_id: securityEvent.user_id,
+            actor_type: 'system',
+            event_type: 'websocket_security',
+            event_category: 'security_event',
+            event_timestamp: securityEvent.timestamp,
+            resource_type: 'websocket_connection',
+            resource_id: securityEvent.namespace_name || 'unknown',
+            school_id: 'unknown', // WebSocket events don't have school_id directly
+            description: `WebSocket security event: ${securityEvent.event_type}`,
+            event_data: JSON.stringify({
+              eventType: securityEvent.event_type,
+              namespaceName: securityEvent.namespace_name,
+              ipAddress: securityEvent.ip_address,
+              userAgent: securityEvent.user_agent,
+              userRole: securityEvent.user_role,
+              severity: securityEvent.severity,
+              originalMetadata: securityEvent.metadata
+            }),
+            ip_address: securityEvent.ip_address,
+            user_agent: securityEvent.user_agent,
+            operation_result: 'success',
+            created_at: securityEvent.timestamp
+          };
+          
+          await databricksService.insert('audit_log', auditLogEntry);
         } catch (error) {
-          console.error('Failed to log WebSocket security event:', error);
+          // Gracefully handle audit log errors - don't block core functionality
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
+            console.warn('Audit log table not found - skipping WebSocket security audit (non-critical)');
+          } else {
+            console.error('Failed to log WebSocket security event to audit log:', error);
+          }
         }
       });
 

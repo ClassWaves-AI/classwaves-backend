@@ -6,7 +6,7 @@ import { webSocketSecurityValidator, SecurityContext } from './websocket-securit
 export interface NamespaceSocketData {
   userId: string;
   sessionId?: string;
-  role: 'teacher' | 'student' | 'admin';
+  role: 'teacher' | 'student' | 'admin' | 'super_admin';
   schoolId?: string;
   connectedAt: Date;
 }
@@ -38,16 +38,17 @@ export abstract class NamespaceBaseService {
 
         // Enhanced user verification with school context
         let user: any = null;
-        let userRole: 'teacher' | 'student' | 'admin' = decoded.role as any;
+        let userRole: 'teacher' | 'student' | 'admin' | 'super_admin' = decoded.role as any;
         let schoolId: string | undefined = undefined;
 
-        if (decoded.role === 'teacher' || decoded.role === 'admin') {
-          // Verify teacher exists and is active with school context
+        if (decoded.role === 'teacher' || decoded.role === 'admin' || decoded.role === 'super_admin') {
+          // Verify teacher/admin/super_admin exists and is active with school context
           user = await databricksService.queryOne(
             `SELECT t.id, t.role, t.status, t.school_id, s.subscription_status 
              FROM classwaves.users.teachers t
              JOIN classwaves.users.schools s ON t.school_id = s.id
-             WHERE t.id = ? AND t.status = 'active' AND s.subscription_status = 'active'`,
+             WHERE t.id = ? AND t.status = 'active' 
+             AND (s.subscription_status = 'active' OR t.role = 'super_admin')`,
             [decoded.userId]
           );
           schoolId = (user?.school_id as string | undefined);
@@ -75,7 +76,7 @@ export abstract class NamespaceBaseService {
         // Create security context for validation
         const securityContext: SecurityContext = {
           userId: decoded.userId,
-          role: userRole as 'teacher' | 'student' | 'admin',
+          role: userRole as 'teacher' | 'student' | 'admin' | 'super_admin',
           schoolId,
           sessionId: decoded.sessionId,
           authenticatedAt: new Date(),

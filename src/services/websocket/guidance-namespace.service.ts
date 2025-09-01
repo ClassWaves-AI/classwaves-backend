@@ -32,11 +32,11 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     socketData.subscribedSessions = new Set();
     socketData.subscriptions = new Set();
 
-    // Only allow teachers in guidance namespace
-    if (socket.data.role !== 'teacher') {
+    // Only allow teachers and super_admin in guidance namespace
+    if (socket.data.role !== 'teacher' && socket.data.role !== 'super_admin') {
       socket.emit('error', {
         code: 'ACCESS_DENIED',
-        message: 'Teacher guidance is only available to teachers'
+        message: 'Teacher guidance is only available to teachers and administrators'
       });
       socket.disconnect();
       return;

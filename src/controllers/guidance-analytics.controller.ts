@@ -254,9 +254,9 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     const { sessionId } = req.params;
     const query = req.query as any;
     
-    // ✅ SECURITY: Verify session ownership
+    // ✅ SECURITY: Verify session ownership (super_admin can access any session)
     const sessionOwnership = await verifySessionOwnership(sessionId, teacher.id, school.id);
-    if (!sessionOwnership.isOwner && teacher.role !== 'admin') {
+    if (!sessionOwnership.isOwner && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
       return res.status(403).json({
         success: false,
         error: 'UNAUTHORIZED',

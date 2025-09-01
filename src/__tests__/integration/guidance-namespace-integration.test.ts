@@ -528,4 +528,150 @@ describe('Guidance Namespace Integration Tests', () => {
       );
     });
   });
+
+  describe('Super Admin Authentication Integration', () => {
+    let superAdminSocket: ClientSocket;
+    const mockSuperAdminId = 'rob_admin_001';
+
+    beforeEach(async () => {
+      // Mock JWT verification for super_admin authentication
+      jest.spyOn(require('jsonwebtoken'), 'verify').mockReturnValue({
+        userId: mockSuperAdminId,
+        role: 'super_admin',
+        schoolId: 'classwaves_admin_001'
+      });
+
+      // Mock super_admin user database validation
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce({
+          id: mockSuperAdminId,
+          role: 'super_admin',
+          status: 'active',
+          school_id: 'classwaves_admin_001',
+          subscription_status: 'active'
+        });
+
+      // Connect super admin socket
+      superAdminSocket = clientIO(`http://localhost:${serverPort}/guidance`, {
+        auth: { token: 'mock-superadmin-jwt-token' }
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Super admin connection timeout'));
+        }, 5000);
+
+        superAdminSocket.on('connect', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        superAdminSocket.on('connect_error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+    });
+
+    afterEach(() => {
+      if (superAdminSocket) {
+        superAdminSocket.disconnect();
+      }
+    });
+
+    it('should authenticate super_admin users for guidance namespace access', async () => {
+      // Verify connection was successful
+      expect(superAdminSocket.connected).toBe(true);
+      
+      // Test guidance functionality with super_admin
+      const responsePromise = new Promise<any>((resolve) => {
+        superAdminSocket.once('guidance:current_state', resolve);
+      });
+
+      superAdminSocket.emit('guidance:get_current_state', { sessionId: mockSessionId });
+
+      const response = await responsePromise;
+
+      // Verify super_admin can access guidance functionality
+      expect(response).toBeDefined();
+      expect(response.sessionId).toBe(mockSessionId);
+    });
+
+    it('should handle super_admin role validation in database queries', async () => {
+      // Clear previous mocks
+      mockDatabricksService.queryOne.mockClear();
+
+      // Setup super_admin specific database responses
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce({
+          id: mockSuperAdminId,
+          role: 'super_admin',
+          status: 'active',
+          school_id: 'classwaves_admin_001',
+          subscription_status: 'active'
+        });
+
+      // Connect new socket to trigger authentication
+      const testSocket = clientIO(`http://localhost:${serverPort}/guidance`, {
+        auth: { token: 'mock-superadmin-jwt-token' }
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Super admin validation timeout'));
+        }, 5000);
+
+        testSocket.on('connect', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        testSocket.on('connect_error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+
+      // Verify authentication succeeded
+      expect(testSocket.connected).toBe(true);
+      
+      testSocket.disconnect();
+    });
+
+    it('should reject invalid super_admin authentication', async () => {
+      // Mock JWT with invalid super_admin user
+      jest.spyOn(require('jsonwebtoken'), 'verify').mockReturnValue({
+        userId: 'fake_admin_001',
+        role: 'super_admin',
+        schoolId: 'fake_school'
+      });
+
+      // Mock database returning no user (invalid super_admin)
+      mockDatabricksService.queryOne.mockResolvedValue(null);
+
+      const invalidSocket = clientIO(`http://localhost:${serverPort}/guidance`, {
+        auth: { token: 'invalid-superadmin-token' }
+      });
+
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, 2000); // Wait for connection failure
+
+        invalidSocket.on('connect_error', (error) => {
+          clearTimeout(timeout);
+          // Should get "User not found or inactive (role: super_admin)" error
+          expect(error.message).toContain('User not found or inactive (role: super_admin)');
+          resolve();
+        });
+
+        invalidSocket.on('connect', () => {
+          clearTimeout(timeout);
+          // Should not connect successfully
+          expect(true).toBe(false);
+          resolve();
+        });
+      });
+
+      invalidSocket.disconnect();
+    });
+  });
 });

@@ -8,6 +8,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 
 export interface AdminSecurityOptions {
   allowedRoles: Array<'admin' | 'super_admin'>;
@@ -286,9 +287,41 @@ async function logAdminSecurityEvent(
     // Store in security audit log (async, don't block)
     setImmediate(async () => {
       try {
-        await databricksService.insert('classwaves.security.admin_route_security_events', auditEvent);
+        // Route admin security events to existing audit_log table with proper structure
+        const auditLogEntry = {
+          id: auditEvent.id,
+          actor_id: auditEvent.user_id,
+          actor_type: 'user',
+          event_type: 'admin_route_access',
+          event_category: 'security_event',
+          event_timestamp: auditEvent.timestamp,
+          resource_type: 'admin_route',
+          resource_id: auditEvent.route_path,
+          school_id: auditEvent.school_id || 'unknown',
+          description: `Admin route security event: ${auditEvent.event_type}`,
+          event_data: JSON.stringify({
+            eventType: auditEvent.event_type,
+            routePath: auditEvent.route_path,
+            httpMethod: auditEvent.http_method,
+            userRole: auditEvent.user_role,
+            requiredRoles: auditEvent.required_roles,
+            originalMetadata: auditEvent.metadata
+          }),
+          ip_address: auditEvent.ip_address,
+          user_agent: auditEvent.user_agent,
+          operation_result: 'success',
+          created_at: auditEvent.timestamp
+        };
+        
+        await databricksService.insert('audit_log', auditLogEntry);
       } catch (error) {
-        console.error('Failed to log admin security event:', error);
+        // Gracefully handle audit log errors - don't block core functionality
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
+          console.warn('Audit log table not found - skipping admin security audit (non-critical)');
+        } else {
+          console.error('Failed to log admin security event to audit log:', error);
+        }
       }
     });
 
@@ -340,15 +373,17 @@ export async function getAdminSecurityStats(timeframeHours: number = 24): Promis
     const stats = await databricksService.query(`
       SELECT 
         COUNT(*) as total_accesses,
-        SUM(CASE WHEN event_type = 'ADMIN_ACCESS_DENIED' THEN 1 ELSE 0 END) as denied_accesses,
-        SUM(CASE WHEN event_type = 'ROUTE_SECURITY_VIOLATION' THEN 1 ELSE 0 END) as security_violations,
-        route_path,
-        http_method,
-        user_role,
+        SUM(CASE WHEN event_data LIKE '%ADMIN_ACCESS_DENIED%' THEN 1 ELSE 0 END) as denied_accesses,
+        SUM(CASE WHEN event_data LIKE '%ROUTE_SECURITY_VIOLATION%' THEN 1 ELSE 0 END) as security_violations,
+        resource_id as route_path,
+        JSON_EXTRACT(event_data, '$.httpMethod') as http_method,
+        JSON_EXTRACT(event_data, '$.userRole') as user_role,
         COUNT(*) as access_count
-      FROM classwaves.security.admin_route_security_events
-      WHERE timestamp >= ?
-      GROUP BY route_path, http_method, user_role
+      FROM ${databricksConfig.catalog}.compliance.audit_log
+      WHERE event_type = 'admin_route_access' 
+        AND event_category = 'security_event'
+        AND event_timestamp >= ?
+      GROUP BY resource_id, JSON_EXTRACT(event_data, '$.httpMethod'), JSON_EXTRACT(event_data, '$.userRole')
       ORDER BY access_count DESC
       LIMIT 50
     `, [timeframeStart.toISOString()]);
@@ -368,7 +403,14 @@ export async function getAdminSecurityStats(timeframeHours: number = 24): Promis
     return result;
 
   } catch (error) {
-    console.error('Error fetching admin security stats:', error);
+    // Gracefully handle missing audit log table
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
+      console.warn('Audit log table not found - returning empty admin security stats (non-critical)');
+    } else {
+      console.error('Error fetching admin security stats from audit log:', error);
+    }
+    
     return {
       totalAccesses: 0,
       deniedAccesses: 0,

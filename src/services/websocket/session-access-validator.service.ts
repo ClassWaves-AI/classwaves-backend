@@ -41,8 +41,8 @@ export class SessionAccessValidator {
     }
 
     try {
-      if (securityContext.role === 'admin') {
-        // Admins have broad access but should still validate session exists
+      if (securityContext.role === 'admin' || securityContext.role === 'super_admin') {
+        // Admins and super_admins have broad access but should still validate session exists
         const sessionExists = await this.validateSessionExists(sessionId);
         return {
           allowed: sessionExists,
@@ -216,27 +216,38 @@ export class SessionAccessValidator {
     };
 
     try {
-      if (securityContext.role === 'teacher' || securityContext.role === 'admin') {
-        // Get owned sessions
-        const ownedSessions = await databricksService.query(`
-          SELECT id FROM classwaves.sessions.classroom_sessions
-          WHERE teacher_id = ? AND status IN ('scheduled', 'active', 'paused', 'ended')
-          ORDER BY created_at DESC
-          LIMIT 50
-        `, [securityContext.userId]);
-
-        result.ownedSessions = (ownedSessions as any[]).map(s => s.id);
-
-        // Get school sessions (if not admin)
-        if (securityContext.role === 'teacher' && securityContext.schoolId) {
-          const schoolSessions = await databricksService.query(`
+      if (securityContext.role === 'teacher' || securityContext.role === 'admin' || securityContext.role === 'super_admin') {
+        if (securityContext.role === 'super_admin') {
+          // Super admin can access all sessions
+          const allSessions = await databricksService.query(`
             SELECT id FROM classwaves.sessions.classroom_sessions
-            WHERE school_id = ? AND teacher_id != ? AND status IN ('scheduled', 'active', 'paused')
+            WHERE status IN ('scheduled', 'active', 'paused', 'ended')
             ORDER BY created_at DESC
-            LIMIT 25
-          `, [securityContext.schoolId, securityContext.userId]);
+            LIMIT 100
+          `);
+          result.ownedSessions = (allSessions as any[]).map(s => s.id);
+        } else {
+          // Get owned sessions for teachers/admins
+          const ownedSessions = await databricksService.query(`
+            SELECT id FROM classwaves.sessions.classroom_sessions
+            WHERE teacher_id = ? AND status IN ('scheduled', 'active', 'paused', 'ended')
+            ORDER BY created_at DESC
+            LIMIT 50
+          `, [securityContext.userId]);
 
-          result.schoolSessions = (schoolSessions as any[]).map(s => s.id);
+          result.ownedSessions = (ownedSessions as any[]).map(s => s.id);
+
+          // Get school sessions (if teacher)
+          if (securityContext.role === 'teacher' && securityContext.schoolId) {
+            const schoolSessions = await databricksService.query(`
+              SELECT id FROM classwaves.sessions.classroom_sessions
+              WHERE school_id = ? AND teacher_id != ? AND status IN ('scheduled', 'active', 'paused')
+              ORDER BY created_at DESC
+              LIMIT 25
+            `, [securityContext.schoolId, securityContext.userId]);
+
+            result.schoolSessions = (schoolSessions as any[]).map(s => s.id);
+          }
         }
       }
 
@@ -282,8 +293,8 @@ export class SessionAccessValidator {
         return sessionAccess;
       }
 
-      if (securityContext.role === 'teacher' || securityContext.role === 'admin') {
-        // Teachers/admins with session access can access any group in that session
+      if (securityContext.role === 'teacher' || securityContext.role === 'admin' || securityContext.role === 'super_admin') {
+        // Teachers/admins/super_admins with session access can access any group in that session
         const groupExists = await databricksService.queryOne(`
           SELECT id FROM classwaves.sessions.student_groups
           WHERE id = ? AND session_id = ?

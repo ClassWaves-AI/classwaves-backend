@@ -22,6 +22,8 @@ import {
   logQueryOptimization
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
+import { cacheManager, CacheTTLConfig } from '../services/cache-manager.service';
+import { cacheEventBus } from '../services/cache-event-bus.service';
 import { analyticsLogger } from '../utils/analytics-logger';
 import { RetryService } from '../services/retry.service';
 
@@ -74,13 +76,14 @@ async function getAccessCodeBySession(sessionId: string): Promise<string | null>
 
 /**
  * List sessions for the authenticated teacher
+ * Uses industry-standard cache management with event-driven invalidation
  */
 export async function listSessions(req: Request, res: Response): Promise<Response> {
   try {
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
-    console.log('🔍 DEBUG: listSessions called with teacher:', teacher.id, 'email:', teacher.email, 'role:', teacher.role);
+    console.log('🔍 listSessions called with teacher:', teacher.id, 'email:', teacher.email);
     
     // Get query parameters
     const page = parseInt(req.query.page as string) || 1;
@@ -88,69 +91,76 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     const status = req.query.status as string;
     const sort = req.query.sort as string || 'created_at:desc';
     
-    // 🔍 QUERY OPTIMIZATION: Use minimal field selection + Redis caching
-    const queryBuilder = buildSessionListQuery();
-    logQueryOptimization('listSessions', queryBuilder.metrics);
-    
-    const cacheKey = `teacher:${teacher.id}:limit:${limit}`;
-    const rawSessions = await queryCacheService.getCachedQuery(
+    // Generate cache key and tags
+    const statusFilter = status ? `:status:${status}` : '';
+    const cacheKey = `sessions:teacher:${teacher.id}:limit:${limit}${statusFilter}`;
+    const cacheTags = [`teacher:${teacher.id}`, 'sessions'];
+    const ttl = CacheTTLConfig['session-list'];
+
+    console.log('📦 Cache key:', cacheKey);
+
+    // Use new cache manager with automatic cache-aside pattern
+    const sessions = await cacheManager.getOrSet(
       cacheKey,
-      'session-list',
-      () => getTeacherSessionsOptimized(teacher.id, limit),
-      { teacherId: teacher.id }
+      async () => {
+        console.log('🔍 Cache MISS - fetching from database');
+        
+        // Get raw session data
+        const rawSessions = await getTeacherSessionsOptimized(teacher.id, limit);
+        
+        console.log('🔍 Raw sessions returned:', rawSessions?.length || 0);
+        if (rawSessions && rawSessions.length > 0) {
+          console.log('🔍 First session group_count:', rawSessions[0].group_count);
+        }
+
+        // Map DB rows to frontend contract
+        const mappedSessions = await Promise.all((rawSessions || []).map(async (s: any) => {
+          const accessCode = await getAccessCodeBySession(s.id);
+          
+          return {
+            id: s.id,
+            accessCode, // Retrieved from Redis
+            topic: s.title,
+            goal: s.description,
+            status: s.status as 'created' | 'active' | 'paused' | 'ended' | 'archived',
+            teacherId: s.teacher_id,
+            schoolId: s.school_id,
+            targetGroupSize: s.target_group_size,
+            scheduledStart: s.scheduled_start ? new Date(s.scheduled_start).toISOString() : undefined,
+            actualStart: s.actual_start ? new Date(s.actual_start).toISOString() : undefined,
+            plannedDuration: s.planned_duration_minutes,
+            groups: {
+              total: (s.group_count ?? 0) as number,
+              active: 0,
+            },
+            students: {
+              total: (s.student_count ?? 0) as number,
+              active: 0,
+            },
+            analytics: {
+              participationRate: Number(s.participation_rate ?? 0),
+              engagementScore: Number(s.engagement_score ?? 0),
+            },
+            createdAt: new Date(s.created_at).toISOString(),
+          };
+        }));
+
+        return {
+          sessions: mappedSessions,
+          pagination: {
+            page,
+            limit,
+            total: mappedSessions.length,
+            totalPages: Math.max(1, Math.ceil(mappedSessions.length / limit)),
+          },
+        };
+      },
+      { tags: cacheTags, ttl, autoWarm: false }
     );
-
-    console.log('🔍 DEBUG: Raw sessions returned:', rawSessions?.length || 0);
-    if (rawSessions && rawSessions.length > 0) {
-      console.log('🔍 DEBUG: First session teacher_id:', rawSessions[0].teacher_id);
-    }
-
-    // Map DB rows to frontend contract and fetch access codes from Redis
-    const sessions = await Promise.all((rawSessions || []).map(async (s: any) => {
-      const accessCode = await getAccessCodeBySession(s.id);
-      console.log('🔍 DEBUG: Mapping session:', s.id, 'group_count:', s.group_count, 'student_count:', s.student_count);
-      return {
-        id: s.id,
-        accessCode, // Retrieved from Redis
-        topic: s.title,
-        goal: s.description,
-        status: s.status as 'created' | 'active' | 'paused' | 'ended' | 'archived',
-        teacherId: s.teacher_id,
-        schoolId: s.school_id,
-        targetGroupSize: s.target_group_size,
-        scheduledStart: s.scheduled_start ? new Date(s.scheduled_start).toISOString() : undefined,
-        actualStart: s.actual_start ? new Date(s.actual_start).toISOString() : undefined,
-        plannedDuration: s.planned_duration_minutes,
-        groups: {
-          total: (s.group_count ?? 0) as number,
-          active: 0,
-        },
-        students: {
-          total: (s.student_count ?? 0) as number,
-          active: 0,
-        },
-        analytics: {
-          participationRate: Number(s.participation_rate ?? 0),
-          engagementScore: Number(s.engagement_score ?? 0),
-        },
-        createdAt: new Date(s.created_at).toISOString(),
-      };
-    }));
-
-    const total = sessions.length; // Simple total; can be replaced by COUNT(*) if needed
-    const totalPages = Math.max(1, Math.ceil(total / limit));
 
     return res.json({
       success: true,
-      data: {
-        sessions,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages,
-        },
-      },
+      data: sessions,
     });
   } catch (error) {
     console.error('Error listing sessions:', error);
@@ -680,14 +690,9 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     // 8. Fetch complete session with groups for response
     const session = await getSessionWithGroups(sessionId, teacher.id);
 
-    // 9. Invalidate session list cache so new session appears immediately
-    try {
-      const cachePattern = `session-list:*`;
-      await queryCacheService.invalidateCache(cachePattern);
-      console.log('🗑️ Invalidated session list cache after session creation');
-    } catch (error) {
-      console.warn('⚠️ Cache invalidation failed (non-critical):', error);
-    }
+    // 9. Emit session created event for intelligent cache invalidation and warming
+    await cacheEventBus.sessionCreated(sessionId, teacher.id, school.id);
+    console.log('🔄 Session created event emitted for cache management');
 
     return res.status(201).json({
       success: true,
@@ -987,7 +992,7 @@ async function recordSessionStarted(
  * Optimized helper: Get teacher sessions with minimal field selection
  * Reduces query complexity and data scanning by ~60%
  */
-async function getTeacherSessionsOptimized(teacherId: string, limit: number): Promise<any[]> {
+export async function getTeacherSessionsOptimized(teacherId: string, limit: number): Promise<any[]> {
   const queryBuilder = buildSessionListQuery();
   
   const sql = `
@@ -1189,10 +1194,85 @@ export async function getSession(req: Request, res: Response): Promise<Response>
 }
 
 /**
- * Clear session list cache (temporary fix for cache invalidation issues)
- * TODO: Remove this endpoint after cache versioning is implemented
+ * Get dashboard metrics for the authenticated teacher
+ * Provides Active Sessions, Today's Sessions, and Total Students counts
  */
-export async function clearSessionListCache(req: Request, res: Response): Promise<Response> {
+export async function getDashboardMetrics(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    
+    console.log('📊 Getting dashboard metrics for teacher:', teacher.id);
+    
+    // Get today's date range
+    const today = new Date();
+    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+    
+    // Query for dashboard metrics
+    const [activeSessionsResult, todaySessionsResult, totalStudentsResult] = await Promise.all([
+      // Active Sessions - sessions currently running
+      databricksService.query(`
+        SELECT COUNT(*) as count
+        FROM ${databricksConfig.catalog}.sessions.classroom_sessions 
+        WHERE teacher_id = ? 
+        AND status = 'active'
+      `, [teacher.id]),
+      
+      // Today's Sessions - sessions scheduled or created today
+      databricksService.query(`
+        SELECT COUNT(*) as count
+        FROM ${databricksConfig.catalog}.sessions.classroom_sessions 
+        WHERE teacher_id = ? 
+        AND (
+          DATE(scheduled_start) = CURRENT_DATE()
+          OR DATE(created_at) = CURRENT_DATE()
+        )
+      `, [teacher.id]),
+      
+      // Total Students - across all teacher's sessions (from groups)
+      databricksService.query(`
+        SELECT COALESCE(SUM(current_size), 0) as count
+        FROM ${databricksConfig.catalog}.sessions.student_groups g
+        INNER JOIN ${databricksConfig.catalog}.sessions.classroom_sessions s 
+          ON g.session_id = s.id
+        WHERE s.teacher_id = ?
+      `, [teacher.id])
+    ]);
+
+    const metrics = {
+      activeSessions: activeSessionsResult?.[0]?.count || 0,
+      todaySessions: todaySessionsResult?.[0]?.count || 0,
+      totalStudents: totalStudentsResult?.[0]?.count || 0,
+    };
+
+    console.log('📊 Dashboard metrics calculated:', metrics);
+
+    return res.json({
+      success: true,
+      data: {
+        metrics,
+        timestamp: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('Error getting dashboard metrics:', error);
+    return res.status(500).json({
+      success: false,
+      error: {
+        code: 'DASHBOARD_METRICS_FAILED',
+        message: 'Failed to get dashboard metrics',
+      },
+    });
+  }
+}
+
+/**
+ * Cache health and management endpoint
+ * Provides cache metrics and manual cache operations for admin use
+ */
+export async function getCacheHealth(req: Request, res: Response): Promise<Response> {
   try {
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
@@ -1208,21 +1288,26 @@ export async function clearSessionListCache(req: Request, res: Response): Promis
       });
     }
     
-    const cachePattern = `session-list:*`;
-    await queryCacheService.invalidateCache(cachePattern);
-    console.log('🗑️ Manual cache clear performed by:', teacher.email);
+    const health = await cacheManager.getHealthStatus();
+    const metrics = cacheManager.getMetrics();
+    const eventBusStats = cacheEventBus.getStats();
     
     return res.json({
       success: true,
-      message: 'Session list cache cleared successfully',
+      data: {
+        health,
+        metrics,
+        eventBus: eventBusStats,
+        timestamp: Date.now(),
+      },
     });
   } catch (error) {
-    console.error('Error clearing cache:', error);
+    console.error('Error getting cache health:', error);
     return res.status(500).json({
       success: false,
       error: {
-        code: 'CACHE_CLEAR_FAILED',
-        message: 'Failed to clear cache',
+        code: 'CACHE_HEALTH_FAILED',
+        message: 'Failed to get cache health',
       },
     });
   }
@@ -1567,6 +1652,10 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       performance: totalDuration < 400 ? 'EXCELLENT' : totalDuration < 1000 ? 'GOOD' : 'NEEDS_ATTENTION'
     });
 
+    // Emit session status change event for cache invalidation
+    await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, 'created', 'active');
+    console.log('🔄 Session status change event emitted: created → active');
+
     return res.json({
       success: true,
       data: {
@@ -1638,17 +1727,9 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     // Update session status (note: end_reason and teacher_notes fields don't exist in schema, logged in audit instead)
     await databricksService.updateSessionStatus(sessionId, 'ended');
     
-    // CRITICAL FIX: Invalidate session cache to ensure fresh data
-    try {
-      const { queryCacheService } = await import('../services/query-cache.service');
-      // Invalidate all session-detail cache entries for this session
-      const cachePattern = `session-detail:*${sessionId}*`;
-      await queryCacheService.invalidateCache(cachePattern);
-      console.log('✅ Session cache invalidated for fresh data:', cachePattern);
-    } catch (cacheError) {
-      console.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
-      // Continue without cache invalidation - database update is the source of truth
-    }
+    // Emit session status change event for intelligent cache invalidation
+    await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, session.status, 'ended');
+    console.log('🔄 Session status change event emitted:', session.status, '→ ended');
     
     // Record audit log
     await databricksService.recordAuditLog({
