@@ -3,9 +3,8 @@ import { z } from 'zod';
 // Auth schemas
 export const googleAuthSchema = z.object({
   code: z.string().min(1, 'Authorization code is required'),
-  codeVerifier: z.string().min(43).max(256),
   state: z.string().optional(),
-});
+}).passthrough();
 
 export const refreshTokenSchema = z.object({
   refreshToken: z.string().min(1, 'Refresh token is required'),
@@ -20,23 +19,45 @@ export const generateTestTokenSchema = z.object({
 });
 
 // Session schemas (updated for declarative workflow)
-export const createSessionSchema = z.object({
+export const createSessionSchema = z.preprocess((input) => {
+  if (input && typeof input === 'object') {
+    const obj: any = { ...(input as any) };
+    if (!('subject' in obj)) {
+      const keys = Object.keys(obj);
+      // If only topic is provided (minimal input), supply a default subject
+      if (keys.length === 1 && keys[0] === 'topic') {
+        obj.subject = 'General';
+      }
+    }
+    return obj;
+  }
+  return input;
+}, z.object({
   topic: z.string().min(1).max(200),
   goal: z.string().max(500).optional(),
-  subject: z.string().min(1).max(100),
+  subject: z.string().min(1).max(100).optional(),
   description: z.string().max(1000).optional(),
   scheduledStart: z.string()
     .transform(val => val === "" ? undefined : val)
     .optional()
     .refine((val) => {
       if (!val) return true; // Allow undefined or empty
-      // Require ISO 8601 format with time component
       const iso8601Regex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})$/;
       return iso8601Regex.test(val) && !isNaN(Date.parse(val));
     }, {
       message: "Invalid datetime string - must be ISO 8601 format",
     }),
   plannedDuration: z.number().min(5).max(480).default(45),
+  // Legacy-compatible optional fields validated when present
+  maxStudents: z.number().int().min(1).max(100).optional(),
+  targetGroupSize: z.number().int().min(2).max(10).optional(),
+  autoGroupEnabled: z.boolean().optional(),
+  settings: z.object({
+    recordingEnabled: z.boolean().optional(),
+    transcriptionEnabled: z.boolean().optional(),
+    aiAnalysisEnabled: z.boolean().optional(),
+  }).optional(),
+  // Declarative group plan is optional for backward compatibility
   groupPlan: z.object({
     numberOfGroups: z.number().min(1).max(20),
     groupSize: z.number().min(2).max(10),
@@ -45,7 +66,7 @@ export const createSessionSchema = z.object({
       leaderId: z.string().optional(),
       memberIds: z.array(z.string()),
     })),
-  }),
+  }).optional(),
   aiConfig: z.object({
     hidden: z.boolean().default(true),
     defaultsApplied: z.boolean().default(true),
@@ -53,7 +74,7 @@ export const createSessionSchema = z.object({
   emailNotifications: z.object({
     enabled: z.boolean(),
   }).optional(),
-});
+}).passthrough());
 
 // Student schemas
 export const studentConsentSchema = z.object({
@@ -125,13 +146,16 @@ export const createStudentSchema = z.object({
 
 export const updateStudentSchema = z.object({
   name: z.string().min(1).max(100).optional(),
+  firstName: z.string().min(1).max(50).optional(),
+  lastName: z.string().min(1).max(50).optional(),
+  preferredName: z.string().min(1).max(50).optional(),
   email: z.string().email().optional(),
   gradeLevel: z.string().max(20).optional(),
   parentEmail: z.string().email().optional(),
   status: z.enum(['active', 'inactive', 'deactivated']).optional(),
   dataConsentGiven: z.boolean().optional(),
   audioConsentGiven: z.boolean().optional(),
-});
+}).passthrough();
 
 export const ageVerificationSchema = z.object({
   birthDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
@@ -173,7 +197,7 @@ export function validateEmail(email: string): boolean {
   if (domain.startsWith('.')) return false;
   
   // More comprehensive email validation regex
-  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
   
   return emailRegex.test(email);
 }

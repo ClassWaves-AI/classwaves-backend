@@ -162,8 +162,11 @@ describe('EmailService', () => {
     });
 
     it('should handle Gmail rate limiting', async () => {
-      // Mock hitting daily rate limit
+      // Mock COPPA compliance checks pass for both students first
       mockDatabricksService.databricksService.queryOne
+        .mockResolvedValueOnce({ email_consent: true, coppa_compliant: true }) // Student 1
+        .mockResolvedValueOnce({ email_consent: true, coppa_compliant: true }) // Student 2
+        // Then mock hitting daily rate limit
         .mockResolvedValueOnce({ count: 2000 }); // At daily limit
 
       await expect(emailService.sendSessionInvitation(mockRecipients, mockSessionData))

@@ -145,7 +145,7 @@ describe('Enhanced Membership Analytics', () => {
     });
   });
 
-  describe('getSessionGroups with enhanced membership data', () => {
+  describe('getSessionGroups with normalized membership data', () => {
     it('should return groups with detailed membership analytics', async () => {
       const req = createMockRequest();
       const res = createMockResponse();
@@ -202,11 +202,26 @@ describe('Enhanced Membership Analytics', () => {
                 actualMemberCount: 4,
                 leaderPresent: true,
                 regularMembersCount: 3,
-                membershipAdherence: 1.0,
+                membershipAdherence: 1,
                 joinTimeline: expect.objectContaining({
                   firstMemberJoined: '2025-01-15T10:00:00Z',
                   lastMemberJoined: '2025-01-15T10:03:00Z',
-                  formationTime: 180000 // 3 minutes in milliseconds
+                  formationTime: 180000,
+                })
+              })
+            }),
+            expect.objectContaining({
+              groupId: 'group-2',
+              name: 'QA Team',
+              membership: expect.objectContaining({
+                actualMemberCount: 2,
+                leaderPresent: false,
+                regularMembersCount: 2,
+                membershipAdherence: 0.67,
+                joinTimeline: expect.objectContaining({
+                  firstMemberJoined: '2025-01-15T10:01:00Z',
+                  lastMemberJoined: '2025-01-15T10:02:00Z',
+                  formationTime: 60000,
                 })
               })
             })
@@ -219,8 +234,8 @@ describe('Enhanced Membership Analytics', () => {
               groupsAtFullCapacity: 1,
               averageMembershipAdherence: expect.any(Number),
               membershipFormationTime: expect.objectContaining({
-                avgFormationTime: expect.any(Number),
-                fastestGroup: expect.any(Object)
+                avgFormationTime: 120000,
+                fastestGroup: expect.objectContaining({ name: 'QA Team' })
               })
             })
           })
@@ -259,18 +274,37 @@ describe('Enhanced Membership Analytics', () => {
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: expect.objectContaining({
+          sessionId: mockSessionId,
           groups: expect.arrayContaining([
             expect.objectContaining({
+              groupId: 'group-1',
+              name: 'Solo Group',
               membership: expect.objectContaining({
                 actualMemberCount: 0,
                 leaderPresent: false,
+                regularMembersCount: 0,
                 membershipAdherence: 0,
                 joinTimeline: expect.objectContaining({
-                  formationTime: null
+                  firstMemberJoined: undefined,
+                  lastMemberJoined: undefined,
+                  formationTime: null,
                 })
               })
             })
-          ])
+          ]),
+          summary: expect.objectContaining({
+            membershipStats: expect.objectContaining({
+              totalConfiguredMembers: 1,
+              totalActualMembers: 0,
+              groupsWithLeadersPresent: 0,
+              groupsAtFullCapacity: 0,
+              averageMembershipAdherence: 0,
+              membershipFormationTime: expect.objectContaining({
+                avgFormationTime: null,
+                fastestGroup: null
+              })
+            })
+          })
         })
       });
     });

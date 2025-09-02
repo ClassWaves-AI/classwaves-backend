@@ -43,6 +43,9 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=18 <21"
+  },
   "dependencies": {
     "@classwaves/shared": "file:../classwaves-shared",
     "@databricks/sql": "^1.11.0",
@@ -106,6 +109,6 @@
     "supertest": "^6.3.3",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.2"
+    "typescript": "5.8.3"
   }
 }

@@ -11,44 +11,43 @@ export class EmailComplianceService {
    * Validate email consent and COPPA compliance for a student
    */
   async validateEmailConsent(studentId: string): Promise<EmailComplianceValidation> {
-    // Check student consent status (age verification handled by teacher in roster)
-    const student = await databricksService.queryOne(
-      `SELECT id, email_consent, coppa_compliant, teacher_verified_age 
-       FROM classwaves.users.students WHERE id = ?`,
-      [studentId]
-    );
+    // Try new columns first; fallback to legacy columns if unavailable
+    try {
+      const student = await databricksService.queryOne(
+        `SELECT id, email_consent, coppa_compliant, teacher_verified_age 
+         FROM classwaves.users.students WHERE id = ?`,
+        [studentId]
+      );
 
-    if (!student) {
-      return { 
-        canSendEmail: false, 
-        requiresParentalConsent: false, 
-        consentStatus: 'student_not_found' 
-      };
+      if (!student) {
+        return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
+      }
+
+      if (!(student as any).coppa_compliant) {
+        return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'coppa_verification_required_by_teacher' };
+      }
+      if (!(student as any).email_consent) {
+        return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'email_consent_required' };
+      }
+
+      return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+    } catch {
+      const legacy = await databricksService.queryOne(
+        `SELECT id, has_parental_consent, parent_email 
+         FROM classwaves.users.students WHERE id = ?`,
+        [studentId]
+      );
+
+      if (!legacy) {
+        return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
+      }
+
+      if ((legacy as any).has_parental_consent === true) {
+        return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+      }
+
+      return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'email_consent_required' };
     }
-
-    // Age verification is handled by teacher during roster configuration
-    // Teacher marks coppa_compliant: true if student is 13+ OR has parental consent
-    if (!student.coppa_compliant) {
-      return { 
-        canSendEmail: false, 
-        requiresParentalConsent: true, 
-        consentStatus: 'coppa_verification_required_by_teacher' 
-      };
-    }
-
-    if (!student.email_consent) {
-      return { 
-        canSendEmail: false, 
-        requiresParentalConsent: false, 
-        consentStatus: 'email_consent_required' 
-      };
-    }
-
-    return { 
-      canSendEmail: true, 
-      requiresParentalConsent: false, 
-      consentStatus: 'consented' 
-    };
   }
 
   /**

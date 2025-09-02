@@ -87,11 +87,16 @@ export async function createTestApp() {
     });
   });
 
-  // Start test server
-  const server = app.listen(0); // Use random available port
+  // Optionally start a real server only when explicitly enabled
+  const enableNetwork = process.env.ENABLE_NETWORK_TESTS === '1' || process.env.ENABLE_NETWORK_TESTS === 'true';
+  if (!enableNetwork) {
+    console.log('⚠️ Skipping real server listen in tests (ENABLE_NETWORK_TESTS not set).');
+    return { app, server: null as any, port: 0 };
+  }
+
+  // Start test server on random port when allowed
+  const server = app.listen(0);
   const port = (server.address() as any)?.port;
-
   console.log(`Test server started on port ${port}`);
-
   return { app, server, port };
 }

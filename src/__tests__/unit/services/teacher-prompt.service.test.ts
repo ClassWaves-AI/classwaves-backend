@@ -10,9 +10,9 @@ describe('TeacherPromptService', () => {
 
   describe('generatePrompts', () => {
     const mockContext = {
-      sessionId: 'session1',
-      teacherId: 'teacher1',
-      groupId: 'group1',
+      sessionId: '550e8400-e29b-41d4-a716-446655440000',
+      teacherId: '550e8400-e29b-41d4-a716-446655440001',
+      groupId: '550e8400-e29b-41d4-a716-446655440002',
       sessionPhase: 'development' as const,
       subject: 'science' as const,
       learningObjectives: ['Understanding concepts', 'Collaboration'],
@@ -51,8 +51,8 @@ describe('TeacherPromptService', () => {
         expect(prompts[0]).toHaveProperty('category');
         expect(prompts[0]).toHaveProperty('priority');
         expect(prompts[0]).toHaveProperty('message');
-        expect(prompts[0].sessionId).toBe('session1');
-        expect(prompts[0].teacherId).toBe('teacher1');
+        expect(prompts[0].sessionId).toBe('550e8400-e29b-41d4-a716-446655440000');
+        expect(prompts[0].teacherId).toBe('550e8400-e29b-41d4-a716-446655440001');
       }
     });
 
@@ -200,9 +200,9 @@ describe('TeacherPromptService', () => {
 
   describe('edge cases', () => {
     const mockContext = {
-      sessionId: 'test-session',
-      teacherId: 'test-teacher',
-      groupId: 'test-group',
+      sessionId: '550e8400-e29b-41d4-a716-446655440003',
+      teacherId: '550e8400-e29b-41d4-a716-446655440004',
+      groupId: '550e8400-e29b-41d4-a716-446655440005',
       sessionPhase: 'development' as const,
       subject: 'science' as const,
       learningObjectives: ['Learning'],

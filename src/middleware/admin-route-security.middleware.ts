@@ -287,33 +287,19 @@ async function logAdminSecurityEvent(
     // Store in security audit log (async, don't block)
     setImmediate(async () => {
       try {
-        // Route admin security events to existing audit_log table with proper structure
-        const auditLogEntry = {
-          id: auditEvent.id,
-          actor_id: auditEvent.user_id,
-          actor_type: 'user',
-          event_type: 'admin_route_access',
-          event_category: 'security_event',
-          event_timestamp: auditEvent.timestamp,
-          resource_type: 'admin_route',
-          resource_id: auditEvent.route_path,
-          school_id: auditEvent.school_id || 'unknown',
-          description: `Admin route security event: ${auditEvent.event_type}`,
-          event_data: JSON.stringify({
-            eventType: auditEvent.event_type,
-            routePath: auditEvent.route_path,
-            httpMethod: auditEvent.http_method,
-            userRole: auditEvent.user_role,
-            requiredRoles: auditEvent.required_roles,
-            originalMetadata: auditEvent.metadata
-          }),
-          ip_address: auditEvent.ip_address,
-          user_agent: auditEvent.user_agent,
-          operation_result: 'success',
-          created_at: auditEvent.timestamp
-        };
-        
-        await databricksService.insert('audit_log', auditLogEntry);
+        await databricksService.recordAuditLog({
+          actorId: auditEvent.user_id,
+          actorType: 'admin',
+          eventType: 'admin_route_access',
+          eventCategory: 'compliance',
+          resourceType: 'admin_route',
+          resourceId: auditEvent.route_path,
+          schoolId: auditEvent.school_id || 'unknown',
+          description: `Admin route: ${auditEvent.event_type} ${auditEvent.http_method} ${auditEvent.route_path}`,
+          ipAddress: auditEvent.ip_address,
+          userAgent: auditEvent.user_agent,
+          complianceBasis: 'legitimate_interest',
+        });
       } catch (error) {
         // Gracefully handle audit log errors - don't block core functionality
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -363,7 +349,7 @@ export const requireSchoolAdmin = requireAdminAccess({
 export async function getAdminSecurityStats(timeframeHours: number = 24): Promise<{
   totalAccesses: number;
   deniedAccesses: number;
-  topRoutes: Array<{ route: string; method: string; count: number }>;
+  topRoutes: Array<{ route: string; count: number }>;
   securityViolations: number;
   roleBreakdown: Record<string, number>;
 }> {
@@ -373,17 +359,15 @@ export async function getAdminSecurityStats(timeframeHours: number = 24): Promis
     const stats = await databricksService.query(`
       SELECT 
         COUNT(*) as total_accesses,
-        SUM(CASE WHEN event_data LIKE '%ADMIN_ACCESS_DENIED%' THEN 1 ELSE 0 END) as denied_accesses,
-        SUM(CASE WHEN event_data LIKE '%ROUTE_SECURITY_VIOLATION%' THEN 1 ELSE 0 END) as security_violations,
+        SUM(CASE WHEN description LIKE '%ADMIN_ACCESS_DENIED%' THEN 1 ELSE 0 END) as denied_accesses,
+        SUM(CASE WHEN description LIKE '%ROUTE_SECURITY_VIOLATION%' THEN 1 ELSE 0 END) as security_violations,
         resource_id as route_path,
-        JSON_EXTRACT(event_data, '$.httpMethod') as http_method,
-        JSON_EXTRACT(event_data, '$.userRole') as user_role,
         COUNT(*) as access_count
       FROM ${databricksConfig.catalog}.compliance.audit_log
       WHERE event_type = 'admin_route_access' 
-        AND event_category = 'security_event'
+        AND event_category = 'compliance'
         AND event_timestamp >= ?
-      GROUP BY resource_id, JSON_EXTRACT(event_data, '$.httpMethod'), JSON_EXTRACT(event_data, '$.userRole')
+      GROUP BY resource_id
       ORDER BY access_count DESC
       LIMIT 50
     `, [timeframeStart.toISOString()]);
@@ -392,14 +376,20 @@ export async function getAdminSecurityStats(timeframeHours: number = 24): Promis
     const result = {
       totalAccesses: 0,
       deniedAccesses: 0,
-      topRoutes: [] as Array<{ route: string; method: string; count: number }>,
+      topRoutes: [] as Array<{ route: string; count: number }>,
       securityViolations: 0,
       roleBreakdown: {} as Record<string, number>
     };
 
-    // In a real implementation, you'd process the stats array
-    // This is a simplified version for the example
+    // Aggregate basic stats from rows
+    for (const row of stats as any[]) {
+      result.totalAccesses += Number(row.total_accesses || 0);
+      result.deniedAccesses += Number(row.denied_accesses || 0);
+      result.securityViolations += Number(row.security_violations || 0);
+      result.topRoutes.push({ route: row.route_path, count: Number(row.access_count || 0) });
+    }
 
+    // Note: role breakdown unavailable in canonical schema; return empty breakdown
     return result;
 
   } catch (error) {

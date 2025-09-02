@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { AuthRequest } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
 import { v4 as uuidv4 } from 'uuid';
+import { composeDisplayName } from '../utils/name.utils';
 
 /**
  * GET /api/v1/roster
@@ -146,7 +147,8 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     
     const {
       firstName,
-      lastName, 
+      lastName,
+      preferredName,
       gradeLevel,
       parentEmail,
       isUnderConsentAge = false,
@@ -155,7 +157,7 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       audioConsentGiven = false
     } = req.body;
     
-    const name = `${firstName} ${lastName}`.trim();
+    const name = composeDisplayName({ given: firstName, family: lastName, preferred: preferredName });
 
     // Simplified COPPA compliance logic
     if (isUnderConsentAge && !hasParentalConsent) {
@@ -207,6 +209,16 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       now,
       now
     ]);
+
+    // Best effort: store structured names if columns exist
+    try {
+      await databricksService.query(
+        `UPDATE classwaves.users.students SET given_name = ?, family_name = ?, preferred_name = ?, updated_at = ? WHERE id = ?`,
+        [firstName || null, lastName || null, preferredName || null, now, studentId]
+      );
+    } catch (e) {
+      // Column(s) may not exist yet; ignore
+    }
 
     // Get the created student
     const createdStudent = await databricksService.queryOne(`
@@ -296,7 +308,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -309,6 +321,9 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 
     const {
       name,
+      firstName,
+      lastName,
+      preferredName,
       email,
       gradeLevel,
       parentEmail,
@@ -321,9 +336,16 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     const updateFields: string[] = [];
     const updateValues: any[] = [];
 
+    // Name precedence: if explicit name provided, use it; otherwise combine split/preferred
     if (name !== undefined) {
       updateFields.push('display_name = ?');
-      updateValues.push(name);
+      updateValues.push((name as string).trim());
+    } else if (firstName !== undefined || lastName !== undefined || preferredName !== undefined) {
+      const combined = composeDisplayName({ given: firstName, family: lastName, preferred: preferredName });
+      if (combined) {
+        updateFields.push('display_name = ?');
+        updateValues.push(combined);
+      }
     }
     if (email !== undefined) {
       updateFields.push('email = ?');
@@ -365,16 +387,31 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     // Add student ID for WHERE clause
     updateValues.push(studentId);
 
+    // Debug: log which columns are being updated (no values)
+    console.log('🛠️ Roster Update Columns:', updateFields.map(f => f.split('=')[0].trim()));
+
     await databricksService.query(`
       UPDATE classwaves.users.students 
       SET ${updateFields.join(', ')}
       WHERE id = ?
     `, updateValues);
 
+    // Best effort: also persist structured names if provided and columns exist
+    if (firstName !== undefined || lastName !== undefined || preferredName !== undefined) {
+      try {
+        await databricksService.query(
+          `UPDATE classwaves.users.students SET given_name = COALESCE(?, given_name), family_name = COALESCE(?, family_name), preferred_name = COALESCE(?, preferred_name), updated_at = ? WHERE id = ?`,
+          [firstName ?? null, lastName ?? null, preferredName ?? null, new Date().toISOString(), studentId]
+        );
+      } catch (e) {
+        // Ignore if columns not present
+      }
+    }
+
     // Get the updated student
     const updatedStudent = await databricksService.queryOne(`
       SELECT 
-        s.*,
+        s.*, 
         sch.name as school_name
       FROM classwaves.users.students s
       JOIN classwaves.users.schools sch ON s.school_id = sch.id
@@ -429,7 +466,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -531,7 +568,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -641,7 +678,7 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
 
     // Check if student exists and belongs to teacher's school
     const existingStudent = await databricksService.queryOne(`
-      SELECT id, name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
+      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
     `, [studentId, school.id]);
 
     if (!existingStudent) {
@@ -700,6 +737,66 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
       success: false,
       error: 'INTERNAL_ERROR',
       message: 'Failed to update parental consent'
+    });
+  }
+}
+
+/**
+ * GET /api/v1/roster/overview
+ * Get roster metrics overview for teacher's school
+ */
+export async function getRosterOverview(req: Request, res: Response): Promise<Response> {
+  const authReq = req as AuthRequest;
+  console.log('📊 Roster: Get Overview endpoint called');
+  
+  try {
+    const teacher = authReq.user!;
+    const school = authReq.school!;
+
+    // Get comprehensive metrics in a single query for efficiency
+    const metrics = await databricksService.queryOne(`
+      SELECT 
+        COUNT(*) as totalStudents,
+        COUNT(CASE WHEN s.status = 'active' THEN 1 END) as activeStudents,
+        COUNT(CASE WHEN s.parent_email IS NOT NULL AND s.has_parental_consent = false THEN 1 END) as pendingConsent,
+        COUNT(CASE WHEN s.status != 'active' THEN 1 END) as inactiveStudents
+      FROM classwaves.users.students s
+      WHERE s.school_id = ?
+    `, [school.id]);
+
+    const overview = {
+      totalStudents: metrics?.totalStudents || 0,
+      activeStudents: metrics?.activeStudents || 0,
+      pendingConsent: metrics?.pendingConsent || 0,
+      inactiveStudents: metrics?.inactiveStudents || 0
+    };
+
+    // Log audit event for data access
+    await databricksService.recordAuditLog({
+      actorId: teacher.id,
+      actorType: 'teacher',
+      eventType: 'roster_overview_accessed',
+      eventCategory: 'data_access',
+      resourceType: 'student',
+      resourceId: 'overview',
+      schoolId: school.id,
+      description: `Teacher ID ${teacher.id} accessed roster overview metrics`,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      complianceBasis: 'legitimate_interest'
+    });
+
+    return res.json({
+      success: true,
+      data: overview
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching roster overview:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'INTERNAL_ERROR',
+      message: 'Failed to fetch roster overview'
     });
   }
 }

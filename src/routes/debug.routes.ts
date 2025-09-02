@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { databricksService } from '../services/databricks.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
+import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 
 const router = Router();
 
@@ -110,3 +111,51 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
 });
 
 export default router;
+
+// ---------------------------------------------------------------------------
+// Dev observability: Active WebSocket connections (dev-only, gated in prod)
+// GET /api/v1/debug/websocket/active-connections
+// ---------------------------------------------------------------------------
+router.get('/websocket/active-connections', async (req: Request, res: Response) => {
+  try {
+    const isDev = process.env.NODE_ENV !== 'production';
+    if (!isDev) {
+      const token = req.header('x-dev-auth');
+      const expected = process.env.DEV_OBSERVABILITY_TOKEN;
+      if (!token || !expected || token !== expected) {
+        return res.status(403).json({ success: false, error: 'Forbidden' });
+      }
+    }
+
+    const ws = getNamespacedWebSocketService();
+    if (!ws) {
+      return res.status(503).json({ success: false, error: 'WebSocket service unavailable' });
+    }
+
+    const io = ws.getIO();
+    const namespaces = ['/sessions', '/guidance'] as const;
+
+    const data: Record<string, any> = {};
+    for (const ns of namespaces) {
+      const nsp = io.of(ns);
+      const sockets = await nsp.fetchSockets();
+      const byUser: Record<string, number> = {};
+      const list = sockets.map(s => {
+        const userId = (s.data && s.data.userId) || 'anonymous';
+        byUser[userId] = (byUser[userId] || 0) + 1;
+        return { id: s.id, userId, rooms: Array.from(s.rooms ?? []) };
+      });
+
+      data[ns] = {
+        namespace: ns,
+        totalSockets: sockets.length,
+        byUser,
+        sockets: list,
+      };
+    }
+
+    return res.json({ success: true, namespaces: data, timestamp: new Date().toISOString() });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: 'ACTIVE_CONNECTIONS_FAILED' });
+  }
+});

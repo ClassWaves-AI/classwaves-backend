@@ -232,7 +232,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       // Verify prompt belongs to teacher or session they own
       const prompt = await databricksService.queryOne(
         `SELECT p.id, p.session_id, s.teacher_id 
-         FROM classwaves.ai.teacher_prompts p
+         FROM classwaves.ai_insights.teacher_guidance_metrics p
          JOIN classwaves.sessions.classroom_sessions s ON p.session_id = s.id
          WHERE p.id = ? AND s.teacher_id = ?`,
         [data.promptId, socket.data.userId]
@@ -305,10 +305,10 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       } else {
         // Get all active prompts for this teacher
         prompts = await databricksService.query(
-          `SELECT p.* FROM classwaves.ai.teacher_prompts p
+          `SELECT p.* FROM classwaves.ai_insights.teacher_guidance_metrics p
            JOIN classwaves.sessions.classroom_sessions s ON p.session_id = s.id
            WHERE s.teacher_id = ? AND p.status = 'active'
-           ORDER BY p.priority DESC, p.created_at DESC`,
+           ORDER BY p.priority_level DESC, p.generated_at DESC`,
           [socket.data.userId]
         );
       }
@@ -356,14 +356,14 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
   private async processPromptInteraction(data: PromptInteractionData, userId: string) {
     switch (data.action) {
       case 'acknowledge':
-        await databricksService.update('teacher_prompts', data.promptId, {
+        await databricksService.update('teacher_guidance_metrics', data.promptId, {
           acknowledged_at: new Date(),
           acknowledged_by: userId
         });
         break;
 
       case 'use':
-        await databricksService.update('teacher_prompts', data.promptId, {
+        await databricksService.update('teacher_guidance_metrics', data.promptId, {
           used_at: new Date(),
           used_by: userId,
           feedback: data.feedback || null,
@@ -372,7 +372,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         break;
 
       case 'dismiss':
-        await databricksService.update('teacher_prompts', data.promptId, {
+        await databricksService.update('teacher_guidance_metrics', data.promptId, {
           dismissed_at: new Date(),
           dismissed_by: userId,
           feedback: data.feedback || null,

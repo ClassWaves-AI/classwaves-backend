@@ -17,3 +17,5 @@ keys/
 *.key
 test-results/
 .env.test
+
+coverage/

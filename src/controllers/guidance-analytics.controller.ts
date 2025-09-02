@@ -301,13 +301,14 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     logQueryOptimization('getSessionAnalytics', queryBuilder.metrics);
     
     // Get comprehensive session analytics using optimized query router + caching (70% time reduction, 60% cost reduction)
-    const cacheKey = `session_analytics:${sessionId}:${query.includeRealTime}`;
+    // Align with route schema: includeRealtimeMetrics
+    const cacheKey = `session_analytics:${sessionId}:${query.includeRealtimeMetrics}`;
     const routedSessionAnalytics = await queryCacheService.getCachedQuery(
       cacheKey,
       'session-analytics',
       () => analyticsQueryRouterService.routeSessionAnalyticsQuery(
         sessionId,
-        query.includeRealTime
+        query.includeRealtimeMetrics
       ),
       { sessionId }
     );
@@ -1191,7 +1192,9 @@ export async function getSessionOverview(req: Request, res: Response): Promise<R
           configuredSize: group.configured_size,
           actualMemberCount: group.actual_member_count,
           leaderPresent: group.leader_present > 0,
-          regularMembersCount: group.regular_members_present,
+          regularMembersCount: (group.regular_members_present != null)
+            ? group.regular_members_present
+            : ((group.actual_member_count || 0) - ((group.leader_present || 0) > 0 ? 1 : 0)),
           membershipAdherence: group.configured_size > 0 
             ? Number((group.actual_member_count / group.configured_size).toFixed(2))
             : 0,
@@ -1289,20 +1292,68 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
       ORDER BY sg.group_number
     `, [sessionId]);
 
-    const normalized = groups.map((group: any) => ({
-      group_id: group.id,
-      group_name: group.name || group.configured_name,
-      configured_members: group.members_configured || group.configured_size || 0,
-      actual_members: group.actual_member_count || 0,
-      configured_vs_actual_adherence: (group.configured_size && group.configured_size > 0)
-        ? Number((group.actual_member_count / group.configured_size).toFixed(2))
-        : 0,
-      leader_ready_at: group.leader_ready_at || undefined,
+    const groupsEnriched = groups.map((group: any) => ({
+      groupId: group.id,
+      name: group.name || group.configured_name,
+      membership: {
+        actualMemberCount: group.actual_member_count || 0,
+        leaderPresent: (group.leader_present || 0) > 0,
+        regularMembersCount: (group.regular_members_count != null)
+          ? group.regular_members_count
+          : ((group.actual_member_count || 0) - ((group.leader_present || 0) > 0 ? 1 : 0)),
+        membershipAdherence: (group.configured_size && group.configured_size > 0)
+          ? Number((group.actual_member_count / group.configured_size).toFixed(2))
+          : 0,
+        joinTimeline: {
+          firstMemberJoined: group.first_member_joined || undefined,
+          lastMemberJoined: group.last_member_joined || undefined,
+          formationTime: group.last_member_joined && group.first_member_joined
+            ? new Date(group.last_member_joined).getTime() - new Date(group.first_member_joined).getTime()
+            : null,
+        }
+      }
     }));
+
+    const totalConfiguredMembers = groups.reduce((sum: number, g: any) => sum + (g.members_configured || g.configured_size || 0), 0);
+    const totalActualMembers = groups.reduce((sum: number, g: any) => sum + (g.actual_member_count || 0), 0);
+    const groupsWithLeadersPresent = groups.filter((g: any) => (g.leader_present || 0) > 0).length;
+    const groupsAtFullCapacity = groups.filter((g: any) => (g.actual_member_count || 0) >= (g.configured_size || 0)).length;
+    const adherenceValues = groups.map((g: any) => (g.configured_size && g.configured_size > 0) ? (g.actual_member_count || 0) / g.configured_size : 0);
+    const averageMembershipAdherence = adherenceValues.length > 0 ? Number((adherenceValues.reduce((a: number, b: number) => a + b, 0) / adherenceValues.length).toFixed(2)) : 0;
+
+    const formationCandidates = groups.filter((g: any) => g.first_member_joined && g.last_member_joined);
+    const avgFormationTime = formationCandidates.length > 0
+      ? formationCandidates.reduce((sum: number, g: any) => sum + (new Date(g.last_member_joined).getTime() - new Date(g.first_member_joined).getTime()), 0) / formationCandidates.length
+      : null;
+    const fastestGroup = formationCandidates.reduce((fastest: any, current: any) => {
+      const currentTime = new Date(current.last_member_joined).getTime() - new Date(current.first_member_joined).getTime();
+      const fastestTime = fastest ? (new Date(fastest.last_member_joined).getTime() - new Date(fastest.first_member_joined).getTime()) : Infinity;
+      return currentTime < fastestTime ? current : fastest;
+    }, null);
 
     return res.json({
       success: true,
-      data: normalized,
+      data: {
+        sessionId,
+        groups: groupsEnriched,
+        summary: {
+          membershipStats: {
+            totalConfiguredMembers,
+            totalActualMembers,
+            groupsWithLeadersPresent,
+            groupsAtFullCapacity,
+            averageMembershipAdherence,
+            membershipFormationTime: {
+              avgFormationTime,
+              fastestGroup: fastestGroup ? {
+                name: fastestGroup.name,
+                first_member_joined: fastestGroup.first_member_joined,
+                last_member_joined: fastestGroup.last_member_joined,
+              } : null,
+            }
+          }
+        }
+      }
     });
   } catch (error) {
     console.error('Error getting session groups analytics:', error);

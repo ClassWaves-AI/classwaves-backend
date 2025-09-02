@@ -435,6 +435,29 @@ src/__tests__/
 
 ### Running Tests
 
+#### Network-gated tests (integration/E2E)
+
+Some integration and E2E tests spin up HTTP servers or bind sockets (e.g., Socket.IO). In CI or restricted sandboxes, binding can fail with errors like `listen EPERM: operation not permitted 0.0.0.0`.
+
+To avoid hangs by default, network-bound suites are skipped unless explicitly enabled via an env flag.
+
+- Default (safe in sandboxes):
+```
+npm test              # runs unit tests only
+npm run test:unit     # explicit unit tests
+```
+
+- Enable network-bound tests locally (when ports can bind):
+```
+ENABLE_NETWORK_TESTS=1 npm test                # run all tests
+ENABLE_NETWORK_TESTS=1 npm run test:integration
+```
+
+How it works:
+- `jest.config.js` reads `ENABLE_NETWORK_TESTS` to ignore `src/__tests__/integration` and `src/__tests__/e2e` when not set.
+- `src/__tests__/test-utils/app-setup.ts` guards `app.listen(0)` behind the same flag.
+- Any unit test that binds sockets is also gated under this flag.
+
 #### Integration & E2E Tests (Real Services)
 ```bash
 # Start backend in test mode first

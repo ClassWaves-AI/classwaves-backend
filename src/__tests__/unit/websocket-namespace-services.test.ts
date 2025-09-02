@@ -162,7 +162,6 @@ describe('WebSocket Namespace Services', () => {
       });
       expect(mockSocketInstance.disconnect).toHaveBeenCalled();
     });
-      });
   });
 
   describe('NamespaceBaseService - Authentication Tests', () => {
@@ -321,6 +320,18 @@ describe('WebSocket Namespace Services', () => {
 
         // Database returns no user (invalid super_admin)
         mockDatabricksService.queryOne.mockResolvedValue(null);
+        
+        // Invoke middleware by constructing a temporary service
+        class TempNS extends NamespaceBaseService {
+          protected getNamespaceName() { return '/test'; }
+          protected onConnection() {}
+          protected onDisconnection() {}
+          protected onUserFullyDisconnected() {}
+          protected onError() {}
+        }
+        new TempNS(sessionsNamespace as any);
+        const middleware = (sessionsNamespace.use as any).mock.calls[0][0];
+        await middleware({ handshake: { auth: { token: 'x' } } , data: {}, ...mockSocket } as any, mockNext);
 
         // Should trigger the "User not found or inactive" error
         expect(mockNext).toHaveBeenCalledWith(
@@ -357,6 +368,18 @@ describe('WebSocket Namespace Services', () => {
       it('should handle missing authentication token', async () => {
         const mockSocket = { handshake: { auth: {} } } as any;
         const mockNext = jest.fn();
+        
+        // Invoke middleware by constructing a temporary service
+        class TempNS extends NamespaceBaseService {
+          protected getNamespaceName() { return '/test'; }
+          protected onConnection() {}
+          protected onDisconnection() {}
+          protected onUserFullyDisconnected() {}
+          protected onError() {}
+        }
+        new TempNS(sessionsNamespace as any);
+        const middleware = (sessionsNamespace.use as any).mock.calls[0][0];
+        await middleware(mockSocket as any, mockNext);
 
         // Should call next with authentication error
         expect(mockNext).toHaveBeenCalledWith(
@@ -373,6 +396,18 @@ describe('WebSocket Namespace Services', () => {
         mockVerifyToken.mockImplementation(() => {
           throw new Error('Invalid token');
         });
+        
+        // Invoke middleware by constructing a temporary service
+        class TempNS extends NamespaceBaseService {
+          protected getNamespaceName() { return '/test'; }
+          protected onConnection() {}
+          protected onDisconnection() {}
+          protected onUserFullyDisconnected() {}
+          protected onError() {}
+        }
+        new TempNS(sessionsNamespace as any);
+        const middleware = (sessionsNamespace.use as any).mock.calls[0][0];
+        await middleware(mockSocket as any, mockNext);
 
         expect(mockNext).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -490,6 +525,46 @@ describe('WebSocket Namespace Services', () => {
       // Test that they have different namespaces
       expect(sessionsService['getNamespaceName']()).toBe('/sessions');
       expect(guidanceService['getNamespaceName']()).toBe('/guidance');
+    });
+  });
+
+  describe('Student presence emissions', () => {
+    it('emits group:joined and group:user_joined on student session join', async () => {
+      const ns = createMockNamespace();
+
+      // Spy on to(room).emit and namespace.emit
+      const toMock = jest.fn().mockReturnValue({ emit: jest.fn() });
+      ns.to = toMock;
+
+      // Instantiate service
+      const service = new SessionsNamespaceService(ns as any);
+
+      // Prepare mock socket with student role
+      const socket: any = createMockSocket({ role: 'student' });
+      socket.join = jest.fn();
+
+      // Mock databricksService.queryOne to return a participant with group_id
+      const db = require('../../services/databricks.service');
+      jest.spyOn(db.databricksService, 'queryOne').mockResolvedValueOnce({
+        id: 'participant-1', session_id: 'session-1', student_id: 'student-1', group_id: 'group-1', group_name: 'Group 1'
+      });
+
+      // Call private method via bracket notation
+      await (service as any).handleStudentSessionJoin(socket, { sessionId: 'session-1' });
+
+      // Expect joins and emitted presence events
+      expect(socket.join).toHaveBeenCalledWith('session:session-1');
+      expect(socket.join).toHaveBeenCalledWith('group:group-1');
+
+      // Verify session-level group:joined emission
+      expect(toMock).toHaveBeenCalledWith('session:session-1');
+      const sessionEmit = toMock.mock.results[0].value.emit;
+      expect(sessionEmit).toHaveBeenCalledWith('group:joined', expect.objectContaining({ groupId: 'group-1', sessionId: 'session-1' }));
+
+      // Verify group-level group:user_joined emission
+      expect(toMock).toHaveBeenCalledWith('group:group-1');
+      const groupEmit = toMock.mock.results[1].value.emit;
+      expect(groupEmit).toHaveBeenCalledWith('group:user_joined', expect.objectContaining({ groupId: 'group-1', sessionId: 'session-1' }));
     });
   });
 });

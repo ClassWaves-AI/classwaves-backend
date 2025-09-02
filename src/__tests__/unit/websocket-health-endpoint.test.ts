@@ -14,7 +14,10 @@ import app from '../../app';
 import { initializeNamespacedWebSocket } from '../../services/websocket';
 import { redisService } from '../../services/redis.service';
 
-describe('WebSocket Health Endpoint', () => {
+const ENABLE_NETWORK_TESTS = process.env.ENABLE_NETWORK_TESTS === '1' || process.env.ENABLE_NETWORK_TESTS === 'true';
+const maybeDescribe = ENABLE_NETWORK_TESTS ? describe : describe.skip;
+
+maybeDescribe('WebSocket Health Endpoint', () => {
   let httpServer: HTTPServer;
   let io: SocketIOServer;
   let serverPort: number;

@@ -5,7 +5,8 @@ import {
   updateStudent,
   deleteStudent,
   ageVerifyStudent,
-  requestParentalConsent
+  requestParentalConsent,
+  getRosterOverview
 } from '../controllers/roster.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -31,18 +32,7 @@ router.post('/students/:id/age-verify', validate(ageVerificationSchema), ageVeri
 router.post('/students/:id/parental-consent', requestParentalConsent);
 
 // Roster overview endpoint
-router.get('/overview', async (req, res) => {
-  // TODO: Implement roster overview
-  res.json({
-    success: true,
-    data: {
-      totalStudents: 0,
-      byGrade: {},
-      withConsent: 0,
-      withoutConsent: 0
-    }
-  });
-});
+router.get('/overview', getRosterOverview);
 
 // Export endpoint  
 router.get('/export', async (req, res) => {

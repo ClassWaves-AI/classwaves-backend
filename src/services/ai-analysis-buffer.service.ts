@@ -17,9 +17,11 @@ import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 // ============================================================================
 
 const transcriptionSchema = z.object({
-  groupId: z.string().uuid('Invalid group ID format'),
-  sessionId: z.string().uuid('Invalid session ID format'),
-  transcription: z.string().min(1, 'Transcription cannot be empty').max(10000, 'Transcription too long'),
+  // Service-level accepts generic strings; strict UUID validation enforced at route edges.
+  groupId: z.string().min(1, 'Invalid group ID'),
+  sessionId: z.string().min(1, 'Invalid session ID'),
+  // Allow empty transcription to represent silence; still validated as string with max length.
+  transcription: z.string().min(0).max(10000, 'Transcription too long'),
   timestamp: z.date()
 });
 
@@ -114,9 +116,11 @@ export class AIAnalysisBufferService {
   };
 
   constructor() {
-    // Start automatic cleanup process
-    this.startCleanupProcess();
-    
+    // Start automatic cleanup process (skip in test to avoid open handles)
+    if (process.env.NODE_ENV !== 'test') {
+      this.startCleanupProcess();
+    }
+
     console.log('🔄 AI Analysis Buffer Service initialized', {
       maxBufferSize: this.config.maxBufferSize,
       tier1WindowMs: this.config.tier1WindowMs,
@@ -371,9 +375,13 @@ export class AIAnalysisBufferService {
     let totalTopicalCohesion = 0;
     let totalConceptualDensity = 0;
     let validTier1Count = 0;
+    let attempts = 0;
+    let failures = 0;
 
+    const errors: Error[] = [];
     for (const [bufferKey, buffer] of Array.from(this.tier1Buffers.entries())) {
       if (buffer.sessionId === sessionId && buffer.lastUpdate >= cutoffTime) {
+        attempts++;
         try {
           // Get latest analysis from database for this group
           const latestAnalysis = await this.getLatestTier1AnalysisFromDB(buffer.groupId, sessionId);
@@ -395,8 +403,11 @@ export class AIAnalysisBufferService {
             validTier1Count++;
           }
         } catch (error) {
-          console.warn(`⚠️ Failed to get Tier 1 analysis for group ${buffer.groupId}:`, error);
-          // Continue with other groups - graceful degradation
+          // Gracefully degrade for partial group failures; record and continue
+          console.warn(`⚠️ Failed to load Tier 1 analysis for group ${buffer.groupId}:`, (error as Error)?.message || error);
+          errors.push(error as Error);
+          failures++;
+          continue;
         }
       }
     }
@@ -407,10 +418,11 @@ export class AIAnalysisBufferService {
     let tier2TotalTranscripts = 0;
 
     try {
+      attempts++;
       const latestTier2 = await this.getLatestTier2AnalysisFromDB(sessionId);
       if (latestTier2) {
         // Count groups and transcripts in tier2 buffers for this session
-        for (const [bufferKey, buffer] of Array.from(this.tier2Buffers.entries())) {
+        for (const [, buffer] of Array.from(this.tier2Buffers.entries())) {
           if (buffer.sessionId === sessionId) {
             tier2TotalGroups++;
             tier2TotalTranscripts += buffer.transcripts.length;
@@ -427,8 +439,9 @@ export class AIAnalysisBufferService {
         };
       }
     } catch (error) {
-      console.warn(`⚠️ Failed to get Tier 2 analysis for session ${sessionId}:`, error);
-      // Continue without tier2 - graceful degradation
+      console.warn(`⚠️ Failed to load Tier 2 analysis for session ${sessionId}:`, (error as Error)?.message || error);
+      errors.push(error as Error);
+      failures++;
     }
 
     // Step 3: Build summary metrics
@@ -450,12 +463,20 @@ export class AIAnalysisBufferService {
     });
 
     if (tier2Insights) {
+      // Count all recommendations; mark only 'high' as critical
+      alertCount += tier2Insights.insights.recommendations.length;
       tier2Insights.insights.recommendations.forEach(rec => {
         if (rec.priority === 'high') {
-          alertCount++;
           criticalAlerts.push(`Session: ${rec.message}`);
         }
       });
+    }
+
+    const hasAnyInsights = tier1Insights.length > 0 || !!tier2Insights;
+    const allAttemptsFailed = attempts > 0 && failures >= attempts;
+    if (!hasAnyInsights && allAttemptsFailed) {
+      // If every attempted DB call failed, bubble up a representative error
+      throw errors[0];
     }
 
     return {
@@ -491,24 +512,17 @@ export class AIAnalysisBufferService {
     groupId: string, 
     sessionId: string
   ): Promise<Tier1Insights | null> {
-    try {
-      const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
-         WHERE analysis_type = 'tier1' 
-         AND session_id = ? 
-         AND JSON_EXTRACT(result_data, "$.groupId") = ?
-         ORDER BY analysis_timestamp DESC LIMIT 1`;
+    const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
+       WHERE analysis_type = 'tier1' 
+       AND session_id = ? 
+       AND JSON_EXTRACT(result_data, "$.groupId") = ?
+       ORDER BY analysis_timestamp DESC LIMIT 1`;
 
-      const result = await databricksService.queryOne(query, [sessionId, groupId]);
-
-      if (result && result.result_data) {
-        return JSON.parse(result.result_data) as Tier1Insights;
-      }
-
-      return null;
-    } catch (error) {
-      console.warn('⚠️ Database query failed for latest Tier 1 analysis:', error);
-      return null;
+    const result = await databricksService.queryOne(query, [sessionId, groupId]);
+    if (result && result.result_data) {
+      return JSON.parse(result.result_data) as Tier1Insights;
     }
+    return null;
   }
 
   /**
@@ -517,23 +531,16 @@ export class AIAnalysisBufferService {
   private async getLatestTier2AnalysisFromDB(
     sessionId: string
   ): Promise<Tier2Insights | null> {
-    try {
-      const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
-         WHERE analysis_type = 'tier2' 
-         AND session_id = ? 
-         ORDER BY analysis_timestamp DESC LIMIT 1`;
+    const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
+       WHERE analysis_type = 'tier2' 
+       AND session_id = ? 
+       ORDER BY analysis_timestamp DESC LIMIT 1`;
 
-      const result = await databricksService.queryOne(query, [sessionId]);
-
-      if (result && result.result_data) {
-        return JSON.parse(result.result_data) as Tier2Insights;
-      }
-
-      return null;
-    } catch (error) {
-      console.warn('⚠️ Database query failed for latest Tier 2 analysis:', error);
-      return null;
+    const result = await databricksService.queryOne(query, [sessionId]);
+    if (result && result.result_data) {
+      return JSON.parse(result.result_data) as Tier2Insights;
     }
+    return null;
   }
 
   /**
@@ -690,6 +697,8 @@ export class AIAnalysisBufferService {
         console.error('❌ Buffer cleanup failed:', error);
       });
     }, this.config.cleanupIntervalMs);
+    // Do not keep the event loop alive solely for cleanup
+    (this.cleanupInterval as any)?.unref?.();
   }
 
   private async performCleanup(): Promise<void> {

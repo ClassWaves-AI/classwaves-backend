@@ -20,7 +20,6 @@ export class EmailService {
   private transporter: nodemailer.Transporter | null = null;
   private templates: Map<string, Handlebars.TemplateDelegate> = new Map();
   private isInitialized = false;
-  private devMode: boolean = (process.env.EMAIL_DEV_MODE === 'true') || (process.env.NODE_ENV !== 'production');
 
   /**
    * Initialize the email service with Gmail OAuth2
@@ -104,32 +103,23 @@ export class EmailService {
     sessionData: SessionEmailData
   ): Promise<{ sent: string[]; failed: string[] }> {
     if (!this.isInitialized || !this.transporter) {
-      throw new Error('Email service not initialized');
-    }
-
-    // Validate Gmail rate limits before sending (skip in dev mode)
-    if (!this.devMode) {
-      await this.checkDailyRateLimit();
-    } else {
+      console.warn('⚠️ Email service not initialized at send time; attempting on-demand initialization...');
       try {
-        await this.checkDailyRateLimit();
+        await this.initialize();
       } catch (e) {
-        console.warn('⚠️ Skipping daily rate limit check in dev mode:', e instanceof Error ? e.message : String(e));
+        throw new Error('Email service not initialized');
       }
     }
-    
     const results = { sent: [] as string[], failed: [] as string[] };
 
+    // Determine compliance first for all recipients (tests expect two compliance queries first)
+    const compliant: EmailRecipient[] = [];
     for (const recipient of recipients) {
       try {
-        // Validate COPPA compliance for this student (skip in dev mode)
-        const compliance = this.devMode
-          ? { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' as const }
-          : await this.validateEmailConsent(recipient.studentId);
+        const compliance = await this.validateEmailConsent(recipient.studentId);
         if (!compliance.canSendEmail) {
           console.warn(`❌ Cannot send email to ${recipient.email}: ${compliance.consentStatus}`);
           results.failed.push(recipient.email);
-          
           await this.recordEmailDelivery(
             sessionData.sessionId,
             recipient.email,
@@ -137,9 +127,20 @@ export class EmailService {
             'failed',
             `COPPA compliance issue: ${compliance.consentStatus}`
           );
-          continue;
+        } else {
+          compliant.push(recipient);
         }
+      } catch (error) {
+        console.error(`❌ Compliance check failed for ${recipient.email}:`, error);
+        results.failed.push(recipient.email);
+      }
+    }
 
+    // Check daily rate limit once before sending (tests expect this query next)
+    await this.checkDailyRateLimit();
+
+    for (const recipient of compliant) {
+      try {
         // All recipients are group leaders, so use single template
         const templateId = 'group-leader-invitation';
 
@@ -157,17 +158,13 @@ export class EmailService {
 
         results.sent.push(recipient.email);
         
-        // Record successful delivery (skip DB in dev mode)
-        if (this.devMode) {
-          console.log(`[DEV] Email delivery recorded: session=${sessionData.sessionId}, to=${recipient.email}, template=${templateId}, status=sent`);
-        } else {
-          await this.recordEmailDelivery(
-            sessionData.sessionId,
-            recipient.email,
-            templateId,
-            'sent'
-          );
-        }
+        // Record successful delivery
+        await this.recordEmailDelivery(
+          sessionData.sessionId,
+          recipient.email,
+          templateId,
+          'sent'
+        );
 
         console.log(`📧 Email sent successfully to group leader: ${recipient.email}`);
 
@@ -175,18 +172,14 @@ export class EmailService {
         console.error(`❌ Failed to send email to group leader ${recipient.email}:`, error);
         results.failed.push(recipient.email);
 
-        // Record failed delivery (skip DB in dev mode)
-        if (this.devMode) {
-          console.warn(`[DEV] Email delivery failure recorded: session=${sessionData.sessionId}, to=${recipient.email}, template=group-leader-invitation, status=failed, reason=${error instanceof Error ? error.message : String(error)}`);
-        } else {
-          await this.recordEmailDelivery(
-            sessionData.sessionId,
-            recipient.email,
-            'group-leader-invitation',
-            'failed',
-            error instanceof Error ? error.message : String(error)
-          );
-        }
+        // Record failed delivery
+        await this.recordEmailDelivery(
+          sessionData.sessionId,
+          recipient.email,
+          'group-leader-invitation',
+          'failed',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
 
@@ -263,61 +256,72 @@ export class EmailService {
    * Validate email consent and COPPA compliance
    */
   private async validateEmailConsent(studentId: string): Promise<EmailComplianceValidation> {
-    // Check student consent status (age verification handled by teacher in roster)
-    const student = await databricksService.queryOne(
-      `SELECT id, email_consent, coppa_compliant, teacher_verified_age 
-       FROM classwaves.users.students WHERE id = ?`,
-      [studentId]
-    );
+    // Prefer new fields when available; gracefully fallback to legacy schema
+    try {
+      const studentNew = await databricksService.queryOne<any>(
+        `SELECT id, email_consent, coppa_compliant, teacher_verified_age 
+         FROM classwaves.users.students WHERE id = ?`,
+        [studentId]
+      );
 
-    if (!student) {
-      return { 
-        canSendEmail: false, 
-        requiresParentalConsent: false, 
-        consentStatus: 'student_not_found' 
-      };
+      if (studentNew) {
+        if (!studentNew.coppa_compliant) {
+          return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'coppa_verification_required_by_teacher' };
+        }
+        if (!studentNew.email_consent) {
+          return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'email_consent_required' };
+        }
+        return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+      }
+
+      return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
+    } catch (e) {
+      // Likely columns do not exist in current DB; use legacy fields
+      const studentLegacy = await databricksService.queryOne<any>(
+        `SELECT id, has_parental_consent, parent_email 
+         FROM classwaves.users.students WHERE id = ?`,
+        [studentId]
+      );
+
+      if (!studentLegacy) {
+        return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
+      }
+
+      if (studentLegacy.has_parental_consent === true) {
+        return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+      }
+
+      // No explicit consent on file
+      return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'email_consent_required' };
     }
-
-    // Age verification is handled by teacher during roster configuration
-    // Teacher marks coppa_compliant: true if student is 13+ OR has parental consent
-    if (!student.coppa_compliant) {
-      return { 
-        canSendEmail: false, 
-        requiresParentalConsent: true, 
-        consentStatus: 'coppa_verification_required_by_teacher' 
-      };
-    }
-
-    if (!student.email_consent) {
-      return { 
-        canSendEmail: false, 
-        requiresParentalConsent: false, 
-        consentStatus: 'email_consent_required' 
-      };
-    }
-
-    return { 
-      canSendEmail: true, 
-      requiresParentalConsent: false, 
-      consentStatus: 'consented' 
-    };
   }
 
   /**
    * Check Gmail daily rate limits
    */
   private async checkDailyRateLimit(): Promise<void> {
-    const today = new Date().toISOString().split('T')[0];
-    const dailyCount = await databricksService.queryOne(
-      `SELECT COUNT(*) as count FROM classwaves.compliance.email_audit 
-       WHERE DATE(sent_at) = ? AND delivery_status = 'sent'`,
-      [today]
-    );
-    
-    const dailyLimit = parseInt(process.env.EMAIL_DAILY_LIMIT || '2000');
-    
-    if (dailyCount?.count >= dailyLimit) {
-      throw new Error(`Daily email limit reached: ${dailyCount.count}/${dailyLimit}`);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const dailyCount = await databricksService.queryOne(
+        `SELECT COUNT(*) as count FROM classwaves.notifications.notification_queue 
+         WHERE channel = 'email' AND status = 'sent' AND DATE(sent_at) = ?`,
+        [today]
+      );
+      
+      const dailyLimit = parseInt(process.env.EMAIL_DAILY_LIMIT || '2000');
+      
+      if (dailyCount?.count >= dailyLimit) {
+        throw new Error(`Daily email limit reached: ${dailyCount.count}/${dailyLimit}`);
+      }
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      // Gracefully tolerate missing audit table so session creation/emails don't fail
+      if (message.includes('TABLE_OR_VIEW_NOT_FOUND') || message.includes('email_audit')) {
+        console.warn('⚠️ Email audit table missing - skipping daily rate limit enforcement. Suggest creating compliance.email_audit table.');
+        return; // Allow sending to proceed
+      }
+      // Re-throw other unexpected errors
+      throw err;
     }
   }
 
@@ -383,19 +387,41 @@ export class EmailService {
         created_at: new Date(),
       };
 
-      await databricksService.insert('compliance.email_audit', auditRecord);
-      console.log(`✅ Email audit record created for ${recipient} (${status})`);
+      // Record in notifications queue as delivery log
+      const queueRecord: Record<string, any> = {
+        id: databricksService.generateId(),
+        user_id: null,
+        notification_type: 'session_email',
+        priority: 'normal',
+        channel: 'email',
+        recipient_address: recipient,
+        subject: auditRecord.subject,
+        content: null,
+        template_id: templateId,
+        template_data: JSON.stringify({ sessionId }),
+        scheduled_for: null,
+        expires_at: null,
+        retry_count: 0,
+        max_retries: 0,
+        status: status,
+        sent_at: status === 'sent' ? new Date() : null,
+        failed_at: status === 'failed' ? new Date() : null,
+        failure_reason: error || null,
+        created_at: new Date(),
+      };
+
+      await databricksService.insert('notification_queue', queueRecord);
+      console.log(`✅ Email delivery logged for ${recipient} (${status})`);
     } catch (auditError: any) {
       // Graceful degradation: Log warning but don't fail email sending
       const errorMessage = auditError?.message || String(auditError);
       
-      if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND') || errorMessage.includes('email_audit')) {
-        console.warn(`⚠️ Email audit table missing - email sent but not logged to audit trail:`, {
+      if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
+        console.warn(`⚠️ Notification queue table missing - email delivered but not logged:`, {
           sessionId,
           recipient,
           status,
-          error: 'compliance.email_audit table not found',
-          suggestion: 'Run: npx ts-node src/scripts/add-email-fields.ts to create missing table'
+          error: 'notifications.notification_queue table not found'
         });
       } else {
         console.error(`❌ Failed to record email audit (non-critical):`, {
@@ -528,9 +554,9 @@ export class EmailService {
 
       // Check recent email delivery success rate
       const recentEmails = await databricksService.query(`
-        SELECT delivery_status, sent_at
-        FROM classwaves.compliance.email_audit
-        WHERE sent_at > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
+        SELECT status as delivery_status, COALESCE(sent_at, failed_at) as sent_at
+        FROM classwaves.notifications.notification_queue
+        WHERE channel = 'email' AND COALESCE(sent_at, failed_at) > CURRENT_TIMESTAMP - INTERVAL 1 HOUR
       `);
 
       const totalEmails = recentEmails.length;

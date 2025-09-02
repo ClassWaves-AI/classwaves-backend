@@ -68,6 +68,8 @@ export const SESSION_DETAIL_FIELDS: QueryFieldSet = {
   alias: 's',
   fields: [
     ...SESSION_LIST_FIELDS.fields,
+    // Needed for teacher UI to display join code
+    'access_code',
     'actual_end',        // ✅ Exists in schema (not 'ended_at')
     'end_reason',        // ✅ Exists in schema
     'actual_duration_minutes', // ✅ Exists in schema

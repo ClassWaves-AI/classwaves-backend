@@ -1,11 +1,122 @@
 # Session Metrics Data Flow Analysis
 
-**Generated:** 2025-08-23T06:47:03.569Z
+**Generated:** 2025-09-01T06:20:02.255Z
 **Purpose:** Analyze how session metrics should flow across different tables
 
 ## Key Tables for Session Data
 
-**Session-Related Tables Found:** 16
+**Session-Related Tables Found:** 18
+
+### `ai_insights.session_guidance_analytics`
+
+**Group/Student Related Columns:**
+- `total_groups` (int) - No comment
+- `total_students` (int) - No comment
+- `student_engagement_improvement` (double) - No comment
+
+**Metrics Columns:**
+- `total_groups` (int) - No comment
+- `total_students` (int) - No comment
+- `total_prompts_generated` (int) - No comment
+- `total_prompts_acknowledged` (int) - No comment
+- `total_prompts_used` (int) - No comment
+- `total_prompts_dismissed` (int) - No comment
+- `total_prompts_expired` (int) - No comment
+- `acknowledgment_rate` (double) - No comment
+- `usage_rate` (double) - No comment
+- `effectiveness_rate` (double) - No comment
+- `avg_feedback_rating` (double) - No comment
+- `avg_effectiveness_score` (double) - No comment
+- `avg_response_time_seconds` (double) - No comment
+- `session_improvement_score` (double) - No comment
+- `learning_objective_completion_rate` (double) - No comment
+- `error_count` (int) - No comment
+
+**All Columns:**
+- `id` (string)
+- `session_id` (string)
+- `teacher_id` (string)
+- `school_id` (string)
+- `session_date` (date)
+- `subject_area` (string)
+- `session_duration_minutes` (int)
+- `total_groups` (int)
+- `total_students` (int)
+- `total_prompts_generated` (int)
+- `total_prompts_acknowledged` (int)
+- `total_prompts_used` (int)
+- `total_prompts_dismissed` (int)
+- `total_prompts_expired` (int)
+- `acknowledgment_rate` (double)
+- `usage_rate` (double)
+- `effectiveness_rate` (double)
+- `avg_feedback_rating` (double)
+- `avg_effectiveness_score` (double)
+- `avg_response_time_seconds` (double)
+- `session_improvement_score` (double)
+- `student_engagement_improvement` (double)
+- `discussion_quality_improvement` (double)
+- `learning_objective_completion_rate` (double)
+- `category_breakdown` (map<string,struct<generated:int,used:int,effectiveness:double>>)
+- `priority_breakdown` (map<string,struct<generated:int,used:int,effectiveness:double>>)
+- `phase_breakdown` (map<string,struct<generated:int,used:int,effectiveness:double>>)
+- `teacher_satisfaction_rating` (int)
+- `teacher_feedback_text` (string)
+- `would_recommend_system` (boolean)
+- `ai_analysis_latency_ms` (double)
+- `prompt_generation_latency_ms` (double)
+- `system_uptime_percentage` (double)
+- `error_count` (int)
+- `compliance_violations` (int)
+- `data_retention_compliance` (boolean)
+- `privacy_safeguards_applied` (boolean)
+- `created_at` (timestamp)
+- `updated_at` (timestamp)
+- `session_date` (date)
+
+---
+
+### `ai_insights.teacher_guidance_metrics`
+
+**Group/Student Related Columns:**
+- `group_id` (string) - Target group for the prompt (if group-specific)
+
+**Metrics Columns:**
+- `generated_at` (timestamp) - When the prompt was generated
+- `effectiveness_score` (double) - System-calculated effectiveness score
+
+**All Columns:**
+- `id` (string)
+- `session_id` (string)
+- `teacher_id` (string)
+- `prompt_id` (string)
+- `prompt_category` (string)
+- `priority_level` (string)
+- `prompt_message` (string)
+- `prompt_context` (string)
+- `suggested_timing` (string)
+- `session_phase` (string)
+- `subject_area` (string)
+- `target_metric` (string)
+- `learning_objectives` (string)
+- `group_id` (string)
+- `generated_at` (timestamp)
+- `acknowledged_at` (timestamp)
+- `used_at` (timestamp)
+- `dismissed_at` (timestamp)
+- `expires_at` (timestamp)
+- `feedback_rating` (int)
+- `feedback_text` (string)
+- `effectiveness_score` (double)
+- `learning_outcome_improvement` (double)
+- `response_time_seconds` (int)
+- `educational_purpose` (string)
+- `compliance_basis` (string)
+- `data_retention_date` (date)
+- `created_at` (timestamp)
+- `updated_at` (timestamp)
+
+---
 
 ### `analytics.dashboard_metrics_hourly`
 

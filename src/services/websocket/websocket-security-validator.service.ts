@@ -38,7 +38,7 @@ export interface SecurityValidationResult {
 export class WebSocketSecurityValidator {
   private readonly NAMESPACE_CONFIGS: Record<string, NamespaceSecurityConfig> = {
     '/sessions': {
-      allowedRoles: ['teacher', 'admin', 'super_admin'],
+      allowedRoles: ['teacher', 'admin', 'super_admin', 'student'],
       requireSchoolVerification: true,
       requireSessionAccess: false,
       maxConnectionsPerUser: process.env.NODE_ENV === 'development' ? 50 : 5, // Higher limit for dev
@@ -98,7 +98,7 @@ export class WebSocketSecurityValidator {
     }
 
     // 2. Connection limit enforcement
-    const connectionCheck = await this.validateConnectionLimits(securityContext, config, namespaceName);
+    const connectionCheck = await this.validateConnectionLimits(socket, securityContext, config, namespaceName);
     if (!connectionCheck.allowed) {
       await this.logSecurityEvent(socket, securityContext, 'CONNECTION_LIMIT_EXCEEDED', {
         namespaceName,
@@ -168,35 +168,40 @@ export class WebSocketSecurityValidator {
    * Validate connection limits per user
    */
   private async validateConnectionLimits(
+    socket: Socket,
     securityContext: SecurityContext,
     config: NamespaceSecurityConfig,
     namespaceName: string
   ): Promise<SecurityValidationResult> {
-    const connectionKey = `websocket_connections:${namespaceName}:${securityContext.userId}`;
-    
     try {
-      const currentConnections = await redisService.get(connectionKey);
-      const connectionCount = currentConnections ? parseInt(currentConnections, 10) : 0;
+      // Authoritative: count active sockets for this user across the namespace (cluster-aware with Redis adapter)
+      const sockets = await socket.nsp.fetchSockets();
+      const activeForUser = sockets.filter((s) => (s.data as any)?.userId === securityContext.userId).length;
 
-      if (connectionCount >= config.maxConnectionsPerUser) {
+      if (activeForUser >= config.maxConnectionsPerUser) {
         return {
           allowed: false,
-          reason: `Maximum connections exceeded (${connectionCount}/${config.maxConnectionsPerUser})`,
+          reason: `Maximum connections exceeded (${activeForUser}/${config.maxConnectionsPerUser})`,
           errorCode: 'CONNECTION_LIMIT_EXCEEDED',
           metadata: {
-            currentConnections: connectionCount,
+            currentConnections: activeForUser,
             maxConnections: config.maxConnectionsPerUser
           }
         };
       }
 
-      // Increment connection count with expiration
-      await redisService.set(connectionKey, (connectionCount + 1).toString(), 3600); // 1 hour TTL
-      return { allowed: true };
+      // Optionally mirror count in Redis for monitoring (non-blocking)
+      try {
+        const connectionKey = `websocket_connections:${namespaceName}:${securityContext.userId}`;
+        await redisService.set(connectionKey, String(activeForUser + 1), 3600);
+      } catch (e) {
+        // Monitoring only; ignore errors
+      }
 
+      return { allowed: true };
     } catch (error) {
-      console.error('Error validating connection limits:', error);
-      // Fail open for Redis errors to avoid blocking legitimate connections
+      console.error('Error validating connection limits via adapter enumeration:', error);
+      // Fail open to avoid blocking legitimate connections due to adapter errors
       return { allowed: true };
     }
   }
@@ -393,34 +398,20 @@ export class WebSocketSecurityValidator {
       // Store in audit log (async, don't block)
       setImmediate(async () => {
         try {
-          // Route security events to existing audit_log table with proper structure
-          const auditLogEntry = {
-            id: securityEvent.id,
-            actor_id: securityEvent.user_id,
-            actor_type: 'system',
-            event_type: 'websocket_security',
-            event_category: 'security_event',
-            event_timestamp: securityEvent.timestamp,
-            resource_type: 'websocket_connection',
-            resource_id: securityEvent.namespace_name || 'unknown',
-            school_id: 'unknown', // WebSocket events don't have school_id directly
-            description: `WebSocket security event: ${securityEvent.event_type}`,
-            event_data: JSON.stringify({
-              eventType: securityEvent.event_type,
-              namespaceName: securityEvent.namespace_name,
-              ipAddress: securityEvent.ip_address,
-              userAgent: securityEvent.user_agent,
-              userRole: securityEvent.user_role,
-              severity: securityEvent.severity,
-              originalMetadata: securityEvent.metadata
-            }),
-            ip_address: securityEvent.ip_address,
-            user_agent: securityEvent.user_agent,
-            operation_result: 'success',
-            created_at: securityEvent.timestamp
-          };
-          
-          await databricksService.insert('audit_log', auditLogEntry);
+          // Use centralized audit logging API to match schema
+          await databricksService.recordAuditLog({
+            actorId: securityEvent.user_id,
+            actorType: 'system',
+            eventType: 'websocket_security',
+            eventCategory: 'compliance',
+            resourceType: 'websocket_connection',
+            resourceId: securityEvent.namespace_name || 'unknown',
+            schoolId: securityContext.schoolId || 'unknown',
+            description: `WS security event: ${securityEvent.event_type} in ${securityEvent.namespace_name} - meta=${securityEvent.metadata?.slice?.(0, 512)}`,
+            ipAddress: securityEvent.ip_address,
+            userAgent: securityEvent.user_agent,
+            complianceBasis: 'legitimate_interest',
+          });
         } catch (error) {
           // Gracefully handle audit log errors - don't block core functionality
           const errorMessage = error instanceof Error ? error.message : String(error);

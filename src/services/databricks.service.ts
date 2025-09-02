@@ -404,6 +404,8 @@ export class DatabricksService {
       'analysis_results': 'ai_insights',
       'educational_insights': 'ai_insights',
       'intervention_suggestions': 'ai_insights',
+      'teacher_guidance_metrics': 'ai_insights',
+      'teacher_prompt_effectiveness': 'ai_insights',
 
       // Analytics schema
       'educational_metrics': 'analytics',

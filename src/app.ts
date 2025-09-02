@@ -142,7 +142,7 @@ app.use((req, res, next) => {
 // SECURITY 2: Enhanced CORS with strict origin validation
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    // In dev, allow all origins for simplicity, but log violations
+    // In dev and test, apply a strict whitelist to avoid echoing malicious origins in headers
     if (process.env.NODE_ENV !== 'production') {
       const allowedDevOrigins = [
         'http://localhost:3001',  // Frontend
@@ -152,12 +152,13 @@ const corsOptions = {
       ];
       if (origin && !allowedDevOrigins.includes(origin)) {
         console.warn(`🚨 CORS VIOLATION: Origin ${origin} not in dev whitelist`);
+        // Do not allow unknown origins in test/dev either
+        return callback(null, false);
       }
-      callback(null, true);
-      return;
+      return callback(null, true);
     }
 
-    const whitelist = (process.env.CORS_WHITELIST || '').split(',');
+    const whitelist = (process.env.CORS_WHITELIST || '').split(',').filter(Boolean);
     if (origin && whitelist.includes(origin)) {
       callback(null, true);
     } else {

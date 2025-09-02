@@ -62,6 +62,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       await this.handleGroupStatusUpdate(socket, data);
     });
 
+    // Student-specific session join handler (namespaced)
+    socket.on('student:session:join', async (data: { sessionId: string }) => {
+      await this.handleStudentSessionJoin(socket, data);
+    });
+
     // Group leader ready signal
     socket.on('group:leader_ready', async (data: { sessionId: string; groupId: string; ready: boolean }) => {
       await this.handleGroupLeaderReady(socket, data);
@@ -76,12 +81,20 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     socket.on('audio:start_stream', async (data: { groupId: string }) => {
       await this.handleAudioStreamStart(socket, data);
     });
+    // Canonical event name support
+    socket.on('audio:stream:start', async (data: { groupId: string }) => {
+      await this.handleAudioStreamStart(socket, data);
+    });
 
     socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; mimeType: string }) => {
       await this.handleAudioChunk(socket, data);
     });
 
     socket.on('audio:end_stream', async (data: { groupId: string }) => {
+      await this.handleAudioStreamEnd(socket, data);
+    });
+    // Canonical event name support
+    socket.on('audio:stream:end', async (data: { groupId: string }) => {
       await this.handleAudioStreamEnd(socket, data);
     });
 
@@ -175,6 +188,85 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       socket.emit('error', { 
         code: 'SESSION_JOIN_FAILED', 
         message: 'Failed to join session' 
+      });
+    }
+  }
+
+  private async handleStudentSessionJoin(socket: Socket, data: { sessionId: string }) {
+    try {
+      const sessionId = (data?.sessionId || '').trim();
+      if (!sessionId) {
+        socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'sessionId is required' });
+        return;
+      }
+
+      // Join session room early so teacher sees presence even if DB is slow
+      const sessionRoom = `session:${sessionId}`;
+      const sData = socket.data as SessionSocketData;
+      if (!sData.joinedRooms) sData.joinedRooms = new Set();
+      await Promise.resolve((socket as any).join?.(sessionRoom));
+      sData.joinedRooms.add(sessionRoom);
+      sData.sessionId = sessionId;
+
+      // Verify student is a participant in this session
+      // Use dynamic import to ensure Jest spies intercept this call reliably
+      const db = await import('../databricks.service');
+      const participant = await (db as any).databricksService.queryOne(
+        `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
+         FROM classwaves.sessions.participants p 
+         LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
+         WHERE p.session_id = ?
+         ORDER BY p.join_time DESC
+         LIMIT 1`,
+        [sessionId]
+      );
+
+      if (!participant) {
+        socket.emit('error', { 
+          code: 'SESSION_ACCESS_DENIED', 
+          message: 'Student not enrolled in this session' 
+        });
+        return;
+      }
+
+      // Already joined above
+
+      // Also join group room if assigned
+      if (participant.group_id) {
+        const groupRoom = `group:${participant.group_id}`;
+        await socket.join(groupRoom);
+        sData.joinedRooms.add(groupRoom);
+
+        // Emit presence at session level so teacher Live Groups updates
+        this.emitToRoom(sessionRoom, 'group:joined', {
+          groupId: participant.group_id,
+          sessionId
+        });
+
+        // Notify group members about the user presence for consistency
+        this.emitToRoom(groupRoom, 'group:user_joined', {
+          groupId: participant.group_id,
+          sessionId,
+          userId: socket.data.userId,
+          role: socket.data.role
+        });
+      }
+
+      socket.emit('student:session:joined', {
+        sessionId,
+        groupId: participant.group_id,
+        groupName: participant.group_name
+      });
+
+      // Notify presence to session room
+      this.notifyRoomOfUserStatus(sessionRoom, socket.data.userId, 'connected');
+
+      console.log(`Sessions namespace: Student ${socket.data.userId} joined session ${sessionId}${participant.group_id ? ` and group ${participant.group_id}` : ''}`);
+    } catch (error) {
+      console.error('Student session join error (namespaced):', error);
+      socket.emit('error', { 
+        code: 'STUDENT_SESSION_JOIN_FAILED', 
+        message: 'Failed to join session as student' 
       });
     }
   }
@@ -482,9 +574,12 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Broadcast group status change to all session participants (including teacher dashboard)
       const broadcastSuccess = this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', {
         groupId: data.groupId,
-        status: data.ready ? 'ready' : 'connected',
+        sessionId: data.sessionId,
+        status: data.ready ? 'ready' : 'waiting',
         isReady: data.ready,
-        idempotencyKey
+        idempotencyKey,
+        updatedBy: socket.data.userId,
+        timestamp: new Date().toISOString()
       });
 
       // Log broadcast failure for monitoring
@@ -594,6 +689,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       });
 
       socket.emit('audio:stream_ready', { groupId: data.groupId });
+
+      // Emit canonical session-level event for teacher dashboards and clients
+      const sData = socket.data as SessionSocketData;
+      if (sData?.sessionId) {
+        this.emitToRoom(`session:${sData.sessionId}`, 'audio:stream:start', {
+          groupId: data.groupId
+        });
+      }
     } catch (error) {
       console.error('Audio stream start error:', error);
       socket.emit('error', { 
@@ -639,6 +742,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       });
 
       socket.emit('audio:stream_stopped', { groupId: data.groupId });
+
+      // Emit canonical session-level event for teacher dashboards and clients
+      const sData = socket.data as SessionSocketData;
+      if (sData?.sessionId) {
+        this.emitToRoom(`session:${sData.sessionId}`, 'audio:stream:end', {
+          groupId: data.groupId
+        });
+      }
     } catch (error) {
       console.error('Audio stream end error:', error);
       socket.emit('error', { 

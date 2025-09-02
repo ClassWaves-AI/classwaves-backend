@@ -467,6 +467,149 @@ describe('Roster Routes Integration Tests', () => {
     });
   });
 
+  describe('PUT /api/v1/roster/students/:id', () => {
+    const studentId = 'student-123';
+
+    it('should update student basic fields and return transformed response', async () => {
+      // Mock existence check
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce({ id: studentId, school_id: school.id });
+
+      // Mock UPDATE success
+      mockDatabricksService.query.mockResolvedValueOnce(true);
+
+      // Mock fetch updated student
+      const updatedDbRow = {
+        id: studentId,
+        display_name: 'UpdatedFirst UpdatedLast',
+        email: null,
+        grade_level: '6th',
+        status: 'active',
+        has_parental_consent: false,
+        consent_date: null,
+        parent_email: null,
+        data_sharing_consent: false,
+        audio_recording_consent: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        school_name: 'Test School',
+      };
+      mockDatabricksService.queryOne.mockResolvedValueOnce(updatedDbRow);
+
+      const response = await request(app)
+        .put(`/api/v1/roster/students/${studentId}`)
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({
+          name: 'UpdatedFirst UpdatedLast',
+          gradeLevel: '6th',
+          parentEmail: '',
+          status: 'active',
+        })
+        .expect(200);
+
+      // Verify update SQL was built with expected columns
+      expect(mockDatabricksService.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE classwaves.users.students'),
+        expect.arrayContaining([expect.any(String), studentId]) // updated_at, id
+      );
+
+      // Response shape contains student key
+      expect(response.body).toMatchObject({ success: true, data: { student: updatedDbRow } });
+
+      // Audit log recorded
+      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: 'student_updated',
+          resourceId: studentId,
+          eventCategory: 'configuration',
+        })
+      );
+    });
+
+    it('should return 400 when no updatable fields provided', async () => {
+      mockDatabricksService.queryOne.mockResolvedValueOnce({ id: studentId, school_id: school.id });
+
+      const response = await request(app)
+        .put(`/api/v1/roster/students/${studentId}`)
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({})
+        .expect(400);
+
+      expect(response.body).toMatchObject({ success: false, error: 'NO_UPDATES' });
+    });
+
+    it('should return 404 when student not in teacher school', async () => {
+      mockDatabricksService.queryOne.mockResolvedValueOnce(null);
+
+      const response = await request(app)
+        .put(`/api/v1/roster/students/${studentId}`)
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({ name: 'X' })
+        .expect(404);
+
+      expect(response.body).toMatchObject({ success: false, error: 'STUDENT_NOT_FOUND' });
+    });
+
+    it('should accept split names and update display_name accordingly', async () => {
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce({ id: studentId, school_id: school.id }) // exists
+        .mockResolvedValueOnce({ // after update fetch
+          id: studentId,
+          display_name: 'Ada Lovelace',
+          grade_level: '5th',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          school_name: 'Test School',
+        });
+
+      mockDatabricksService.query.mockResolvedValueOnce(true); // main UPDATE
+      mockDatabricksService.query.mockResolvedValueOnce(true); // structured names UPDATE (best effort)
+
+      const res = await request(app)
+        .put(`/api/v1/roster/students/${studentId}`)
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({ firstName: 'Ada', lastName: 'Lovelace' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      // Should have updated display_name
+      const mainUpdate = mockDatabricksService.query.mock.calls[0];
+      expect(mainUpdate[0]).toContain('UPDATE classwaves.users.students');
+      expect(mainUpdate[0]).toContain('display_name = ?');
+
+      // Structured names update attempted (best effort)
+      const secondaryUpdate = mockDatabricksService.query.mock.calls.find((c: any[]) => c[0].includes('given_name'));
+      expect(secondaryUpdate).toBeTruthy();
+    });
+
+    it('should prefer explicit name over split names when both provided', async () => {
+      mockDatabricksService.queryOne
+        .mockResolvedValueOnce({ id: studentId, school_id: school.id })
+        .mockResolvedValueOnce({
+          id: studentId,
+          display_name: 'Explicit Name Wins',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          school_name: 'Test School',
+        });
+
+      mockDatabricksService.query.mockResolvedValueOnce(true);
+      mockDatabricksService.query.mockResolvedValueOnce(true);
+
+      await request(app)
+        .put(`/api/v1/roster/students/${studentId}`)
+        .set('Authorization', `Bearer ${authToken}`)
+        .send({ name: 'Explicit Name Wins', firstName: 'Ada', lastName: 'Lovelace' })
+        .expect(200);
+
+      const mainUpdate = mockDatabricksService.query.mock.calls[0];
+      // The first parameter after SQL should include updated_at then id at the end; we assert SQL contains display_name field
+      expect(mainUpdate[0]).toContain('display_name = ?');
+    });
+  });
+
   describe('COPPA Compliance - Simplified Boolean System', () => {
     it('should handle teacher-confirmed under-13 status correctly', async () => {
       const under13StudentData = {
@@ -661,6 +804,163 @@ describe('Roster Routes Integration Tests', () => {
 
       const student2 = response.body.data[1];
       expect(student2.consentStatus).toBe('none'); // No parent email
+    });
+  });
+
+  describe('GET /api/v1/roster/overview', () => {
+    it('should return accurate roster overview metrics', async () => {
+      // Mock database response with various student statuses and consent states
+      mockDatabricksService.queryOne.mockResolvedValueOnce({
+        totalStudents: 15,
+        activeStudents: 12,
+        pendingConsent: 3,
+        inactiveStudents: 3
+      });
+
+      const response = await request(app)
+        .get('/api/v1/roster/overview')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        success: true,
+        data: {
+          totalStudents: 15,
+          activeStudents: 12,
+          pendingConsent: 3,
+          inactiveStudents: 3
+        }
+      });
+
+      // Verify the correct SQL query was used
+      expect(mockDatabricksService.queryOne).toHaveBeenCalledWith(
+        expect.stringContaining('COUNT(*) as totalStudents'),
+        [school.id]
+      );
+      expect(mockDatabricksService.queryOne).toHaveBeenCalledWith(
+        expect.stringContaining("COUNT(CASE WHEN s.status = 'active' THEN 1 END) as activeStudents"),
+        [school.id]
+      );
+      expect(mockDatabricksService.queryOne).toHaveBeenCalledWith(
+        expect.stringContaining('COUNT(CASE WHEN s.parent_email IS NOT NULL AND s.has_parental_consent = false THEN 1 END) as pendingConsent'),
+        [school.id]
+      );
+      expect(mockDatabricksService.queryOne).toHaveBeenCalledWith(
+        expect.stringContaining("COUNT(CASE WHEN s.status != 'active' THEN 1 END) as inactiveStudents"),
+        [school.id]
+      );
+    });
+
+    it('should handle empty roster gracefully', async () => {
+      mockDatabricksService.queryOne.mockResolvedValueOnce({
+        totalStudents: 0,
+        activeStudents: 0,
+        pendingConsent: 0,
+        inactiveStudents: 0
+      });
+
+      const response = await request(app)
+        .get('/api/v1/roster/overview')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        success: true,
+        data: {
+          totalStudents: 0,
+          activeStudents: 0,
+          pendingConsent: 0,
+          inactiveStudents: 0
+        }
+      });
+    });
+
+    it('should handle null database response', async () => {
+      mockDatabricksService.queryOne.mockResolvedValueOnce(null);
+
+      const response = await request(app)
+        .get('/api/v1/roster/overview')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        success: true,
+        data: {
+          totalStudents: 0,
+          activeStudents: 0,
+          pendingConsent: 0,
+          inactiveStudents: 0
+        }
+      });
+    });
+
+    it('should be scoped to teacher school', async () => {
+      mockDatabricksService.queryOne.mockResolvedValueOnce({
+        totalStudents: 5,
+        activeStudents: 4,
+        pendingConsent: 1,
+        inactiveStudents: 1
+      });
+
+      await request(app)
+        .get('/api/v1/roster/overview')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(200);
+
+      // Verify query is scoped to the teacher's school
+      expect(mockDatabricksService.queryOne).toHaveBeenCalledWith(
+        expect.stringContaining('WHERE s.school_id = ?'),
+        [school.id]
+      );
+    });
+
+    it('should log audit event for data access', async () => {
+      mockDatabricksService.queryOne.mockResolvedValueOnce({
+        totalStudents: 10,
+        activeStudents: 8,
+        pendingConsent: 2,
+        inactiveStudents: 2
+      });
+
+      await request(app)
+        .get('/api/v1/roster/overview')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(200);
+
+      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith({
+        actorId: teacher.id,
+        actorType: 'teacher',
+        eventType: 'roster_overview_accessed',
+        eventCategory: 'data_access',
+        resourceType: 'student',
+        resourceId: 'overview',
+        schoolId: school.id,
+        description: `Teacher ID ${teacher.id} accessed roster overview metrics`,
+        ipAddress: expect.any(String),
+        userAgent: undefined,
+        complianceBasis: 'legitimate_interest'
+      });
+    });
+
+    it('should handle database errors gracefully', async () => {
+      mockDatabricksService.queryOne.mockRejectedValueOnce(new Error('Database connection failed'));
+
+      const response = await request(app)
+        .get('/api/v1/roster/overview')
+        .set('Authorization', `Bearer ${authToken}`)
+        .expect(500);
+
+      expect(response.body).toMatchObject({
+        success: false,
+        error: 'INTERNAL_ERROR',
+        message: 'Failed to fetch roster overview'
+      });
+    });
+
+    it('should require authentication', async () => {
+      await request(app)
+        .get('/api/v1/roster/overview')
+        .expect(401);
     });
   });
 });

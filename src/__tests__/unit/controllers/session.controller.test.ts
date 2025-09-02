@@ -241,14 +241,13 @@ describe('Session Controller', () => {
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
 
-      // Should insert analytics records
-      expect(databricksService.insert).toHaveBeenCalledWith(
-        'session_analytics',
+      // Should upsert analytics metrics (updated implementation)
+      expect(databricksService.upsert).toHaveBeenCalledWith(
+        'session_metrics',
+        { session_id: expect.any(String) },
         expect.objectContaining({
           planned_groups: 2,
-          planned_group_size: 3,
-          planned_members: 4,
-          planned_leaders: 2
+          average_group_size: 2, // from 4 total members / 2 groups
         })
       );
       
@@ -576,12 +575,15 @@ describe('Session Controller', () => {
         planned_duration_minutes: 45
       };
 
-      // Mock RetryService calls for session gating checks
-      (RetryService.retryDatabaseOperation as jest.Mock)
-        .mockResolvedValueOnce(mockSession)  // Session lookup
-        .mockResolvedValueOnce({ ready_groups_count: 2 })  // Ready groups count (2 ready) - all groups ready
-        .mockResolvedValueOnce({ total_groups_count: 2 })  // Total groups count (2 total) - all groups ready
-        .mockResolvedValueOnce(true);  // Update session to active (called after gating passes)
+      // Ensure callbacks passed to RetryService are executed
+      (RetryService.retryDatabaseOperation as jest.Mock).mockImplementation(async (op: any) => await op());
+      (RetryService.withRetry as jest.Mock).mockImplementation(async (op: any) => await op());
+
+      // Mock DB responses used inside callbacks
+      (databricksService.queryOne as jest.Mock)
+        .mockResolvedValueOnce(mockSession) // verify-session-ownership
+        .mockResolvedValueOnce({ ready_groups_count: 2 }) // count-ready-groups
+        .mockResolvedValueOnce({ total_groups_count: 2 }); // count-total-groups
 
       // Mock other required services
       (databricksService.update as jest.Mock).mockResolvedValue(true);

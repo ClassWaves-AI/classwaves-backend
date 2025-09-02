@@ -170,24 +170,26 @@ export class WebSocketService {
       pingInterval: 25000,
     });
 
-    // Diagnostic: server-level connection state
-    this.io.engine.on('connection_error', (err: any) => {
-      console.warn('⚠️  Engine.io connection error:', {
-        code: (err as any)?.code,
-        message: (err as any)?.message,
-        req: {
-          headers: (err as any)?.req?.headers,
-          url: (err as any)?.req?.url,
-        },
+    // Diagnostic: server-level connection state (guarded for test environments)
+    if ((this.io as any)?.engine?.on) {
+      this.io.engine.on('connection_error', (err: any) => {
+        console.warn('⚠️  Engine.io connection error:', {
+          code: (err as any)?.code,
+          message: (err as any)?.message,
+          req: {
+            headers: (err as any)?.req?.headers,
+            url: (err as any)?.req?.url,
+          },
+        });
       });
-    });
 
-    this.io.engine.on('heartbeat', (transport: any) => {
-      // Low-cost heartbeat log to correlate timeouts (opt-in)
-      if (process.env.WS_DEBUG === '1') {
-        console.log('💓 WS heartbeat', transport?.name);
-      }
-    });
+      this.io.engine.on('heartbeat', (transport: any) => {
+        // Low-cost heartbeat log to correlate timeouts (opt-in)
+        if (process.env.WS_DEBUG === '1') {
+          console.log('💓 WS heartbeat', transport?.name);
+        }
+      });
+    }
 
     this.setupRedisAdapter();
     this.setupMiddleware();
@@ -418,7 +420,7 @@ export class WebSocketService {
       });
 
       // Handle audio chunk processing (windowed)
-      socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => {
+      socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; format?: string; mimeType?: string; timestamp: number }) => {
         try {
           // Backpressure diagnostics: drop too-large payloads to prevent disconnects
           const approxSize = (data as any)?.audioData?.length || 0;
@@ -440,16 +442,17 @@ export class WebSocketService {
             return;
           }
 
-          // Coerce payload and validate mime
+          // Coerce payload and validate mime (support both 'mimeType' and legacy 'format')
           const audioBuffer = coerceToBuffer(data.audioData);
-          validateMimeType(data.format);
-          console.log(`🎤 Processing audio chunk for group ${data.groupId}, format: ${data.format}, size: ${audioBuffer.length} bytes`);
+          const resolvedMime = (data as any).mimeType || (data as any).format;
+          validateMimeType(resolvedMime);
+          console.log(`🎤 Processing audio chunk for group ${data.groupId}, format: ${resolvedMime}, size: ${audioBuffer.length} bytes`);
           
           // Process audio with InMemoryAudioProcessor (zero-disk guarantee, windowed)
           const result = await inMemoryAudioProcessor.ingestGroupAudioChunk(
             data.groupId,
             audioBuffer,
-            data.format,
+            resolvedMime,
             socket.data.sessionId,
             socket.data.schoolId
           );

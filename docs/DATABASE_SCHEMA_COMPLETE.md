@@ -1,13 +1,13 @@
 # ClassWaves Database Schema Documentation
 
-**Generated:** 2025-08-23T06:47:03.561Z
+**Generated:** 2025-09-01T06:20:02.245Z
 **Purpose:** Complete documentation of all database schemas, tables, and columns
 
 ## Overview
 
 This document provides a comprehensive view of the ClassWaves database structure across all schemas.
 
-**Total Tables:** 68
+**Total Tables:** 71
 **Schemas:** admin, ai_insights, analytics, audio, communication, compliance, information_schema, notifications, operational, sessions, users
 
 ### Data Volume Summary
@@ -15,16 +15,16 @@ This document provides a comprehensive view of the ClassWaves database structure
 | Schema | Tables | Total Rows | Tables with Data | Last Activity |
 |--------|--------|------------|------------------|---------------|
 | `admin` | 2 | 1 | 1 | 2025-08-03 |
-| `ai_insights` | 5 | 0 | 0 | Unknown |
-| `analytics` | 10 | 155 | 6 | 2025-08-23 |
+| `ai_insights` | 8 | 0 | 0 | Unknown |
+| `analytics` | 10 | 199 | 6 | 2025-09-01 |
 | `audio` | 1 | 0 | 0 | Unknown |
 | `communication` | 1 | 0 | 0 | Unknown |
-| `compliance` | 4 | 1,961 | 1 | 2025-08-22 |
+| `compliance` | 4 | 2,861 | 1 | 2025-09-01 |
 | `information_schema` | 28 | 0 | 0 | Unknown |
 | `notifications` | 2 | 0 | 0 | Unknown |
 | `operational` | 3 | 0 | 0 | Unknown |
-| `sessions` | 5 | 1,439 | 5 | 2025-08-23 |
-| `users` | 7 | 175 | 4 | 2025-08-23 |
+| `sessions` | 5 | 1,777 | 5 | 2025-09-01 |
+| `users` | 7 | 229 | 4 | 2025-08-23 |
 
 
 ---
@@ -81,7 +81,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 ## Schema: `ai_insights`
 
-**Tables:** 5
+**Tables:** 8
 
 ### Table: `analysis_results`
 
@@ -144,6 +144,129 @@ This document provides a comprehensive view of the ClassWaves database structure
 | `acted_at` | `timestamp` | ✅ |  |
 | `was_effective` | `boolean` | ✅ |  |
 | `created_at` | `timestamp` | ✅ |  |
+
+### Table: `session_guidance_analytics`
+
+**Full Name:** `classwaves.ai_insights.session_guidance_analytics`
+**Columns:** 40
+**Row Count:** 0
+
+| Column | Type | Nullable | Comment |
+|--------|------|----------|----------|
+| `id` | `string` | ✅ |  |
+| `session_id` | `string` | ✅ |  |
+| `teacher_id` | `string` | ✅ |  |
+| `school_id` | `string` | ✅ |  |
+| `session_date` | `date` | ✅ |  |
+| `subject_area` | `string` | ✅ |  |
+| `session_duration_minutes` | `int` | ✅ |  |
+| `total_groups` | `int` | ✅ |  |
+| `total_students` | `int` | ✅ |  |
+| `total_prompts_generated` | `int` | ✅ |  |
+| `total_prompts_acknowledged` | `int` | ✅ |  |
+| `total_prompts_used` | `int` | ✅ |  |
+| `total_prompts_dismissed` | `int` | ✅ |  |
+| `total_prompts_expired` | `int` | ✅ |  |
+| `acknowledgment_rate` | `double` | ✅ |  |
+| `usage_rate` | `double` | ✅ |  |
+| `effectiveness_rate` | `double` | ✅ |  |
+| `avg_feedback_rating` | `double` | ✅ |  |
+| `avg_effectiveness_score` | `double` | ✅ |  |
+| `avg_response_time_seconds` | `double` | ✅ |  |
+| `session_improvement_score` | `double` | ✅ |  |
+| `student_engagement_improvement` | `double` | ✅ |  |
+| `discussion_quality_improvement` | `double` | ✅ |  |
+| `learning_objective_completion_rate` | `double` | ✅ |  |
+| `category_breakdown` | `map<string,struct<generated:int,used:int,effectiveness:double>>` | ✅ |  |
+| `priority_breakdown` | `map<string,struct<generated:int,used:int,effectiveness:double>>` | ✅ |  |
+| `phase_breakdown` | `map<string,struct<generated:int,used:int,effectiveness:double>>` | ✅ |  |
+| `teacher_satisfaction_rating` | `int` | ✅ |  |
+| `teacher_feedback_text` | `string` | ✅ |  |
+| `would_recommend_system` | `boolean` | ✅ |  |
+| `ai_analysis_latency_ms` | `double` | ✅ |  |
+| `prompt_generation_latency_ms` | `double` | ✅ |  |
+| `system_uptime_percentage` | `double` | ✅ |  |
+| `error_count` | `int` | ✅ |  |
+| `compliance_violations` | `int` | ✅ |  |
+| `data_retention_compliance` | `boolean` | ✅ |  |
+| `privacy_safeguards_applied` | `boolean` | ✅ |  |
+| `created_at` | `timestamp` | ✅ |  |
+| `updated_at` | `timestamp` | ✅ |  |
+| `session_date` | `date` | ✅ |  |
+
+### Table: `teacher_guidance_metrics`
+
+**Full Name:** `classwaves.ai_insights.teacher_guidance_metrics`
+**Columns:** 29
+**Row Count:** 0
+
+| Column | Type | Nullable | Comment |
+|--------|------|----------|----------|
+| `id` | `string` | ✅ | Unique identifier for the guidance metric record |
+| `session_id` | `string` | ✅ | Reference to the classroom session |
+| `teacher_id` | `string` | ✅ | Reference to the teacher user |
+| `prompt_id` | `string` | ✅ | Unique identifier for the specific prompt |
+| `prompt_category` | `string` | ✅ | facilitation, deepening, redirection, collaboration,
+assessment, energy, clarity |
+| `priority_level` | `string` | ✅ | high, medium, low |
+| `prompt_message` | `string` | ✅ | The actual prompt text shown to teacher |
+| `prompt_context` | `string` | ✅ | Context that triggered the prompt |
+| `suggested_timing` | `string` | ✅ | immediate, next_break, session_end |
+| `session_phase` | `string` | ✅ | opening, development, synthesis, closure |
+| `subject_area` | `string` | ✅ | math, science, literature, history, general |
+| `target_metric` | `string` | ✅ | AI metric that triggered this prompt |
+| `learning_objectives` | `string` | ✅ | JSON-encoded array of objectives |
+| `group_id` | `string` | ✅ | Target group for the prompt (if group-specific) |
+| `generated_at` | `timestamp` | ✅ | When the prompt was generated |
+| `acknowledged_at` | `timestamp` | ✅ | When teacher acknowledged seeing the prompt |
+| `used_at` | `timestamp` | ✅ | When teacher acted on the prompt |
+| `dismissed_at` | `timestamp` | ✅ | When teacher explicitly dismissed the prompt |
+| `expires_at` | `timestamp` | ✅ | When the prompt expires |
+| `feedback_rating` | `int` | ✅ | Teacher feedback rating 1-5 |
+| `feedback_text` | `string` | ✅ | Teacher feedback text |
+| `effectiveness_score` | `double` | ✅ | System-calculated effectiveness score |
+| `learning_outcome_improvement` | `double` | ✅ | Measured impact on learning outcomes |
+| `response_time_seconds` | `int` | ✅ | Seconds from generation to first interaction |
+| `educational_purpose` | `string` | ✅ | Educational justification |
+| `compliance_basis` | `string` | ✅ | Legal basis for data processing |
+| `data_retention_date` | `date` | ✅ | When this record should be purged |
+| `created_at` | `timestamp` | ✅ | Record creation timestamp |
+| `updated_at` | `timestamp` | ✅ | Last update timestamp |
+
+### Table: `teacher_prompt_effectiveness`
+
+**Full Name:** `classwaves.ai_insights.teacher_prompt_effectiveness`
+**Columns:** 26
+**Row Count:** 0
+
+| Column | Type | Nullable | Comment |
+|--------|------|----------|----------|
+| `id` | `string` | ✅ |  |
+| `prompt_category` | `string` | ✅ |  |
+| `subject_area` | `string` | ✅ |  |
+| `session_phase` | `string` | ✅ |  |
+| `priority_level` | `string` | ✅ |  |
+| `total_generated` | `int` | ✅ |  |
+| `total_acknowledged` | `int` | ✅ |  |
+| `total_used` | `int` | ✅ |  |
+| `total_dismissed` | `int` | ✅ |  |
+| `acknowledgment_rate` | `double` | ✅ |  |
+| `usage_rate` | `double` | ✅ |  |
+| `dismissal_rate` | `double` | ✅ |  |
+| `avg_effectiveness_score` | `double` | ✅ |  |
+| `avg_feedback_rating` | `double` | ✅ |  |
+| `avg_response_time_seconds` | `double` | ✅ |  |
+| `avg_learning_impact` | `double` | ✅ |  |
+| `std_dev_effectiveness` | `double` | ✅ |  |
+| `confidence_interval_lower` | `double` | ✅ |  |
+| `confidence_interval_upper` | `double` | ✅ |  |
+| `data_points` | `int` | ✅ |  |
+| `calculation_period_start` | `timestamp` | ✅ |  |
+| `calculation_period_end` | `timestamp` | ✅ |  |
+| `last_calculated` | `timestamp` | ✅ |  |
+| `created_at` | `timestamp` | ✅ |  |
+| `updated_at` | `timestamp` | ✅ |  |
+| `subject_area` | `string` | ✅ |  |
 
 ### Table: `tier1_analysis`
 
@@ -302,8 +425,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.analytics.session_analytics`
 **Columns:** 15
-**Row Count:** 76
-**Last Updated:** 2025-08-22
+**Row Count:** 83
+**Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -327,7 +450,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.analytics.session_analytics_cache`
 **Columns:** 25
-**Row Count:** 13
+**Row Count:** 15
 **Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
@@ -362,8 +485,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.analytics.session_events`
 **Columns:** 7
-**Row Count:** 41
-**Last Updated:** 2025-08-22
+**Row Count:** 76
+**Last Updated:** 2025-09-01
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -556,8 +679,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.compliance.audit_log`
 **Columns:** 17
-**Row Count:** 1,961
-**Last Updated:** 2025-08-22
+**Row Count:** 2,861
+**Last Updated:** 2025-09-01
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1291,8 +1414,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.sessions.classroom_sessions`
 **Columns:** 30
-**Row Count:** 158
-**Last Updated:** 2025-08-22
+**Row Count:** 210
+**Last Updated:** 2025-09-01
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1331,8 +1454,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.sessions.participants`
 **Columns:** 20
-**Row Count:** 51
-**Last Updated:** 2025-08-22
+**Row Count:** 67
+**Last Updated:** 2025-09-01
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1361,8 +1484,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.sessions.student_group_members`
 **Columns:** 5
-**Row Count:** 713
-**Last Updated:** 2025-08-22
+**Row Count:** 818
+**Last Updated:** 2025-09-01
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1376,8 +1499,8 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.sessions.student_groups`
 **Columns:** 21
-**Row Count:** 351
-**Last Updated:** 2025-08-22
+**Row Count:** 483
+**Last Updated:** 2025-09-01
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1407,7 +1530,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.sessions.transcriptions`
 **Columns:** 17
-**Row Count:** 166
+**Row Count:** 199
 **Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
@@ -1495,7 +1618,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.users.schools`
 **Columns:** 19
-**Row Count:** 67
+**Row Count:** 92
 **Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |
@@ -1524,7 +1647,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.users.session_analytics_cache`
 **Columns:** 39
-**Row Count:** 2
+**Row Count:** 4
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1637,7 +1760,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 **Full Name:** `classwaves.users.teachers`
 **Columns:** 21
-**Row Count:** 71
+**Row Count:** 98
 **Last Updated:** 2025-08-23
 
 | Column | Type | Nullable | Comment |

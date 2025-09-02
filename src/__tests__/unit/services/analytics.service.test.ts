@@ -64,7 +64,7 @@ describe('Analytics Recording', () => {
           session_id: sessionId,
           planned_groups: 3,
           planned_group_size: 4,
-          planned_members: 8, // 2+2+3 members + 2 leaders with IDs
+          planned_members: 9, // 2+2+3 members + 2 leaders with IDs = 9
           planned_leaders: 2, // Only groups A and B have leaders
           configured_at: expect.any(Date)
         })

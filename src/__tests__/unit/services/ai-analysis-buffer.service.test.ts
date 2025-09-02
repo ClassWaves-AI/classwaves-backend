@@ -13,8 +13,8 @@ describe('AIAnalysisBufferService', () => {
 
   describe('bufferTranscription', () => {
     it('should buffer a transcription successfully', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
       const transcription = 'This is a test transcription';
 
       await service.bufferTranscription(groupId, sessionId, transcription);
@@ -25,8 +25,8 @@ describe('AIAnalysisBufferService', () => {
     });
 
     it('should accumulate multiple transcriptions', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'First message');
       await service.bufferTranscription(groupId, sessionId, 'Second message');
@@ -40,8 +40,8 @@ describe('AIAnalysisBufferService', () => {
 
   describe('getBufferedTranscripts', () => {
     it('should return buffered transcripts for tier1', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'Message 1');
       await service.bufferTranscription(groupId, sessionId, 'Message 2');
@@ -53,13 +53,13 @@ describe('AIAnalysisBufferService', () => {
     });
 
     it('should return empty array for non-existent buffer', async () => {
-      const transcripts = await service.getBufferedTranscripts('tier1', 'nonexistent', 'nonexistent-session');
+      const transcripts = await service.getBufferedTranscripts('tier1', '550e8400-e29b-41d4-a716-446655440012', '550e8400-e29b-41d4-a716-446655440013');
       expect(transcripts).toEqual([]);
     });
 
     it('should handle both tier1 and tier2 buffers', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
 
@@ -75,8 +75,8 @@ describe('AIAnalysisBufferService', () => {
 
   describe('markBufferAnalyzed', () => {
     it('should mark tier1 buffer as analyzed', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
       await service.markBufferAnalyzed('tier1', groupId, sessionId);
@@ -87,8 +87,8 @@ describe('AIAnalysisBufferService', () => {
     });
 
     it('should mark tier2 buffer as analyzed', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
       await service.markBufferAnalyzed('tier2', groupId, sessionId);
@@ -114,8 +114,8 @@ describe('AIAnalysisBufferService', () => {
     });
 
     it('should reflect buffer usage in stats', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
 
@@ -129,8 +129,8 @@ describe('AIAnalysisBufferService', () => {
 
   describe('cleanup', () => {
     it('should run cleanup without errors', async () => {
-      const groupId = 'group1';
-      const sessionId = 'session1';
+      const groupId = '550e8400-e29b-41d4-a716-446655440010';
+      const sessionId = '550e8400-e29b-41d4-a716-446655440011';
 
       await service.bufferTranscription(groupId, sessionId, 'Test message');
       
