@@ -15,7 +15,7 @@ import {
 } from '@classwaves/shared';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
-import { websocketService } from '../services/websocket.service';
+import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { 
   buildSessionListQuery,
   buildSessionDetailQuery,
@@ -661,7 +661,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     await recordSessionConfigured(sessionId, teacher.id, groupPlan);
 
     // 6. Audit logging
-    await databricksService.recordAuditLog({
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_created',
@@ -669,11 +670,12 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} created session with ${groupPlan.numberOfGroups} pre-configured groups`,
+      description: `teacher:${teacher.id} created session with ${groupPlan.numberOfGroups} groups`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
 
     // 7. Send email notifications to group leaders if enabled
     let emailResults: EmailNotificationResults = { sent: [], failed: [] };
@@ -699,7 +701,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
 
         // Compliance audit: batch-level email send event (no PII)
         try {
-          await databricksService.recordAuditLog({
+          const { auditLogPort } = await import('../utils/audit.port.instance');
+          auditLogPort.enqueue({
             actorId: teacher.id,
             actorType: 'teacher',
             eventType: 'session_email_sent',
@@ -707,10 +710,11 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             resourceType: 'email_notification',
             resourceId: sessionId,
             schoolId: school.id,
-            description: `Group leader invitations sent for session ${sessionId}: sent=${emailResults.sent.length}, failed=${emailResults.failed.length}`,
+            description: `session:${sessionId} invitations sent: sent=${emailResults.sent.length}, failed=${emailResults.failed.length}`,
+            sessionId,
             complianceBasis: 'ferpa',
             dataAccessed: JSON.stringify({ sent: emailResults.sent.length, failed: emailResults.failed.length })
-          });
+          }).catch(() => {});
         } catch (auditErr) {
           console.warn('⚠️ Failed to record compliance audit for session_email_sent (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
         }
@@ -718,7 +722,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         console.error('❌ Email notification failed, but session was created successfully:', emailError);
         // Compliance audit: failed batch send
         try {
-          await databricksService.recordAuditLog({
+          const { auditLogPort } = await import('../utils/audit.port.instance');
+          auditLogPort.enqueue({
             actorId: teacher.id,
             actorType: 'teacher',
             eventType: 'session_email_failed',
@@ -726,9 +731,10 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             resourceType: 'email_notification',
             resourceId: sessionId,
             schoolId: school.id,
-            description: `Group leader invitations failed for session ${sessionId}: ${emailError instanceof Error ? emailError.message : String(emailError)}`,
+            description: `session:${sessionId} invitations failed`,
+            sessionId,
             complianceBasis: 'ferpa',
-          });
+          }).catch(() => {});
         } catch (auditErr) {
           console.warn('⚠️ Failed to record compliance audit for session_email_failed (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
         }
@@ -922,7 +928,8 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
 
     // Compliance audit: batch-level resend event (no PII)
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'session_email_sent',
@@ -930,10 +937,11 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         resourceType: 'email_notification',
         resourceId: sessionId,
         schoolId: session.school_id,
-        description: `Resent group leader invitation for session ${sessionId} (groupId=${groupId}${newLeaderId ? `, newLeaderId=${newLeaderId}` : ''}): sent=${results.sent.length}, failed=${results.failed.length}`,
+        description: `session:${sessionId} invitation resent: sent=${results.sent.length}, failed=${results.failed.length}`,
+        sessionId,
         complianceBasis: 'ferpa',
         dataAccessed: JSON.stringify({ sent: results.sent.length, failed: results.failed.length })
-      });
+      }).catch(() => {});
     } catch (auditErr) {
       console.warn('⚠️ Failed to record compliance audit for resend (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
     }
@@ -951,7 +959,8 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
     console.error('Failed to resend session email:', error);
     // Compliance audit: failed resend
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: (req as AuthRequest).user!.id,
         actorType: 'teacher',
         eventType: 'session_email_failed',
@@ -959,9 +968,10 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         resourceType: 'email_notification',
         resourceId: req.params.sessionId,
         schoolId: (req as AuthRequest).school!.id,
-        description: `Resend group leader invitation failed for session ${req.params.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        description: `session:${req.params.sessionId} invitation resend failed`,
+        sessionId: req.params.sessionId,
         complianceBasis: 'ferpa',
-      });
+      }).catch(() => {});
     } catch (auditErr) {
       console.warn('⚠️ Failed to record compliance audit for resend failure (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
     }
@@ -1270,7 +1280,8 @@ export async function getSession(req: Request, res: Response): Promise<Response>
     
     // Audit log for data access (FERPA)
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'session_access',
@@ -1278,11 +1289,12 @@ export async function getSession(req: Request, res: Response): Promise<Response>
         resourceType: 'session',
         resourceId: sessionId,
         schoolId: teacher.school_id,
-        description: `Teacher ID ${teacher.id} accessed session ${sessionId}`,
+        description: `teacher:${teacher.id} accessed session:${sessionId}`,
+        sessionId,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
-      });
+      }).catch(() => {});
     } catch (e) {
       // Do not block response on audit failure
       console.warn('Audit log failed in getSession:', e);
@@ -1686,18 +1698,13 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     }
     
     // Broadcast session status change to all connected WebSocket clients - with graceful degradation
-    if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID && websocketService.io) {
+    const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
+    if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID && nsSessions) {
       try {
         await RetryService.withRetry(
           async () => {
-            // Broadcast to general session room
-            websocketService.emitToSession(sessionId, 'session:status_changed', { 
-              sessionId, 
-              status: 'active'
-            });
-            
-            // Also broadcast to legacy namespace if needed
-            websocketService.io?.to(`session:${sessionId}`).emit('session:status_changed', {
+            // Broadcast to namespaced sessions room
+            nsSessions.emitToSession(sessionId, 'session:status_changed', {
               sessionId,
               status: 'active'
             });
@@ -1747,9 +1754,10 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       });
     }
     
-    // Record audit log - with retry (critical for compliance)
-    await RetryService.retryDatabaseOperation(
-      () => databricksService.recordAuditLog({
+    // Record audit log (async)
+    {
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'session_started',
@@ -1757,13 +1765,13 @@ export async function startSession(req: Request, res: Response): Promise<Respons
         resourceType: 'session',
         resourceId: sessionId,
         schoolId: session.school_id,
-        description: `Teacher ID ${teacher.id} started session (${readyGroupsAtStart}/${totalGroups} groups ready)`,
+        description: `session:${sessionId} started (${readyGroupsAtStart}/${totalGroups} groups ready)`,
+        sessionId,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
-      }),
-      'record-session-start-audit-log'
-    );
+      }).catch(() => {});
+    }
     
     // Get complete session for response - with retry and timeout
     let fullSession: any;
@@ -1811,7 +1819,13 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       performance: totalDuration < 400 ? 'EXCELLENT' : totalDuration < 1000 ? 'GOOD' : 'NEEDS_ATTENTION'
     });
 
-    // Emit session status change event for cache invalidation (skip in unit tests)
+    // Emit session status change and cache event (skip cache in tests)
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'active' });
+    } catch (e) {
+      console.warn('⚠️ Failed to emit session:status_changed (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
     if (process.env.NODE_ENV !== 'test') {
       await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, 'created', 'active');
     }
@@ -1885,6 +1899,15 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       });
     }
     
+    // Broadcast 'ending' state early for UI gating
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+        sessionId,
+        status: 'ending'
+      });
+    } catch {}
+
     // Update session status with duration tracking
     const actualEnd = new Date();
     const actualDuration = session.actual_start ? Math.round((actualEnd.getTime() - new Date(session.actual_start).getTime()) / 60000) : 0;
@@ -1895,6 +1918,13 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     });
     // Maintain compatibility with tests expecting updateSessionStatus call
     await databricksService.updateSessionStatus(sessionId, 'ended');
+
+    // Mark session as ending in Redis to gate late audio chunks during teardown (short TTL)
+    try {
+      await redisService.set(`ws:session:ending:${sessionId}`, '1', 120);
+    } catch (e) {
+      console.warn('Failed to set session ending flag (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
     
     // Emit session status change event for intelligent cache invalidation (skip in unit tests)
     if (process.env.NODE_ENV !== 'test') {
@@ -1902,8 +1932,9 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     }
     console.log('🔄 Session status change event emitted:', session.status, '→ ended');
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_ended',
@@ -1911,11 +1942,12 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} ended session - Reason: ${reason}${teacherNotes ? ` - Notes: ${teacherNotes}` : ''}`,
+      description: `session:${sessionId} ended - reason:${reason || 'unspecified'}`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
     
     // NEW: Log session ended event
     try {
@@ -1939,58 +1971,100 @@ export async function endSession(req: Request, res: Response): Promise<Response>
 
     // Notify via WebSocket
     try {
-      websocketService.endSession(sessionId);
-      websocketService.notifySessionUpdate(sessionId, { type: 'session_ended', sessionId });
+      // Primary: namespaced sessions service emission
+      try {
+        const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+        getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+          sessionId,
+          status: 'ended'
+        });
+      } catch (e) {
+        console.warn('Failed to emit namespaced session end (non-blocking):', e instanceof Error ? e.message : String(e));
+      }
+
+      // Legacy emission removed (namespaced is canonical)
       
+      // Drain in-memory audio processing windows best-effort before analytics
+      try {
+        const groups = await databricksService.query(
+          `SELECT id FROM ${databricksConfig.catalog}.sessions.student_groups WHERE session_id = ?`,
+          [sessionId]
+        );
+        if (Array.isArray(groups) && groups.length > 0) {
+          const { inMemoryAudioProcessor } = await import('../services/audio/InMemoryAudioProcessor');
+          const ids = (groups as any[]).map(g => g.id);
+          const drainPromise = inMemoryAudioProcessor.flushGroups(ids);
+          const drainTimeout = parseInt(process.env.AUDIO_DRAIN_TIMEOUT_MS || '750', 10);
+          await Promise.race([
+            drainPromise,
+            new Promise((resolve) => setTimeout(resolve, drainTimeout))
+          ]);
+        }
+      } catch (e) {
+        console.warn('Audio drain before analytics failed (non-blocking):', e instanceof Error ? e.message : String(e));
+      }
+
       // Trigger robust analytics computation with circuit breaker protection and duplicate prevention
-      // The enhanced service prevents duplicate triggers and provides graceful degradation
-      setImmediate(async () => {
+      // In tests, run inline to avoid teardown timing issues; in other envs, schedule asynchronously
+      const runAnalytics = async () => {
         const startTime = Date.now();
         try {
           const { analyticsComputationService } = await import('../services/analytics-computation.service');
-          
+
           console.log(`🎯 Starting protected analytics computation for ended session ${sessionId}`);
           const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
-          
+
           if (computedAnalytics) {
-            // TODO: Fix TypeScript issue with dynamic import - method exists but TypeScript can't verify
-            // @ts-ignore
+            // @ts-ignore - dynamic import typing
             await analyticsComputationService.emitAnalyticsFinalized(sessionId);
             const duration = Date.now() - startTime;
             console.log(`🎉 Protected analytics computation completed in ${duration}ms for session ${sessionId}`);
           } else {
             console.warn(`⚠️ Protected analytics computation returned null for session ${sessionId}`);
-            websocketService.emitToSession(sessionId, 'analytics:failed', { 
-              sessionId, 
+            const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+            getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:failed', {
+              sessionId,
               timestamp: new Date().toISOString(),
               error: 'Analytics computation completed but returned no results',
-              recoverable: true
+              recoverable: true,
             });
           }
         } catch (error) {
           const duration = Date.now() - startTime;
           const errorMessage = error instanceof Error ? error.message : 'Unknown analytics error';
-          
+
           console.error(`❌ Protected analytics computation error for session ${sessionId} after ${duration}ms:`, error);
-          
-          // Enhanced error classification
+
           const isCircuitBreakerError = errorMessage.includes('circuit breaker');
           const isLockError = errorMessage.includes('locked by') || errorMessage.includes('lock acquisition failed');
           const isTimeoutError = errorMessage.includes('timeout');
-          
-          websocketService.emitToSession(sessionId, 'analytics:failed', { 
-            sessionId, 
+
+          const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+          const payload = {
+            sessionId,
             timestamp: new Date().toISOString(),
             error: errorMessage,
-            errorType: isCircuitBreakerError ? 'circuit_breaker' : 
-                      isLockError ? 'duplicate_prevention' :
-                      isTimeoutError ? 'timeout' : 'computation_error',
-            recoverable: isLockError || isCircuitBreakerError, // These are recoverable
-            retryable: !isCircuitBreakerError, // Don't retry if circuit breaker is open
-            duration
-          });
+            errorType: isCircuitBreakerError ? 'circuit_breaker' : isLockError ? 'duplicate_prevention' : isTimeoutError ? 'timeout' : 'computation_error',
+            recoverable: isLockError || isCircuitBreakerError,
+            retryable: !isCircuitBreakerError,
+            duration,
+          };
+          getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:failed', payload);
+          // Observability: analytics failure counter
+          try {
+            const client = await import('prom-client');
+            const ctr = (client.register.getSingleMetric('analytics_failed_total') as any) || new (client as any).Counter({ name: 'analytics_failed_total', help: 'Total analytics failed emits', labelNames: ['type'] });
+            // @ts-ignore
+            ctr.inc({ type: payload.errorType });
+          } catch {}
         }
-      });
+      };
+
+      if (process.env.NODE_ENV === 'test') {
+        await runAnalytics();
+      } else {
+        setImmediate(() => { runAnalytics().catch((e) => console.error('Analytics async error:', e)); });
+      }
       
     } catch (e) {
       console.warn('WebSocket notify failed in endSession:', e);
@@ -2103,8 +2177,9 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     // Update session
     await databricksService.update('classroom_sessions', sessionId, fieldsToUpdate);
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_updated',
@@ -2112,11 +2187,12 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} updated session`,
+      description: `teacher:${teacher.id} updated session`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
     
     // Get updated session
     const updatedSession = await databricksService.queryOne(
@@ -2181,8 +2257,9 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     // Archive the session (note: archived_at and archived_by fields don't exist in schema, status change is sufficient)
     await databricksService.updateSessionStatus(sessionId, 'archived');
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_archived',
@@ -2190,11 +2267,12 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} archived session`,
+      description: `teacher:${teacher.id} archived session`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
     
     return res.json({
       success: true,
@@ -2252,8 +2330,9 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       // Continue without cache invalidation - database update is the source of truth
     }
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    void auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_paused',
@@ -2261,7 +2340,8 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} paused session`,
+      description: `teacher:${teacher.id} paused session`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',

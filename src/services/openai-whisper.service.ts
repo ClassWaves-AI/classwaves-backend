@@ -3,6 +3,7 @@ import FormData = require('form-data');
 import Bottleneck from 'bottleneck';
 import * as client from 'prom-client';
 import { databricksService } from './databricks.service';
+import type { SpeechToTextPort } from './stt.port';
 import { redisService } from './redis.service';
 
 export interface WhisperOptions { language?: string; durationSeconds?: number }
@@ -11,7 +12,7 @@ export interface WhisperResult { text: string; confidence?: number; language?: s
 /**
  * OpenAI Whisper client with global concurrency limiting, timeout, and retries.
  */
-export class OpenAIWhisperService {
+export class OpenAIWhisperService implements SpeechToTextPort {
   private apiKey = process.env.OPENAI_API_KEY as string;
   private readonly timeoutMs = Number(process.env.OPENAI_WHISPER_TIMEOUT_MS || 15000);
   private readonly limiter = new Bottleneck({
@@ -335,5 +336,4 @@ export class OpenAIWhisperService {
 }
 
 export const openAIWhisperService = new OpenAIWhisperService();
-
 

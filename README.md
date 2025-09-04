@@ -153,6 +153,37 @@ WebSocket Audio Chunks → In-Memory Aggregator → OpenAI Whisper API → Live 
 - Industry-standard OpenAI integration
 - Comprehensive budget monitoring
 
+## Feature Flags
+
+The backend uses environment flags to guard rollout and route events during the Audio → Insights pipeline. Defaults are safe for local development.
+
+- WS_UNIFIED_STT: Enable STT handling under the namespaced `/sessions` WebSocket.
+  - `1` (default): Accept `audio:chunk` in `/sessions`, process in-memory, emit `transcription:group:new`.
+  - `0`: Disable namespaced STT; audio chunks are ignored by `/sessions` (legacy path stays gated off unless explicitly enabled).
+
+- ANALYTICS_USE_NAMESPACED: Route analytics events via namespaced Sessions service.
+  - `1` (default): Use `getNamespacedWebSocketService().getSessionsService().emitToSession(...)` for `analytics:finalized` and `analytics:failed`.
+
+- GUIDANCE_CANONICAL: Guidance is canonical for Tier1/Tier2 insights.
+  - Guidance namespace now emits the only insight events (`ai:tier1:insight`, `ai:tier2:insight`).
+  - Session-level tier events are removed. Set `GUIDANCE_CANONICAL=1` (default recommendation) for clarity.
+
+// Removed: ENABLE_TRANSCRIPTION_QUEUE (legacy disk queue removed to preserve zero‑disk STT path)
+
+- WS_LEGACY_ENABLE: Legacy audio handlers were removed; this flag no longer affects audio paths. It may still guard other non-audio legacy behaviors.
+  - Default remains `0`.
+  - Recommendation: prefer namespaced `/sessions` for all audio and insights.
+
+- WS_ORDERED_EMITS: Serialize WebSocket emits per room to preserve event ordering.
+  - `1` (default in non-test): Events to the same room are emitted in-order using lightweight promise chaining.
+  - `0`: Disable ordering for maximum throughput; safe when consumers are fully idempotent.
+  - Note: Tests automatically run with ordered emits disabled to preserve synchronous test semantics.
+
+- AUDIO_QUEUE_ENABLED: Use a minimal in-memory worker queue for end-of-session audio drain.
+  - `1`: `flushGroups([...])` enqueues per-group flush tasks to smooth spikes during session end.
+  - `0` (default): Drains sequentially without queueing (recommended for local/dev).
+  - Note: Hot-path ingestion remains synchronous; queue only affects best-effort drain before analytics.
+
 ## Quick Start
 
 ### Prerequisites
@@ -202,6 +233,63 @@ STUDENT_APP_URL=http://localhost:3002
 # === Redis Configuration ===
 REDIS_URL=redis://localhost:6379
 REDIS_PASSWORD=
+# Optional: Use in-memory Redis mock (for local dev/tests only)
+# When set to '1', the backend uses a lightweight in-memory mock that
+# implements the subset of Redis APIs used by the app. Do not enable in prod.
+# REDIS_USE_MOCK=1
+
+# === WebSocket Backpressure Hints ===
+# Emit a soft hint after N consecutive drops and then cool down to avoid spamming
+# WS_BACKPRESSURE_HINT_THRESHOLD=3
+# WS_BACKPRESSURE_HINT_COOLDOWN_MS=5000
+
+# === Multi-level Quotas ===
+# Per-school and per-session bytes/sec quotas (in addition to per-socket bucket)
+# WS_SCHOOL_AUDIO_LIMIT=5242880   # 5MB/s
+# WS_SESSION_AUDIO_LIMIT=2097152  # 2MB/s
+
+# === Session Lifecycle / Audio Drain ===
+# Timeout for draining in-memory audio windows when ending a session (ms)
+# AUDIO_DRAIN_TIMEOUT_MS=750
+# Optional: enqueue group window flushes during drain to smooth spikes
+# AUDIO_QUEUE_ENABLED=1
+
+# === WebSocket Emit Ordering ===
+# Serialize emits per room to preserve event ordering (disable for max throughput)
+# WS_ORDERED_EMITS=1
+
+# === Guidance Emission Mode ===
+# When set to '1', guidance namespace becomes canonical for AI insights
+# (session-level emits are suppressed). Default is dual-emit.
+# GUIDANCE_CANONICAL=0
+
+## Observability Dashboards & Alerts
+
+- Guidance Insights Delivery
+  - Panels:
+    - `guidance_tier1_insight_delivered_total{school}` (rate) and `guidance_tier2_insight_delivered_total{school}` (rate)
+    - `guidance_emits_failed_total{type}` (rate) — breakdown of tier1, tier2, recommendations, alerts
+  - Alerts:
+    - High emits_failed rate over 5m (per school) suggests missing subscribers or connection issues
+
+- Prompt Generation & Delivery
+  - Panels:
+    - `guidance_prompt_generation_latency_ms{tier}` (p50/p90) and `guidance_prompt_delivery_latency_ms{tier}` (p50/p90)
+    - `guidance_prompt_generation_total{tier,status}` and `guidance_prompt_delivery_total{tier,status,school}` success ratios
+  - Alerts:
+    - Generation or delivery success ratio drops below 95% over 15m
+
+- STT & Backpressure
+  - Panels:
+    - `stt_time_to_first_transcript_ms{school}` (p50/p90)
+    - `ws_audio_bytes_total{school}` (rate)
+    - `ws_backpressure_hints_total{school}` (rate)
+  - Alerts:
+    - Sustained backpressure hints or spikes in `AUDIO_PROCESSING_FAILED` errors
+
+Operational Notes
+- Recommended `AUDIO_DRAIN_TIMEOUT_MS=750` for a 15s STT window; raise to 1000–1500ms for slower environments.
+- Prefer `GUIDANCE_CANONICAL=1` in production to standardize event delivery.
 ```
 
 ### Installation & Setup
@@ -313,17 +401,13 @@ The backend uses Socket.IO for real-time communication with the frontend and stu
   confidence: number;
 }
 
-// AI insights
-'insight:group:new': {
-  groupId: string;
-  insightType: 'argumentation_quality' | 'collaboration_patterns';
-  message: string;
-  severity: 'info' | 'warning' | 'success';
-}
+// Guidance namespace (canonical)
+'ai:tier1:insight': { groupId: string; sessionId: string; insights: any; timestamp: string }
+'ai:tier2:insight': { sessionId: string; insights: any; timestamp: string }
 
 // Teacher guidance
-'teacher:alert:immediate': { alert: GuidanceAlert }
-'teacher:prompt:acknowledged': { promptId: string; timestamp: string }
+'teacher:alert': { /* alert payload */ }
+'teacher:recommendations': { /* recommendations payload */ }
 ```
 
 #### Client-to-Server Events
@@ -471,6 +555,17 @@ npm run test:integration -- --testNamePattern="Session Start Resilience"
 
 # Run E2E workflow tests  
 npm run test:e2e
+
+# Run analytics deduplication concurrent-lock test (uses in-memory Redis mock)
+ENABLE_NETWORK_TESTS=1 npm test -- src/__tests__/integration/analytics-computation.concurrent.lock.integration.test.ts
+
+#### Integration Helpers
+- Readiness seeding (session start gating):
+  - Helper: `src/__tests__/integration/utils/group-readiness.ts` → `markAllGroupsReady(sessionId)`.
+  - Session factory: `src/__tests__/integration/utils/session-factory.ts` provides
+    - `startSessionWithSupertest(app, token, sessionId)`
+    - `startSessionWithAxios(baseUrl, token, sessionId)`
+  - These ensure groups are marked ready in tests that expect 200 on `POST /sessions/:id/start`, keeping production gating strict.
 ```
 
 #### Unit Tests (Mocked Dependencies)
@@ -622,7 +717,7 @@ classwaves-backend/
 │   ├── routes/              # API route definitions (9 route files)
 │   ├── services/            # Business logic layer (15+ services)
 │   │   ├── databricks.service.ts
-│   │   ├── websocket.service.ts
+│   │   ├── websocket/                 # Namespaced WebSocket services (sessions, guidance)
 │   │   ├── ai-analysis.service.ts
 │   │   └── ...
 │   ├── scripts/             # Database and utility scripts (50+ scripts)
@@ -814,3 +909,42 @@ All repositories depend on `@classwaves/shared` for:
 - **Security**: Report security issues privately to security@classwaves.com
 
 For questions about setup or development, please refer to the comprehensive documentation in the `/docs` directory or contact the development team.
+## Audit Log Worker (Async, Batched)
+
+- Overview: Moves compliance audit logging off hot paths using Redis Streams and a background worker that batches inserts to Databricks.
+- Ports/Adapters: `src/services/audit-log.port.ts`, `src/adapters/audit-log.redis.ts`, sanitizer `src/adapters/audit-sanitizer.ts`.
+- Worker: `src/workers/audit-log.worker.ts` with sampling (`src/workers/audit-sampler.ts`) and rollups (`src/workers/audit-rollups.ts`). Metrics in `src/workers/audit-metrics.ts`.
+- DI: Default instance via `src/utils/audit.port.instance.ts`.
+
+Environment variables:
+- `AUDIT_LOG_STREAM_KEY` (default `audit:log`)
+- `AUDIT_LOG_MAX_BACKLOG` (default `50000`)
+- `AUDIT_LOG_ENQUEUE_TIMEOUT_MS` (default `50`)
+- `AUDIT_LOG_CONSUMER_GROUP` (default `auditlog`)
+- `AUDIT_LOG_CONSUMER_NAME` (default `${HOSTNAME}-audit-worker`)
+- `AUDIT_LOG_BATCH_SIZE` (default `200`)
+- `AUDIT_LOG_BLOCK_MS` (default `2000`)
+- `AUDIT_NOISY_SAMPLE_RATE` (default `0.05`)
+- `AUDIT_NOISY_HARD_CAP_PER_MIN` (default `100`)
+- `AUDIT_LOG_DLQ_KEY` (default `audit:log:dlq`)
+- `AUDIT_LOG_DB_COOLDOWN_MS` (default `10000`)
+- `AUDIT_HASH_USER_AGENT` (default `1`)
+
+Lifecycle:
+- Worker creates a consumer group and reads batches via XREADGROUP.
+- Category-aware sampling reduces noisy events; hard cap per minute per session.
+- Dropped/sampled events aggregated into minute rollups and flushed as synthetic rows (suffix `_rollup`).
+- DB cooldown on failures prevents backlog growth; critical events are routed to DLQ.
+- Observability logs queue depth, processed/dropped/rollup counts.
+
+Scripts:
+- `npm run dev:audit` – run worker with ts-node
+- `npm run audit` – run worker from build output
+- `npm run audit:dlq:replay` – drain DLQ back to stream or DB (configurable)
+
+Plan: See `checkpoints/WIP/Features/Audit-fixes/async-batched-audit-logging.plan.xml` for design and verification steps.
+
+DLQ replay:
+- Key: `AUDIT_LOG_DLQ_KEY` (default `audit:log:dlq`).
+- Mode: `AUDIT_DLQ_REPLAY_MODE` = `stream` (default) re-enqueues to `AUDIT_LOG_STREAM_KEY`, or `db` writes rows directly to `compliance.audit_log`.
+- Usage: `npm run audit:dlq:replay`. Safe to re-run; deletes DLQ entries after successful replay.

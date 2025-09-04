@@ -1,9 +1,11 @@
 import { Socket } from 'socket.io';
 import { NamespaceBaseService, NamespaceSocketData } from './namespace-base.service';
 import { databricksService } from '../databricks.service';
+import { redisService } from '../redis.service';
 import { teacherPromptService } from '../teacher-prompt.service';
 import { aiAnalysisBufferService } from '../ai-analysis-buffer.service';
 import { alertPrioritizationService } from '../alert-prioritization.service';
+import * as client from 'prom-client';
 
 interface GuidanceSocketData extends NamespaceSocketData {
   subscribedSessions: Set<string>;
@@ -26,6 +28,80 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
   protected getNamespaceName(): string {
     return '/guidance';
   }
+
+  // Observability counters
+  private static tier1Emits = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_tier1_insight_emits_total', help: 'Tier1 insight emits', labelNames: ['namespace'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_tier1_insight_emits_total') as client.Counter<string>;
+    }
+  })();
+  private static tier2Emits = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_tier2_insight_emits_total', help: 'Tier2 insight emits', labelNames: ['namespace'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_tier2_insight_emits_total') as client.Counter<string>;
+    }
+  })();
+  private static tier1DeliveredBySchool = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_tier1_insight_delivered_total', help: 'Tier1 insights delivered (by school)', labelNames: ['school'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_tier1_insight_delivered_total') as client.Counter<string>;
+    }
+  })();
+  private static tier2DeliveredBySchool = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_tier2_insight_delivered_total', help: 'Tier2 insights delivered (by school)', labelNames: ['school'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_tier2_insight_delivered_total') as client.Counter<string>;
+    }
+  })();
+  private static teacherRecsEmits = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_teacher_recommendations_emits_total', help: 'Teacher recommendations emits', labelNames: ['namespace'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_teacher_recommendations_emits_total') as client.Counter<string>;
+    }
+  })();
+  private static promptDeliveryLatency = (() => {
+    try {
+      return new client.Histogram({
+        name: 'guidance_prompt_delivery_latency_ms',
+        help: 'Latency from prompt generation to emit to guidance',
+        buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        labelNames: ['tier']
+      });
+    } catch {
+      return client.register.getSingleMetric('guidance_prompt_delivery_latency_ms') as client.Histogram<string>;
+    }
+  })();
+  private static promptDeliveryTotal = (() => {
+    try {
+      return new client.Counter({
+        name: 'guidance_prompt_delivery_total',
+        help: 'Prompt delivery attempts (delivered vs no_subscriber)',
+        labelNames: ['tier', 'status', 'school']
+      });
+    } catch {
+      return client.register.getSingleMetric('guidance_prompt_delivery_total') as client.Counter<string>;
+    }
+  })();
+  private static teacherAlertsEmits = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_teacher_alerts_emits_total', help: 'Teacher alerts emits', labelNames: ['namespace'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_teacher_alerts_emits_total') as client.Counter<string>;
+    }
+  })();
+  private static emitsFailed = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_emits_failed_total', help: 'Guidance emits that failed to reach any subscriber', labelNames: ['namespace', 'type'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_emits_failed_total') as client.Counter<string>;
+    }
+  })();
 
   protected onConnection(socket: Socket): void {
     const socketData = socket.data as GuidanceSocketData;
@@ -413,24 +489,101 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
 
   // Public API for AI services to emit guidance events
   public emitTeacherAlert(sessionId: string, prompt: any): void {
+    const roomSession = `guidance:session:${sessionId}`;
+    const roomAll = 'guidance:all';
     // Emit to session-specific guidance subscribers
-    this.emitToRoom(`guidance:session:${sessionId}`, 'teacher:alert', prompt);
-    
+    const ok1 = this.emitToRoom(roomSession, 'teacher:alert', prompt);
     // Also emit to general guidance subscribers
-    this.emitToRoom('guidance:all', 'teacher:alert', prompt);
+    const ok2 = this.emitToRoom(roomAll, 'teacher:alert', prompt);
+    try { GuidanceNamespaceService.teacherAlertsEmits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    // Treat no-subscriber case as a failed emit for metrics purposes
+    const hasSessionSubs = (this.namespace.adapter.rooms.get(roomSession)?.size || 0) > 0;
+    const hasAllSubs = (this.namespace.adapter.rooms.get(roomAll)?.size || 0) > 0;
+    if (!hasSessionSubs && !hasAllSubs) {
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'alert' }); } catch {}
+    }
   }
 
-  public emitTeacherRecommendations(sessionId: string, prompts: any[]): void {
-    this.emitToRoom(`guidance:session:${sessionId}`, 'teacher:recommendations', prompts);
-    this.emitToRoom('guidance:all', 'teacher:recommendations', prompts);
+  public emitTeacherRecommendations(sessionId: string, prompts: any[], opts?: { generatedAt?: string | number; tier?: 'tier1' | 'tier2' }): void {
+    const roomSession = `guidance:session:${sessionId}`;
+    const roomAll = 'guidance:all';
+    const ok1 = this.emitToRoom(roomSession, 'teacher:recommendations', prompts);
+    const ok2 = this.emitToRoom(roomAll, 'teacher:recommendations', prompts);
+    try { GuidanceNamespaceService.teacherRecsEmits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    const hasSessionSubs = (this.namespace.adapter.rooms.get(roomSession)?.size || 0) > 0;
+    const hasAllSubs = (this.namespace.adapter.rooms.get(roomAll)?.size || 0) > 0;
+    if (!hasSessionSubs && !hasAllSubs) {
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'recommendations' }); } catch {}
+    }
+    // Prompt delivery SLIs (best-effort)
+    (async () => {
+      const tier = opts?.tier || 'tier1';
+      let school = 'unknown';
+      try {
+        const row = await databricksService.queryOne(
+          `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
+          [sessionId]
+        );
+        school = (row as any)?.school_id || 'unknown';
+      } catch {}
+      const delivered = hasSessionSubs || hasAllSubs;
+      try { GuidanceNamespaceService.promptDeliveryTotal.inc({ tier, status: delivered ? 'delivered' : 'no_subscriber', school }); } catch {}
+      if (opts?.generatedAt) {
+        const started = typeof opts.generatedAt === 'string' ? new Date(opts.generatedAt).getTime() : Number(opts.generatedAt);
+        if (!Number.isNaN(started)) {
+          const latency = Date.now() - started;
+          try { GuidanceNamespaceService.promptDeliveryLatency.observe({ tier }, latency); } catch {}
+        }
+      }
+      // Per-session SLI via Redis (to avoid high-cardinality Prometheus labels)
+      try {
+        const key = `sli:prompt_delivery:session:${sessionId}:${tier}:${delivered ? 'delivered' : 'no_subscriber'}`;
+        await redisService.getClient().incr(key);
+        // Keep counters ephemeral to bound storage
+        await redisService.getClient().expire(key, parseInt(process.env.SLI_SESSION_TTL_SECONDS || '3600', 10));
+      } catch {}
+    })();
   }
 
   public emitTier1Insight(sessionId: string, insight: any): void {
-    this.emitToRoom(`guidance:session:${sessionId}`, 'ai:tier1:insight', insight);
+    const room = `guidance:session:${sessionId}`;
+    const ok = this.emitToRoom(room, 'ai:tier1:insight', insight);
+    try { GuidanceNamespaceService.tier1Emits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    // Per-school SLI (best-effort)
+    (async () => {
+      try {
+        const row = await databricksService.queryOne(
+          `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
+          [sessionId]
+        );
+        const school = (row as any)?.school_id || 'unknown';
+        try { GuidanceNamespaceService.tier1DeliveredBySchool.inc({ school }); } catch {}
+      } catch {}
+    })();
+    const hasSubs = (this.namespace.adapter.rooms.get(room)?.size || 0) > 0;
+    if (!hasSubs) {
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier1' }); } catch {}
+    }
   }
 
   public emitTier2Insight(sessionId: string, insight: any): void {
-    this.emitToRoom(`guidance:session:${sessionId}`, 'ai:tier2:insight', insight);
+    const room = `guidance:session:${sessionId}`;
+    const ok = this.emitToRoom(room, 'ai:tier2:insight', insight);
+    try { GuidanceNamespaceService.tier2Emits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    (async () => {
+      try {
+        const row = await databricksService.queryOne(
+          `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
+          [sessionId]
+        );
+        const school = (row as any)?.school_id || 'unknown';
+        try { GuidanceNamespaceService.tier2DeliveredBySchool.inc({ school }); } catch {}
+      } catch {}
+    })();
+    const hasSubs = (this.namespace.adapter.rooms.get(room)?.size || 0) > 0;
+    if (!hasSubs) {
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier2' }); } catch {}
+    }
   }
 
   public emitGuidanceAnalytics(sessionId: string, analytics: any): void {

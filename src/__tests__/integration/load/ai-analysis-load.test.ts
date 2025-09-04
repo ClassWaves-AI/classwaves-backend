@@ -6,7 +6,7 @@ import { guidanceSystemHealthService } from '../../../services/guidance-system-h
 
 // Mock external dependencies for load testing
 jest.mock('../../../services/databricks-ai.service');
-jest.mock('../../../services/websocket.service');
+jest.mock('../../../services/websocket');
 
 describe('AI Analysis Load Tests', () => {
   jest.setTimeout(60000); // 60 second timeout for load tests

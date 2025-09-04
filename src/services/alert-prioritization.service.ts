@@ -91,6 +91,7 @@ export class AlertPrioritizationService {
   private batchScheduler = new Map<string, NodeJS.Timeout>(); // sessionId -> timeout
   private teacherProfiles = new Map<string, TeacherAlertProfile>();
   private deliveryHistory = new Map<string, Date[]>(); // sessionId -> delivery timestamps
+  private cleanupTimer?: NodeJS.Timeout;
   
   private readonly config = {
     maxAlertsPerMinute: parseInt(process.env.TEACHER_ALERT_MAX_PER_MINUTE || '5'),
@@ -553,14 +554,14 @@ export class AlertPrioritizationService {
 
   private async deliverAlertImmediately(alert: PrioritizedAlert): Promise<void> {
     try {
-      // Import WebSocket service dynamically to avoid circular dependencies
-      const { getWebSocketService } = await import('./websocket.service');
-      const wsService = getWebSocketService();
+      // Emit via namespaced sessions service
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
       
-      if (wsService) {
+      if (nsSessions) {
         const deliveryId = `delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
-        wsService.emitToSession(alert.prompt.sessionId, 'teacher:alert:immediate', {
+        nsSessions.emitToSession(alert.prompt.sessionId, 'teacher:alert:immediate', {
           alert: {
             id: alert.id,
             prompt: alert.prompt,
@@ -655,14 +656,14 @@ export class AlertPrioritizationService {
 
   private async deliverAlertBatch(batch: AlertBatch): Promise<void> {
     try {
-      // Import WebSocket service dynamically
-      const { getWebSocketService } = await import('./websocket.service');
-      const wsService = getWebSocketService();
+      // Emit via namespaced sessions service
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
       
-      if (wsService) {
+      if (nsSessions) {
         const deliveryId = `batch_delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
-        wsService.emitToSession(batch.sessionId, 'teacher:alert:batch', {
+        nsSessions.emitToSession(batch.sessionId, 'teacher:alert:batch', {
           batchId: batch.id,
           batchType: batch.batchType,
           alerts: batch.alerts.map(a => ({
@@ -923,11 +924,13 @@ export class AlertPrioritizationService {
   }
 
   private startCleanupProcess(): void {
-    setInterval(() => {
+    if (process.env.NODE_ENV === 'test') return; // avoid timers in tests
+    this.cleanupTimer = setInterval(() => {
       this.cleanupExpiredAlerts().catch(error => {
         console.error('❌ Alert cleanup failed:', error);
       });
     }, 60000); // Every minute
+    (this.cleanupTimer as any).unref?.();
   }
 
   private async cleanupExpiredAlerts(): Promise<void> {
@@ -969,7 +972,8 @@ export class AlertPrioritizationService {
     batchSize?: number;
   }): Promise<void> {
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: data.actorId,
         actorType: data.actorId === 'system' ? 'system' : 'teacher',
         eventType: data.eventType,
@@ -978,9 +982,10 @@ export class AlertPrioritizationService {
         resourceId: data.targetId,
         schoolId: 'system',
         description: data.educationalPurpose,
+        sessionId: data.sessionId,
         complianceBasis: 'legitimate_interest',
         dataAccessed: data.error ? `error: ${data.error}` : 'alert_metadata'
-      });
+      }).catch(() => {});
     } catch (error) {
       console.warn('⚠️ Audit logging failed in alert prioritization service:', error);
     }

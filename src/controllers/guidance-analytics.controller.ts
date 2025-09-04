@@ -89,8 +89,9 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       });
     }
     
-    // ✅ COMPLIANCE: Audit logging for analytics access
-    await databricksService.recordAuditLog({
+    // ✅ COMPLIANCE: Audit logging for analytics access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'teacher_analytics_access',
@@ -98,10 +99,10 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       resourceType: 'teacher_analytics',
       resourceId: targetTeacherId,
       schoolId: school.id,
-      description: `Teacher accessed guidance analytics for educational improvement`,
+      description: 'teacher accessed guidance analytics',
       complianceBasis: 'legitimate_interest',
       dataAccessed: 'teacher_guidance_metrics'
-    });
+    }).catch(() => {});
 
     // 🔍 QUERY OPTIMIZATION: Use minimal field selection + Redis caching for teacher analytics
     const queryBuilder = buildTeacherAnalyticsQuery();
@@ -270,18 +271,20 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     await logAnalyticsOperation(
       'audit_log_analytics_access',
       'audit_logs',
-      () => databricksService.recordAuditLog({
-        actorId: teacher.id,
-        actorType: 'teacher',
-        eventType: 'session_analytics_access',
-        eventCategory: 'data_access',
-        resourceType: 'session_metrics', // ✅ Updated to use correct table name
-        resourceId: sessionId,
-        schoolId: school.id,
-        description: `Teacher accessed session analytics for educational review`,
-        complianceBasis: 'legitimate_interest',
-        dataAccessed: 'session_guidance_analytics'
-      }),
+      () => {
+        const { auditLogPort } = require('../utils/audit.port.instance');
+        return auditLogPort.enqueue({
+          actorId: teacher.id,
+          actorType: 'teacher',
+          eventType: 'session_analytics_access',
+          eventCategory: 'data_access',
+          resourceType: 'session_metrics',
+          resourceId: sessionId,
+          schoolId: school.id,
+          description: 'teacher accessed session analytics for educational review',
+          dataAccessed: 'session_guidance_analytics'
+        });
+      },
       {
         sessionId,
         teacherId: teacher.id,
@@ -465,8 +468,9 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
       });
     }
 
-    // ✅ COMPLIANCE: Audit logging for system analytics access
-    await databricksService.recordAuditLog({
+    // ✅ COMPLIANCE: Audit logging for system analytics access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'admin',
       eventType: 'system_analytics_access',
@@ -474,10 +478,9 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
       resourceType: 'system_analytics',
       resourceId: 'guidance_system',
       schoolId: school.id,
-      description: `Admin accessed system analytics for performance monitoring`,
-      complianceBasis: 'legitimate_interest',
+      description: 'admin accessed system analytics',
       dataAccessed: 'system_performance_metrics'
-    });
+    }).catch(() => {});
 
     // Get system-wide metrics
     const [
@@ -600,8 +603,9 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
     const school = req.school!;
     const query = req.query as any;
     
-    // ✅ COMPLIANCE: Audit logging for effectiveness report access
-    await databricksService.recordAuditLog({
+    // ✅ COMPLIANCE: Audit logging for effectiveness report access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'effectiveness_report_access',
@@ -609,10 +613,9 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
       resourceType: 'effectiveness_report',
       resourceId: 'guidance_effectiveness',
       schoolId: school.id,
-      description: `Teacher accessed effectiveness report for educational improvement`,
-      complianceBasis: 'legitimate_interest',
+      description: 'teacher accessed effectiveness report',
       dataAccessed: 'effectiveness_analytics'
-    });
+    }).catch(() => {});
 
     // Generate comprehensive effectiveness report
     const report = await generateEffectivenessReport({

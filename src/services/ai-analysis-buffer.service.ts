@@ -247,6 +247,34 @@ export class AIAnalysisBufferService {
   }
 
   /**
+   * Get timestamp of the most recent buffered transcript for a given tier.
+   * For tier1, requires groupId; for tier2, returns latest across session groups.
+   */
+  public getLastBufferedAt(
+    tier: 'tier1' | 'tier2',
+    sessionId: string,
+    groupId?: string
+  ): Date | null {
+    try {
+      if (tier === 'tier1') {
+        if (!groupId) return null;
+        const buf = this.tier1Buffers.get(`${sessionId}:${groupId}`);
+        return buf?.lastUpdate || null;
+      }
+      // tier2: scan buffers for the session and return latest update
+      let latest: Date | null = null;
+      for (const [, buf] of Array.from(this.tier2Buffers.entries())) {
+        if (buf.sessionId === sessionId) {
+          if (!latest || buf.lastUpdate > latest) latest = buf.lastUpdate;
+        }
+      }
+      return latest;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Mark buffer as analyzed to optimize future processing
    */
   async markBufferAnalyzed(
@@ -752,7 +780,8 @@ export class AIAnalysisBufferService {
     error?: string;
   }): Promise<void> {
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: data.actorId,
         actorType: 'system',
         eventType: data.eventType,
@@ -760,10 +789,11 @@ export class AIAnalysisBufferService {
         resourceType: data.targetType,
         resourceId: data.targetId,
         schoolId: 'system', // System-level operation
-        description: `${data.educationalPurpose} - Session: ${data.sessionId}`,
+        description: `${data.educationalPurpose} - session:${data.sessionId}`,
+        sessionId: data.sessionId,
         complianceBasis: 'legitimate_interest',
         dataAccessed: data.transcriptionLength ? `transcription_${data.transcriptionLength}_chars` : 'buffer_metadata'
-      });
+      }).catch(() => {});
     } catch (error) {
       // Don't fail the main operation if audit logging fails
       console.warn('⚠️ Audit logging failed in AI buffer service:', error);

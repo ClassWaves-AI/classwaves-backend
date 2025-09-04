@@ -166,8 +166,10 @@ export class RecommendationEngineService {
       console.warn('⚠️  Teacher profile initialization failed, using fallback:', error);
     });
     
-    // Start periodic model updates
-    this.startModelUpdateProcess();
+    // Start periodic model updates (skip in tests to avoid open-handle leaks)
+    if (process.env.NODE_ENV !== 'test') {
+      this.startModelUpdateProcess();
+    }
     
     console.log('🤖 Recommendation Engine Service initialized', {
       modelsLoaded: this.models.size,
@@ -1183,11 +1185,12 @@ export class RecommendationEngineService {
 
   private startModelUpdateProcess(): void {
     // Periodic model retraining
-    setInterval(() => {
+    const t = setInterval(() => {
       this.updateModels().catch(error => {
         console.error('❌ Model update failed:', error);
       });
     }, this.config.modelUpdateIntervalHours * 60 * 60 * 1000);
+    (t as any).unref?.();
   }
 
   private async updateModels(): Promise<void> {
@@ -1239,7 +1242,8 @@ export class RecommendationEngineService {
     error?: string;
   }): Promise<void> {
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: data.actorId,
         actorType: data.actorId === 'system' ? 'system' : 'teacher',
         eventType: data.eventType,
@@ -1248,9 +1252,10 @@ export class RecommendationEngineService {
         resourceId: data.targetId,
         schoolId: 'system',
         description: data.educationalPurpose,
+        sessionId: data.sessionId,
         complianceBasis: 'legitimate_interest',
         dataAccessed: data.error ? `error: ${data.error}` : 'recommendation_metadata'
-      });
+      }).catch(() => {});
     } catch (error) {
       console.warn('⚠️ Audit logging failed in recommendation engine:', error);
     }

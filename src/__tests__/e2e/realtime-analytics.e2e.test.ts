@@ -6,18 +6,17 @@
  */
 
 import { databricksService } from '../../services/databricks.service';
-import { websocketService } from '../../services/websocket.service';
+import { getNamespacedWebSocketService } from '../../services/websocket/namespaced-websocket.service';
 import { v4 as uuidv4 } from 'uuid';
 
 // Mock WebSocket service for reliable testing (focus on DB persistence)
-jest.mock('../../services/websocket.service', () => ({
-  websocketService: {
-    emitToSession: jest.fn(),
-    emit: jest.fn(),
-    notifySessionUpdate: jest.fn(),
-    endSession: jest.fn(),
-    handleSessionEvent: jest.fn().mockResolvedValue(true)
-  }
+jest.mock('../../services/websocket/namespaced-websocket.service', () => ({
+  getNamespacedWebSocketService: () => ({
+    getSessionsService: () => ({
+      emitToSession: jest.fn(),
+      emitToGroup: jest.fn(),
+    })
+  })
 }));
 
 const mockWebsocketService = websocketService as jest.Mocked<typeof websocketService>;

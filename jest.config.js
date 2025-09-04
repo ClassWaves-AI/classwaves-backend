@@ -60,7 +60,10 @@ module.exports = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
   },
-  setupFilesAfterEnv: ['<rootDir>/src/test/setup.ts'],
+  setupFilesAfterEnv: [
+    '<rootDir>/src/test/redis-auto-mock.setup.ts',
+    '<rootDir>/src/test/setup.ts'
+  ],
   globalTeardown: '<rootDir>/src/test/global-teardown.ts',
   testTimeout: 30000,
   clearMocks: true,

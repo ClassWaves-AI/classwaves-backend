@@ -37,7 +37,10 @@
     "redis:backup": "./scripts/redis-backup.sh",
     "redis:config": "./scripts/apply-redis-config.sh",
     "feature-status": "node ../scripts/feature-scan.js status",
-    "feature-files": "node ../scripts/feature-scan.js files"
+    "feature-files": "node ../scripts/feature-scan.js files",
+    "audit": "node dist/workers/audit-log.worker.js",
+    "dev:audit": "ts-node src/workers/audit-log.worker.ts",
+    "audit:dlq:replay": "ts-node src/scripts/audit-dlq-replay.ts"
   },
   "keywords": [],
   "author": "",

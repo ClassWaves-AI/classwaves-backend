@@ -287,7 +287,8 @@ async function logAdminSecurityEvent(
     // Store in security audit log (async, don't block)
     setImmediate(async () => {
       try {
-        await databricksService.recordAuditLog({
+        const { auditLogPort } = await import('../utils/audit.port.instance');
+        auditLogPort.enqueue({
           actorId: auditEvent.user_id,
           actorType: 'admin',
           eventType: 'admin_route_access',
@@ -295,19 +296,13 @@ async function logAdminSecurityEvent(
           resourceType: 'admin_route',
           resourceId: auditEvent.route_path,
           schoolId: auditEvent.school_id || 'unknown',
-          description: `Admin route: ${auditEvent.event_type} ${auditEvent.http_method} ${auditEvent.route_path}`,
+          description: `admin route access ${auditEvent.http_method} ${auditEvent.route_path}`,
           ipAddress: auditEvent.ip_address,
           userAgent: auditEvent.user_agent,
           complianceBasis: 'legitimate_interest',
-        });
+        }).catch(() => {});
       } catch (error) {
         // Gracefully handle audit log errors - don't block core functionality
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
-          console.warn('Audit log table not found - skipping admin security audit (non-critical)');
-        } else {
-          console.error('Failed to log admin security event to audit log:', error);
-        }
       }
     });
 

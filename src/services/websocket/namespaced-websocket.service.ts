@@ -20,11 +20,35 @@ export class NamespacedWebSocketService {
         methods: ['GET', 'POST'],
         credentials: true
       },
+      // Protect against oversized payloads in WS
+      maxHttpBufferSize: 1 * 1024 * 1024, // 1 MB
+      perMessageDeflate: {
+        threshold: 16 * 1024, // only compress payloads >16KB
+      },
       connectionStateRecovery: {
         maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
         skipMiddlewares: true
       }
     });
+
+    // Diagnostics similar to legacy service: engine connection error visibility
+    try {
+      const anyIO: any = this.io as any;
+      if (anyIO?.engine?.on) {
+        anyIO.engine.on('connection_error', (err: any) => {
+          try {
+            console.warn('⚠️  Engine.io connection error:', {
+              code: err?.code,
+              message: err?.message,
+              req: {
+                headers: err?.req?.headers,
+                url: err?.req?.url,
+              },
+            });
+          } catch {}
+        });
+      }
+    } catch {}
 
     this.setupRedisAdapter();
     this.initializeNamespaces();
@@ -70,6 +94,12 @@ export class NamespacedWebSocketService {
   public getGuidanceService(): GuidanceNamespaceService {
     return this.guidanceService;
   }
+
+  public async shutdown(): Promise<void> {
+    try {
+      await this.io.close();
+    } catch {}
+  }
 }
 
 let namespacedWSService: NamespacedWebSocketService | null = null;
@@ -84,4 +114,11 @@ export function initializeNamespacedWebSocket(httpServer: HTTPServer): Namespace
 
 export function getNamespacedWebSocketService(): NamespacedWebSocketService | null {
   return namespacedWSService;
+}
+
+export async function closeNamespacedWebSocket(): Promise<void> {
+  try {
+    await namespacedWSService?.shutdown();
+  } catch {}
+  namespacedWSService = null;
 }

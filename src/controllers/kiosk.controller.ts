@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { databricksService } from '../services/databricks.service';
 import { KioskAuthRequest } from '../middleware/kiosk.auth.middleware';
-import { websocketService } from '../services/websocket.service';
+import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 
 export async function updateGroupStatus(req: KioskAuthRequest, res: Response): Promise<Response> {
   const { groupId } = req.params;
@@ -21,9 +21,10 @@ export async function updateGroupStatus(req: KioskAuthRequest, res: Response): P
     `, [groupId]);
     
     if (group) {
-      // Emit WebSocket event to teacher dashboard
-      if (websocketService.io) {
-        websocketService.io.to(`session:${group.session_id}`).emit('group:status_changed', {
+      // Emit WebSocket event to teacher dashboard via namespaced sessions service
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
+      if (nsSessions) {
+        nsSessions.emitToSession(group.session_id, 'group:status_changed', {
           groupId,
           status: isReady ? 'ready' : 'waiting',
           isReady
@@ -45,4 +46,3 @@ export async function updateGroupStatus(req: KioskAuthRequest, res: Response): P
     });
   }
 }
-

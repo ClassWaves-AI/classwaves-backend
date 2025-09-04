@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { AuthRequest } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
+import { redisService } from '../services/redis.service';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -57,8 +58,9 @@ export async function listSchools(req: Request, res: Response): Promise<Response
     const total = countResult?.total || 0;
     const totalPages = Math.ceil(total / limit);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async, fire-and-forget)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: authReq.user!.id,
       actorType: 'admin',
       eventType: 'schools_list_accessed',
@@ -66,11 +68,11 @@ export async function listSchools(req: Request, res: Response): Promise<Response
       resourceType: 'school',
       resourceId: 'all',
       schoolId: authReq.school!.id,
-      description: 'Super admin accessed schools list',
+      description: 'super_admin accessed schools list',
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -178,8 +180,9 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
       SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
     `, [schoolId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async, fire-and-forget)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: authReq.user!.id,
       actorType: 'admin',
       eventType: 'school_created',
@@ -187,11 +190,11 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
       resourceType: 'school',
       resourceId: schoolId,
       schoolId: authReq.school!.id,
-      description: `Created new school: ${name} (${domain})`,
+      description: `created school id=${schoolId}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     return res.status(201).json({
       success: true,
@@ -316,8 +319,9 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
       SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
     `, [schoolId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: authReq.user!.id,
       actorType: 'admin',
       eventType: 'school_updated',
@@ -325,11 +329,11 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
       resourceType: 'school',
       resourceId: schoolId,
       schoolId: authReq.school!.id,
-      description: `Updated school: ${updatedSchool.name} (${updatedSchool.domain})`,
+      description: `updated school id=${schoolId}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -345,6 +349,37 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
       error: 'INTERNAL_ERROR',
       message: 'Failed to update school'
     });
+  }
+}
+
+/**
+ * GET /api/v1/admin/slis/prompt-delivery
+ * Surface per-session prompt delivery SLIs from Redis (low-cardinality counters)
+ * Query params:
+ *  - sessionId: string (required)
+ *  - tier: 'tier1' | 'tier2' (optional; default both)
+ */
+export async function getPromptDeliverySLI(req: Request, res: Response): Promise<Response> {
+  try {
+    const sessionId = String(req.query.sessionId || '').trim();
+    const tierParam = (req.query.tier as string | undefined)?.trim();
+    if (!sessionId) {
+      return res.status(400).json({ success: false, error: 'INVALID_REQUEST', message: 'sessionId is required' });
+    }
+    const tiers = tierParam === 'tier1' || tierParam === 'tier2' ? [tierParam] : ['tier1', 'tier2'];
+    const client = redisService.getClient();
+    const metrics: any = {};
+    for (const tier of tiers) {
+      const deliveredKey = `sli:prompt_delivery:session:${sessionId}:${tier}:delivered`;
+      const noSubKey = `sli:prompt_delivery:session:${sessionId}:${tier}:no_subscriber`;
+      const delivered = parseInt((await client.get(deliveredKey)) || '0', 10);
+      const noSubscriber = parseInt((await client.get(noSubKey)) || '0', 10);
+      metrics[tier] = { delivered, no_subscriber: noSubscriber };
+    }
+    return res.json({ success: true, data: { sessionId, metrics } });
+  } catch (error) {
+    console.error('❌ Error getting prompt delivery SLI:', error);
+    return res.status(500).json({ success: false, error: 'INTERNAL_ERROR', message: 'Failed to retrieve SLIs' });
   }
 }
 
@@ -427,8 +462,9 @@ export async function listTeachers(req: Request, res: Response): Promise<Respons
     const total = countResult?.total || 0;
     const totalPages = Math.ceil(total / limit);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: authReq.user!.id,
       actorType: 'admin',
       eventType: 'teachers_list_accessed',
@@ -436,11 +472,11 @@ export async function listTeachers(req: Request, res: Response): Promise<Respons
       resourceType: 'teacher',
       resourceId: 'all',
       schoolId: authReq.school!.id,
-      description: `Admin accessed teachers list${schoolId ? ` for school ${schoolId}` : ''}`,
+      description: `admin accessed teachers list${schoolId ? ` for school ${schoolId}` : ''}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -596,8 +632,9 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
       WHERE t.id = ?
     `, [teacherId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: authReq.user!.id,
       actorType: 'admin',
       eventType: 'teacher_updated',
@@ -605,11 +642,11 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
       resourceType: 'teacher',
       resourceId: teacherId,
       schoolId: authReq.school!.id,
-      description: `Updated teacher ID: ${updatedTeacher.id}`,
+      description: `updated teacher id=${updatedTeacher.id}`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,

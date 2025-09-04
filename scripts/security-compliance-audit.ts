@@ -69,7 +69,21 @@ async function auditAnalyticsPayloads(checks: SecurityCheck[]): Promise<void> {
   try {
     // Read analytics payload implementations
     const sessionControllerContent = await fs.readFile('src/controllers/session.controller.ts', 'utf-8');
-    const websocketServiceContent = await fs.readFile('src/services/websocket.service.ts', 'utf-8');
+    let websocketServiceContent = '';
+    try {
+      websocketServiceContent = await fs.readFile('src/services/websocket.service.ts', 'utf-8');
+    } catch {
+      // Fallback to namespaced/index files after legacy removal
+      try {
+        websocketServiceContent = await fs.readFile('src/services/websocket/index.ts', 'utf-8');
+      } catch {
+        try {
+          websocketServiceContent = await fs.readFile('src/services/websocket/sessions-namespace.service.ts', 'utf-8');
+        } catch {
+          websocketServiceContent = '';
+        }
+      }
+    }
 
     const evidence: string[] = [];
     

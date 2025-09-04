@@ -102,8 +102,9 @@ class InsightService {
   private async storeInsight(sessionId: string, insight: GroupInsight) {
     const insightKey = `insights:${sessionId}`;
     await redisService.getClient().lpush(insightKey, JSON.stringify(insight));
-    // Set expiry to 24 hours to prevent memory leaks
-    await redisService.getClient().expire(insightKey, 86400);
+    // Set expiry (configurable; default 24 hours) to prevent memory leaks
+    const ttl = parseInt(process.env.INSIGHTS_REDIS_TTL_SECONDS || '86400', 10);
+    await redisService.getClient().expire(insightKey, ttl);
   }
 
   /**

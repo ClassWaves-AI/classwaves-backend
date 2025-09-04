@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 import { databricksService } from './databricks.service';
+import * as client from 'prom-client';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 import type { TeacherPrompt, PromptCategory, PromptPriority, PromptTiming, SessionPhase, SubjectArea } from '../types/teacher-guidance.types';
 
@@ -72,6 +73,31 @@ export class TeacherPromptService {
 
   private promptCache = new Map<string, TeacherPrompt[]>();
   private sessionMetrics = new Map<string, PromptMetrics>();
+
+  // Observability metrics
+  private readonly promptLatency = (() => {
+    try {
+      return new client.Histogram({
+        name: 'teacher_prompt_generation_latency_ms',
+        help: 'Latency of teacher prompt generation',
+        buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000],
+        labelNames: ['subject', 'phase']
+      });
+    } catch {
+      return client.register.getSingleMetric('teacher_prompt_generation_latency_ms') as client.Histogram<string>;
+    }
+  })();
+  private readonly promptResultCounter = (() => {
+    try {
+      return new client.Counter({
+        name: 'teacher_prompt_generation_total',
+        help: 'Total teacher prompt generations by result',
+        labelNames: ['result']
+      });
+    } catch {
+      return client.register.getSingleMetric('teacher_prompt_generation_total') as client.Counter<string>;
+    }
+  })();
 
   constructor() {
     console.log('🧠 Teacher Prompt Service initialized', {
@@ -143,11 +169,18 @@ export class TeacherPromptService {
       const processingTime = Date.now() - startTime;
       console.log(`✅ Generated ${prompts.length} prompts for session ${validatedContext.sessionId} in ${processingTime}ms`);
 
+      // Observability
+      try {
+        this.promptLatency.observe({ subject: validatedContext.subject, phase: validatedContext.sessionPhase }, processingTime);
+        this.promptResultCounter.inc({ result: 'success' });
+      } catch {}
+
       return prompts;
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
       console.error(`❌ Failed to generate prompts for session ${context.sessionId}:`, error);
+      try { this.promptResultCounter.inc({ result: 'failure' }); } catch {}
 
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -1038,11 +1071,8 @@ export class TeacherPromptService {
     error?: string;
   }): Promise<void> {
     try {
-      // In test, allow audit calls only when the method is mocked (so tests can assert calls)
-      if (process.env.NODE_ENV === 'test' && !(databricksService as any).recordAuditLog?.mock) {
-        return;
-      }
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: data.actorId,
         actorType: data.actorId === 'system' ? 'system' : 'teacher',
         eventType: data.eventType,
@@ -1050,10 +1080,11 @@ export class TeacherPromptService {
         resourceType: data.targetType,
         resourceId: data.targetId,
         schoolId: 'system', // System-level operation
-        description: `${data.educationalPurpose} - Session: ${data.sessionId}`,
+        description: `${data.educationalPurpose} - session:${data.sessionId}`,
+        sessionId: data.sessionId,
         complianceBasis: 'legitimate_interest',
         dataAccessed: data.interactionType ? `prompt_interaction_${data.interactionType}` : 'ai_insights'
-      });
+      }).catch(() => {});
     } catch (error) {
       // Don't fail the main operation if audit logging fails
       console.warn('⚠️ Audit logging failed in teacher prompt service:', error);

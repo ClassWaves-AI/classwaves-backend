@@ -29,6 +29,7 @@ import debugRoutes from './routes/debug.routes';
 import { redisService } from './services/redis.service';
 import { databricksService } from './services/databricks.service';
 import { openAIWhisperService } from './services/openai-whisper.service';
+import { inMemoryAudioProcessor } from './services/audio/InMemoryAudioProcessor';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
@@ -337,6 +338,8 @@ app.get('/api/v1/health', async (_req, res) => {
         redis: 'unknown',
         databricks: 'unknown',
         openai_whisper: 'unknown',
+        audio_processor: 'unknown',
+        whisper_breaker: 'unknown',
       },
       version: process.env.npm_package_version || '1.0.0',
       environment: process.env.NODE_ENV || 'development',
@@ -368,6 +371,17 @@ app.get('/api/v1/health', async (_req, res) => {
       checks.services.openai_whisper = 'unhealthy';
     }
 
+    // Include audio processor / breaker state for resilience visibility
+    try {
+      const audioHealth = await inMemoryAudioProcessor.healthCheck();
+      checks.services.audio_processor = audioHealth?.status || 'unknown';
+      const breaker = audioHealth?.details?.breaker || 'unknown';
+      checks.services.whisper_breaker = breaker; // 'open' | 'closed'
+    } catch {
+      checks.services.audio_processor = 'unhealthy';
+      checks.services.whisper_breaker = 'unknown';
+    }
+
     const unhealthy = Object.values(checks.services).some((s) => s === 'unhealthy');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     if (unhealthy) {
@@ -386,13 +400,17 @@ app.get('/api/v1/health', async (_req, res) => {
   }
 });
 
-// Metrics endpoint
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
+// Metrics endpoint (use default global registry to include metrics from all modules)
+// Avoid starting default metrics collector during tests to prevent Jest open-handle leaks
+if (process.env.NODE_ENV !== 'test' && process.env.METRICS_DEFAULT_DISABLED !== '1') {
+  try { client.collectDefaultMetrics(); } catch {}
+}
 app.get('/metrics', async (_req, res) => {
-  res.set('Content-Type', register.contentType);
-  res.end(await register.metrics());
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
 });
+
+// No explicit stop for default metrics (prom-client types may not expose stopper)
 
 // JWKS routes
 app.use('/', jwksRoutes);

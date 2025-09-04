@@ -101,7 +101,10 @@ export class GuidanceSystemHealthService extends EventEmitter {
     super();
     
     this.healthMetrics = this.initializeHealthMetrics();
-    this.startHealthMonitoring();
+    // Avoid starting timers during tests to prevent Jest open-handle leaks
+    if (process.env.NODE_ENV !== 'test') {
+      this.startHealthMonitoring();
+    }
     
     console.log('🏥 Guidance System Health Monitor initialized', {
       checkInterval: this.config.checkIntervalMs,
@@ -335,11 +338,11 @@ export class GuidanceSystemHealthService extends EventEmitter {
     const startTime = Date.now();
     
     try {
-      // Import WebSocket service
-      const { getWebSocketService } = await import('./websocket.service');
-      const wsService = getWebSocketService();
+      // Check namespaced WebSocket service availability
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      const io = getNamespacedWebSocketService()?.getIO();
       
-      const healthy = wsService !== null;
+      const healthy = !!io;
       const responseTime = Date.now() - startTime;
       
       return {
@@ -593,6 +596,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
         console.error('❌ Scheduled health check failed:', error);
       });
     }, this.config.checkIntervalMs);
+    (this.monitoringInterval as any).unref?.();
   }
 
   private storeHealthHistory(result: HealthCheckResult): void {
@@ -624,18 +628,18 @@ export class GuidanceSystemHealthService extends EventEmitter {
     resolution?: string;
   }): Promise<void> {
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: 'system',
         actorType: 'system',
         eventType: data.eventType,
-        eventCategory: 'system_monitoring',
+        eventCategory: 'compliance',
         resourceType: 'system_health',
         resourceId: data.alertId || 'health_monitor',
         schoolId: 'system',
-        description: data.message || `Health monitoring event: ${data.eventType}`,
-        complianceBasis: 'system_administration',
+        description: data.message || `health monitoring event: ${data.eventType}`,
         dataAccessed: 'system_health_metrics'
-      });
+      }).catch(() => {});
     } catch (error) {
       console.warn('⚠️ Audit logging failed in health monitor:', error);
     }

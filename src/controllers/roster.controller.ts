@@ -69,8 +69,9 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
     const total = countResult?.total || 0;
     const totalPages = Math.ceil(total / limit);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_roster_accessed',
@@ -78,11 +79,11 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
       resourceType: 'student',
       resourceId: 'roster',
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} accessed student roster`,
+      description: `teacher:${teacher.id} accessed student roster`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     // Transform students to match frontend interface
     const transformedStudents = students.map(student => {
@@ -230,8 +231,9 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       WHERE s.id = ?
     `, [studentId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_created',
@@ -239,12 +241,12 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} added student: ${name}${isUnderConsentAge ? ' (under 13)' : ''}`,
+      description: `teacher:${teacher.id} added student`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     // Check if student was created successfully
     if (!createdStudent) {
@@ -418,8 +420,9 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       WHERE s.id = ?
     `, [studentId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_updated',
@@ -427,12 +430,12 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} updated student: ${updatedStudent.display_name}`,
+      description: `teacher:${teacher.id} updated student`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -492,8 +495,9 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         WHERE id = ?
       `, [new Date().toISOString(), studentId]);
 
-      // Log audit event
-      await databricksService.recordAuditLog({
+      // Log audit event (async)
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'student_deactivated',
@@ -501,12 +505,12 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         resourceType: 'student',
         resourceId: studentId,
         schoolId: school.id,
-        description: `Teacher ID ${teacher.id} deactivated student: ${existingStudent.display_name} (has session data - FERPA protected)`,
+        description: `teacher:${teacher.id} deactivated student (FERPA protected)`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'ferpa',
         affectedStudentIds: [studentId]
-      });
+      }).catch(() => {});
 
       return res.json({
         success: true,
@@ -519,8 +523,9 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         DELETE FROM classwaves.users.students WHERE id = ?
       `, [studentId]);
 
-      // Log audit event
-      await databricksService.recordAuditLog({
+      // Log audit event (async)
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'student_deleted',
@@ -528,12 +533,12 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         resourceType: 'student',
         resourceId: studentId,
         schoolId: school.id,
-        description: `Teacher ID ${teacher.id} removed student: ${existingStudent.display_name} (no session data)`,
+        description: `teacher:${teacher.id} removed student (no session data)`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
         affectedStudentIds: [studentId]
-      });
+      }).catch(() => {});
 
       return res.json({
         success: true,
@@ -624,8 +629,9 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
       WHERE id = ?
     `, [...updateValues, studentId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_age_verified',
@@ -633,12 +639,12 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} verified age for student: ${existingStudent.display_name} (age: ${age}, COPPA: ${requiresParentalConsent ? 'required' : 'not required'})`,
+      description: `teacher:${teacher.id} verified student age (age:${age})`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'coppa',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -705,8 +711,9 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
       WHERE id = ?
     `, [consentGiven, consentDate || now, now, studentId]);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'parental_consent_updated',
@@ -714,12 +721,12 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} updated parental consent for student: ${existingStudent.display_name} (consent: ${consentGiven ? 'granted' : 'denied'})`,
+      description: `teacher:${teacher.id} updated parental consent (consent:${consentGiven ? 'granted' : 'denied'})`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'coppa',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -771,8 +778,9 @@ export async function getRosterOverview(req: Request, res: Response): Promise<Re
       inactiveStudents: metrics?.inactiveStudents || 0
     };
 
-    // Log audit event for data access
-    await databricksService.recordAuditLog({
+    // Log audit event for data access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'roster_overview_accessed',
@@ -780,11 +788,11 @@ export async function getRosterOverview(req: Request, res: Response): Promise<Re
       resourceType: 'student',
       resourceId: 'overview',
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} accessed roster overview metrics`,
+      description: `teacher:${teacher.id} accessed roster overview metrics`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,

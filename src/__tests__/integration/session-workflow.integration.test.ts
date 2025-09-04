@@ -1,13 +1,13 @@
 import request from 'supertest';
 import express from 'express';
 import { databricksService } from '../../services/databricks.service';
-import { WebSocketService } from '../../services/websocket.service';
+import { WebSocketService } from '../../services/websocket';
 import sessionRoutes from '../../routes/session.routes';
 import { authenticate } from '../../middleware/auth.middleware';
 
 // Mock dependencies
 jest.mock('../../services/databricks.service');
-jest.mock('../../services/websocket.service');
+jest.mock('../../services/websocket');
 jest.mock('../../middleware/auth.middleware');
 
 describe('End-to-End Session Workflow Integration', () => {

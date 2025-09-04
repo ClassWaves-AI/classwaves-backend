@@ -52,6 +52,7 @@ resetDatabricksService();
 
 import { io as Client, Socket } from 'socket.io-client';
 import axios from 'axios';
+import { startSessionWithAxios } from './utils/session-factory';
 import { createTestSessionWithGroups, cleanupTestData } from '../test-utils/factories';
 import { databricksService } from '../../services/databricks.service';
 import { redisService } from '../../services/redis.service';
@@ -278,17 +279,7 @@ describe('WebSocket Reconnection Integration Tests', () => {
 
     // STEP 3: Teacher starts session
     console.log('📝 Step 3: Teacher starting session...');
-    const startResponse = await axios.post(`http://localhost:${port}/api/v1/sessions/${sessionId}/start`, null, {
-      headers: {
-        'Authorization': `Bearer ${teacherToken}`,
-        'User-Agent': 'websocket-test',
-        'x-forwarded-for': '127.0.0.1',
-        'x-real-ip': '127.0.0.1',
-        'x-cw-fingerprint': 'websocket-reconnection-test'
-      },
-      timeout: 30000,
-      validateStatus: () => true
-    });
+    const startResponse = await startSessionWithAxios(`http://localhost:${port}`, teacherToken, sessionId);
 
     expect(startResponse.status).toBe(200);
     expect(startResponse.data.success).toBe(true);

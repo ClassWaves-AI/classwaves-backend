@@ -169,9 +169,10 @@ export async function requireAnalyticsAccess(req: Request, res: Response, next: 
   // Additional analytics-specific checks
   const sessionInfo = (authReq as any).sessionInfo;
   
-  // Log analytics access for audit compliance (FERPA/COPPA)
+  // Log analytics access for audit compliance (FERPA/COPPA) - async
   try {
-    await databricksService.recordAuditLog({
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: authReq.user!.id,
       actorType: 'teacher',
       eventType: 'analytics_access',
@@ -179,12 +180,13 @@ export async function requireAnalyticsAccess(req: Request, res: Response, next: 
       resourceType: 'session_analytics',
       resourceId: sessionInfo.id,
       schoolId: sessionInfo.schoolId,
-      description: `Teacher accessed analytics for session`,
+      description: 'teacher accessed session analytics',
+      sessionId: sessionInfo.id,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest', // Educational improvement
       dataAccessed: req.path.includes('membership-summary') ? 'membership_analytics' : 'session_analytics'
-    });
+    }).catch(() => {});
   } catch (auditError) {
     console.error('Failed to log analytics access:', auditError);
     // Continue - don't block access due to audit logging failure

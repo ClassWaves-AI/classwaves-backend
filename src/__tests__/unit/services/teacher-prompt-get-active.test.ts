@@ -14,6 +14,10 @@ import type { TeacherPrompt } from '../../../types/teacher-guidance.types';
 
 // Mock databricks service
 jest.mock('../../../services/databricks.service');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
+import { auditLogPort } from '../../../utils/audit.port.instance';
 const mockDatabricksService = databricksService as jest.Mocked<typeof databricksService>;
 
 describe('TeacherPromptService.getActivePrompts()', () => {
@@ -26,7 +30,7 @@ describe('TeacherPromptService.getActivePrompts()', () => {
     jest.clearAllMocks();
     
     // Mock audit logging
-    mockDatabricksService.recordAuditLog.mockResolvedValue(undefined);
+    (auditLogPort.enqueue as jest.Mock).mockResolvedValue(undefined);
   });
 
   describe('Real Data Integration', () => {
@@ -151,8 +155,8 @@ describe('TeacherPromptService.getActivePrompts()', () => {
       expect(result[0].priority).toBe('high');
       expect(result[0].id).toBe('prompt-cache-1');
 
-      // Verify compliance audit logging
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith({
+      // Verify compliance audit logging (enqueued)
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(expect.objectContaining({
         actorId: 'system',
         actorType: 'system',
         eventType: 'teacher_prompt_access',
@@ -163,7 +167,7 @@ describe('TeacherPromptService.getActivePrompts()', () => {
         description: expect.stringContaining('Retrieve active teacher prompts'),
         complianceBasis: 'legitimate_interest',
         dataAccessed: 'ai_insights'
-      });
+      }));
     });
 
     it('should handle database failures gracefully and return cache-only results', async () => {
@@ -201,8 +205,8 @@ describe('TeacherPromptService.getActivePrompts()', () => {
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('prompt-cache-only');
 
-      // Should still complete successfully despite DB error
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalled();
+      // Should still complete successfully despite DB error; audit enqueued
+      expect(auditLogPort.enqueue).toHaveBeenCalled();
     });
 
     it('should apply priority and age filters correctly with real data patterns', async () => {
@@ -361,7 +365,7 @@ describe('TeacherPromptService.getActivePrompts()', () => {
       mockDatabricksService.query.mockResolvedValue([]);
       
       // Mock audit logging failure
-      mockDatabricksService.recordAuditLog.mockRejectedValue(new Error('Audit system down'));
+      (auditLogPort.enqueue as jest.Mock).mockRejectedValue(new Error('Audit system down'));
 
       // Should still complete successfully
       const result = await service.getActivePrompts(mockSessionId);
@@ -377,7 +381,7 @@ describe('TeacherPromptService.getActivePrompts()', () => {
       expect(result).toEqual([]);
 
       // Should have attempted initial audit logging
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'teacher_prompt_access'
         })

@@ -390,10 +390,13 @@ export class AnalyticsComputationLockService {
 export const analyticsComputationLockService = new AnalyticsComputationLockService();
 
 // Set up periodic cleanup of expired locks (every 5 minutes)
-setInterval(async () => {
-  try {
-    await analyticsComputationLockService.cleanupExpiredLocks();
-  } catch (error) {
-    console.error('❌ Periodic lock cleanup failed:', error);
-  }
-}, 300000); // 5 minutes
+if (process.env.NODE_ENV !== 'test') {
+  const t = setInterval(async () => {
+    try {
+      await analyticsComputationLockService.cleanupExpiredLocks();
+    } catch (error) {
+      console.error('❌ Periodic lock cleanup failed:', error);
+    }
+  }, 300000); // 5 minutes
+  (t as any).unref?.();
+}

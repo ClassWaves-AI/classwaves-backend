@@ -10,13 +10,13 @@ import { Server } from 'http';
 import { createTestApp } from '../test-utils/app-setup';
 import { createTestSession, createTestTeacher, createTestSchool } from '../test-utils/factories';
 import { databricksService } from '../../services/databricks.service';
-import { websocketService } from '../../services/websocket.service';
+import { websocketService } from '../../services/websocket';
 import { analyticsComputationService } from '../../services/analytics-computation.service';
 import { AuthRequest } from '../../types/auth.types';
 import { afterAllWithCleanup } from '../../test/test-cleanup';
 
 // Mock WebSocket service to capture events
-jest.mock('../../services/websocket.service', () => ({
+jest.mock('../../services/websocket', () => ({
   websocketService: {
     endSession: jest.fn(),
     notifySessionUpdate: jest.fn(),

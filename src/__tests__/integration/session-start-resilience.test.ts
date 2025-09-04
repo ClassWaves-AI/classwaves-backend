@@ -20,6 +20,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/glo
 import request from 'supertest';
 import app from '../../app';
 import { databricksService } from '../../services/databricks.service';
+import { startSessionWithSupertest } from './utils/session-factory';
 import { redisService } from '../../services/redis.service';
 import { performance } from 'perf_hooks';
 import { generateAccessToken } from '../../utils/jwt.utils';
@@ -123,11 +124,8 @@ describe('Session Start Resilience Integration Tests', () => {
     it('should start session successfully with retry infrastructure', async () => {
       const startTime = performance.now();
       
-      const response = await request(app)
-        .post(`/api/v1/sessions/${testSessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .set('Content-Type', 'application/json')
-        .expect(200);
+      await markAllGroupsReady(testSessionId);
+      const response = await startSessionWithSupertest(app, authToken, testSessionId);
       
       const endTime = performance.now();
       const duration = endTime - startTime;
@@ -153,11 +151,8 @@ describe('Session Start Resilience Integration Tests', () => {
       
       const startTime = performance.now();
       
-      const response = await request(app)
-        .post(`/api/v1/sessions/${testSessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .set('Content-Type', 'application/json')
-        .expect(200);
+      await markAllGroupsReady(testSessionId);
+      const response = await startSessionWithSupertest(app, authToken, testSessionId);
       
       const endTime = performance.now();
       const duration = endTime - startTime;
@@ -183,11 +178,8 @@ describe('Session Start Resilience Integration Tests', () => {
       // This test verifies graceful degradation is implemented
       // Analytics failures should not prevent session start
       
-      const response = await request(app)
-        .post(`/api/v1/sessions/${testSessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .set('Content-Type', 'application/json')
-        .expect(200);
+      await markAllGroupsReady(testSessionId);
+      const response = await startSessionWithSupertest(app, authToken, testSessionId);
       
       expect(response.body.success).toBe(true);
       expect(response.body.data.session.status).toBe('active');
@@ -208,11 +200,8 @@ describe('Session Start Resilience Integration Tests', () => {
     it('should degrade gracefully if WebSocket broadcast fails', async () => {
       // This test verifies that WebSocket broadcast failures don't prevent session start
       
-      const response = await request(app)
-        .post(`/api/v1/sessions/${testSessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .set('Content-Type', 'application/json')
-        .expect(200);
+      await markAllGroupsReady(testSessionId);
+      const response = await startSessionWithSupertest(app, authToken, testSessionId);
       
       expect(response.body.success).toBe(true);
       expect(response.body.data.session.status).toBe('active');
@@ -298,11 +287,7 @@ describe('Session Start Resilience Integration Tests', () => {
         
         const startTime = performance.now();
         
-        const response = await request(app)
-          .post(`/api/v1/sessions/${iterationSessionId}/start`)
-          .set('Authorization', `Bearer ${authToken}`)
-          .set('Content-Type', 'application/json')
-          .expect(200);
+        const response = await startSessionWithSupertest(app, authToken, iterationSessionId);
         
         const endTime = performance.now();
         const duration = endTime - startTime;

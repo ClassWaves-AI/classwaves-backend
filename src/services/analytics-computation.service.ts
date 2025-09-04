@@ -6,7 +6,7 @@
  */
 
 import { databricksService } from './databricks.service';
-import { websocketService } from './websocket.service';
+import { redisService } from './redis.service';
 import { realTimeAnalyticsCacheService } from './real-time-analytics-cache.service';
 import { databricksConfig } from '../config/databricks.config';
 import { analyticsLogger } from '../utils/analytics-logger';
@@ -54,6 +54,9 @@ export class AnalyticsComputationService {
     const computationId = `analytics_${sessionId}_${startTime}`;
     let globalTimeoutId: NodeJS.Timeout | null = null;
     let persisting = false;
+    let acquiredLock = false;
+    const lockKey = `analytics:compute:lock:${sessionId}`;
+    const lockTtlMs = parseInt(process.env.ANALYTICS_COMPUTE_LOCK_TTL_MS || '60000', 10); // >= compute timeout
 
     // Circuit breaker: short-circuit when OPEN (unless reset window elapsed)
     if (this.circuitBreaker.state === 'OPEN') {
@@ -69,6 +72,26 @@ export class AnalyticsComputationService {
     }
     
     try {
+      // Acquire Redis lock (deduplication across concurrent triggers)
+      try {
+        const client: any = redisService.getClient();
+        let setResp: any = null;
+        try {
+          setResp = await client.set(lockKey, String(Date.now()), 'NX', 'PX', lockTtlMs);
+        } catch {
+          // Some clients support options object
+          setResp = await client.set(lockKey, String(Date.now()), { NX: true, PX: lockTtlMs });
+        }
+        acquiredLock = !!setResp;
+        if (!acquiredLock) {
+          const err: Error & { type?: string } = new Error('lock acquisition failed');
+          err.type = 'LOCKED_BY_OTHER';
+          throw err;
+        }
+      } catch (lockErr) {
+        // Bubble up lock error to allow controller to emit duplicate_prevention
+        throw lockErr;
+      }
       // Wrap the entire computation in a global timeout
       const timeoutMs = this.COMPUTATION_TIMEOUT;
       const globalTimeoutPromise = new Promise<never>((_, reject) => {
@@ -373,6 +396,10 @@ export class AnalyticsComputationService {
       if (globalTimeoutId) {
         clearTimeout(globalTimeoutId);
         globalTimeoutId = null;
+      }
+      // Release Redis lock if held
+      if (acquiredLock) {
+        try { await (redisService.getClient() as any).del(lockKey); } catch {}
       }
     }
   }
@@ -681,17 +708,31 @@ export class AnalyticsComputationService {
       }
 
       const derived: GroupPerformanceSummary[] = [];
-      for (const [groupId, { members, actives }] of counts.entries()) {
-        if (members === 0) continue;
-        const rate = Math.round((actives / members) * 100);
-        derived.push({
-          groupId,
-          groupName: nameMap.get(groupId) || groupId,
-          memberCount: members,
-          engagementScore: rate,
-          participationRate: rate,
-          readyTime: undefined as any,
-        });
+      // If there are no participants rows, still return default rows for groups to avoid empty analytics
+      if (!participants || participants.length === 0) {
+        for (const [groupId, groupName] of nameMap.entries()) {
+          derived.push({
+            groupId,
+            groupName,
+            memberCount: 0,
+            engagementScore: 0,
+            participationRate: 0,
+            readyTime: undefined as any,
+          });
+        }
+      } else {
+        for (const [groupId, { members, actives }] of counts.entries()) {
+          if (members === 0) continue;
+          const rate = Math.round((actives / members) * 100);
+          derived.push({
+            groupId,
+            groupName: nameMap.get(groupId) || groupId,
+            memberCount: members,
+            engagementScore: rate,
+            participationRate: rate,
+            readyTime: undefined as any,
+          });
+        }
       }
       return derived;
     } catch (_) {
@@ -762,11 +803,9 @@ export class AnalyticsComputationService {
    */
   async emitAnalyticsFinalized(sessionId: string): Promise<void> {
     try {
-      await websocketService.emitToSession(sessionId, 'analytics:finalized', {
-        sessionId,
-        timestamp: new Date().toISOString()
-      });
-      
+      const payload = { sessionId, timestamp: new Date().toISOString() };
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:finalized', payload);
       console.log(`📡 Emitted analytics:finalized event for session ${sessionId}`);
     } catch (error) {
       console.error(`Failed to emit analytics:finalized for session ${sessionId}:`, error);

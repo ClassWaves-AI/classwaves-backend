@@ -1,12 +1,13 @@
 // Mock Redis client with proper typing
 export const mockRedisClient = {
-  get: jest.fn(),
-  set: jest.fn(),
-  setex: jest.fn(),
-  del: jest.fn(),
-  exists: jest.fn(),
-  expire: jest.fn(),
-  ttl: jest.fn(),
+  get: jest.fn().mockResolvedValue(null),
+  set: jest.fn().mockResolvedValue('OK'),
+  setex: jest.fn().mockResolvedValue('OK'),
+  incrbyfloat: jest.fn().mockResolvedValue(0),
+  del: jest.fn().mockResolvedValue(1),
+  exists: jest.fn().mockResolvedValue(0),
+  expire: jest.fn().mockResolvedValue(1),
+  ttl: jest.fn().mockResolvedValue(-1),
   hget: jest.fn(),
   hset: jest.fn(),
   hdel: jest.fn(),
@@ -22,8 +23,8 @@ export const mockRedisClient = {
   zrange: jest.fn(),
   zrevrange: jest.fn(),
   zscore: jest.fn(),
-  keys: jest.fn(),
-  ping: jest.fn(),
+  keys: jest.fn().mockResolvedValue([]),
+  ping: jest.fn().mockResolvedValue('PONG'),
   pipeline: jest.fn(() => ({
     exec: jest.fn().mockResolvedValue([]),
   })),
@@ -37,11 +38,12 @@ export const mockRedisClient = {
 
 // Mock Redis service with methods that match the actual redis service
 export const mockRedisService = {
+  getClient: () => mockRedisClient,
   isConnected: jest.fn().mockReturnValue(true),
   storeSession: jest.fn().mockResolvedValue(undefined),
   getSession: jest.fn().mockResolvedValue(null),
-  get: jest.fn(),
-  set: jest.fn(),
+  get: jest.fn().mockResolvedValue(null),
+  set: jest.fn().mockResolvedValue(undefined),
   deleteSession: jest.fn().mockResolvedValue(undefined),
   extendSession: jest.fn().mockResolvedValue(true),
   getTeacherActiveSessions: jest.fn().mockResolvedValue([]),

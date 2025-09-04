@@ -398,8 +398,8 @@ export class WebSocketSecurityValidator {
       // Store in audit log (async, don't block)
       setImmediate(async () => {
         try {
-          // Use centralized audit logging API to match schema
-          await databricksService.recordAuditLog({
+          const { auditLogPort } = await import('../../utils/audit.port.instance');
+          auditLogPort.enqueue({
             actorId: securityEvent.user_id,
             actorType: 'system',
             eventType: 'websocket_security',
@@ -407,19 +407,13 @@ export class WebSocketSecurityValidator {
             resourceType: 'websocket_connection',
             resourceId: securityEvent.namespace_name || 'unknown',
             schoolId: securityContext.schoolId || 'unknown',
-            description: `WS security event: ${securityEvent.event_type} in ${securityEvent.namespace_name} - meta=${securityEvent.metadata?.slice?.(0, 512)}`,
+            description: `ws security ${securityEvent.event_type} ${securityEvent.namespace_name}`,
             ipAddress: securityEvent.ip_address,
             userAgent: securityEvent.user_agent,
             complianceBasis: 'legitimate_interest',
-          });
+          }).catch(() => {});
         } catch (error) {
-          // Gracefully handle audit log errors - don't block core functionality
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
-            console.warn('Audit log table not found - skipping WebSocket security audit (non-critical)');
-          } else {
-            console.error('Failed to log WebSocket security event to audit log:', error);
-          }
+          // swallow
         }
       });
 

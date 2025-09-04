@@ -60,11 +60,12 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
     }
 
     // Verify teacher owns this session and group
-    const session = await databricksService.queryOne(`
-      SELECT id, teacher_id, status 
-      FROM classwaves.sessions.classroom_sessions 
-      WHERE id = '${sessionId}' AND teacher_id = '${teacher?.id}'
-    `);
+    const session = await databricksService.queryOne(
+      `SELECT id, teacher_id, status 
+       FROM classwaves.sessions.classroom_sessions 
+       WHERE id = ? AND teacher_id = ?`,
+      [sessionId, teacher?.id]
+    );
 
     if (!session) {
       return res.status(404).json({
@@ -81,11 +82,12 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
     }
 
     // Verify group exists in this session
-    const group = await databricksService.queryOne(`
-      SELECT id, session_id 
-      FROM classwaves.sessions.student_groups 
-      WHERE id = '${groupId}' AND session_id = '${sessionId}'
-    `);
+    const group = await databricksService.queryOne(
+      `SELECT id, session_id 
+       FROM classwaves.sessions.student_groups 
+       WHERE id = ? AND session_id = ?`,
+      [groupId, sessionId]
+    );
 
     if (!group) {
       return res.status(404).json({
@@ -127,36 +129,35 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
       analysis_timestamp: new Date(insights.analysisTimestamp)
     });
 
-    // Broadcast insights via WebSocket
-    const websocketService = (global as any).websocketService;
-    if (websocketService) {
-      websocketService.emitToSession(sessionId, 'group:tier1:insight', {
+    // Broadcast to guidance namespace only (canonical)
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getGuidanceService().emitTier1Insight(sessionId, {
         groupId,
         sessionId,
         insights,
-        timestamp: insights.analysisTimestamp
+        timestamp: insights.analysisTimestamp,
       });
-      
-      console.log(`📡 Tier 1 insights broadcasted for group ${groupId}`);
+    } catch (e) {
+      console.warn('⚠️ Failed to emit Tier1 to guidance namespace:', e instanceof Error ? e.message : String(e));
     }
 
-    // Record audit log
-    await databricksService.recordAuditLog({
-      user_id: teacher?.id || '',
-      user_type: 'teacher',
-      action: 'ai_analysis_tier1',
-      resource_type: 'group_discussion',
-      resource_id: groupId,
-      metadata: {
-        sessionId,
-        insightId,
-        transcriptCount: transcripts.length,
-        processingTimeMs: Date.now() - startTime
-      },
-      ip_address: req.ip,
-      user_agent: req.get('User-Agent'),
-      school_id: teacher?.school_id || ''
-    });
+    // Record audit log (async, fire-and-forget)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
+      actorId: teacher?.id || '',
+      actorType: 'teacher',
+      eventType: 'ai_analysis_tier1',
+      eventCategory: 'session',
+      resourceType: 'group_discussion',
+      resourceId: groupId,
+      schoolId: teacher?.school_id || '',
+      sessionId,
+      description: `tier1 insights generated for group:${groupId}`,
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent') || undefined,
+      dataAccessed: JSON.stringify({ transcriptCount: transcripts.length, processingTimeMs: Date.now() - startTime })
+    }).catch(() => {});
 
     const response: AnalyzeGroupDiscussionResponse = {
       success: true,
@@ -224,11 +225,12 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
     }
 
     // Verify teacher owns this session
-    const session = await databricksService.queryOne(`
-      SELECT id, teacher_id, status, title 
-      FROM classwaves.sessions.classroom_sessions 
-      WHERE id = '${sessionId}' AND teacher_id = '${teacher?.id}'
-    `);
+    const session = await databricksService.queryOne(
+      `SELECT id, teacher_id, status, title 
+       FROM classwaves.sessions.classroom_sessions 
+       WHERE id = ? AND teacher_id = ?`,
+      [sessionId, teacher?.id]
+    );
 
     if (!session) {
       return res.status(404).json({
@@ -286,36 +288,40 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
       analysis_timestamp: new Date(insights.analysisTimestamp)
     });
 
-    // Broadcast insights via WebSocket
-    const websocketService = (global as any).websocketService;
-    if (websocketService) {
-      websocketService.emitToSession(sessionId, 'group:tier2:insight', {
+    // Broadcast to guidance namespace only (canonical)
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getGuidanceService().emitTier2Insight(sessionId, {
         sessionId,
         insights,
-        timestamp: insights.analysisTimestamp
+        timestamp: insights.analysisTimestamp,
       });
-      
-      console.log(`📡 Tier 2 insights broadcasted for session ${sessionId}`);
+    } catch (e) {
+      console.warn('⚠️ Failed to emit Tier2 to guidance namespace:', e instanceof Error ? e.message : String(e));
     }
 
-    // Record audit log
-    await databricksService.recordAuditLog({
-      user_id: teacher?.id || '',
-      user_type: 'teacher',
-      action: 'ai_analysis_tier2',
-      resource_type: 'session_discussion',
-      resource_id: sessionId,
-      metadata: {
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
+      actorId: teacher?.id || '',
+      actorType: 'teacher',
+      eventType: 'ai_analysis_tier2',
+      eventCategory: 'session',
+      resourceType: 'session_discussion',
+      resourceId: sessionId,
+      schoolId: teacher?.school_id || '',
+      sessionId,
+      description: `tier2 insights generated for session:${sessionId}`,
+      ipAddress: req.ip,
+      userAgent: req.get('User-Agent') || undefined,
+      dataAccessed: JSON.stringify({
         insightId,
         groupCount: groupTranscripts.length,
         transcriptCount: allTranscripts.length,
         analysisDepth: tier2Options.analysisDepth,
-        processingTimeMs: Date.now() - startTime
-      },
-      ip_address: req.ip,
-      user_agent: req.get('User-Agent'),
-      school_id: teacher?.school_id || ''
-    });
+        processingTimeMs: Date.now() - startTime,
+      })
+    }).catch(() => {});
 
     const response: GenerateDeepInsightsResponse = {
       success: true,
@@ -365,11 +371,12 @@ export const getSessionInsights = async (req: AuthRequest, res: Response): Promi
     const teacher = req.user;
 
     // Verify teacher owns this session
-    const session = await databricksService.queryOne(`
-      SELECT id, teacher_id, title 
-      FROM classwaves.sessions.classroom_sessions 
-      WHERE id = '${sessionId}' AND teacher_id = '${teacher?.id}'
-    `);
+    const session = await databricksService.queryOne(
+      `SELECT id, teacher_id, title 
+       FROM classwaves.sessions.classroom_sessions 
+       WHERE id = ? AND teacher_id = ?`,
+      [sessionId, teacher?.id]
+    );
 
     if (!session) {
       return res.status(404).json({
@@ -379,29 +386,38 @@ export const getSessionInsights = async (req: AuthRequest, res: Response): Promi
     }
 
     // Build query conditions
-    const groupFilter = groupIds && Array.isArray(groupIds) 
-      ? `AND group_id IN ('${groupIds.join("','")}')` 
-      : '';
+    let groupFilter = '';
+    let groupParams: any[] = [];
+    if (groupIds && Array.isArray(groupIds) && groupIds.length > 0) {
+      const placeholders = groupIds.map(() => '?').join(', ');
+      groupFilter = `AND group_id IN (${placeholders})`;
+      groupParams = groupIds as string[];
+    }
     
     const timeFilter = includeHistory 
       ? '' 
       : 'AND created_at >= CURRENT_TIMESTAMP() - INTERVAL 2 HOURS';
 
     // Retrieve Tier 1 insights
-    const tier1Results = await databricksService.query(`
+    const tier1Sql = `
       SELECT group_id, insights, created_at, analysis_timestamp
       FROM classwaves.ai_insights.tier1_analysis 
-      WHERE session_id = '${sessionId}' ${groupFilter} ${timeFilter}
+      WHERE session_id = ? ${groupFilter} ${timeFilter}
       ORDER BY created_at ASC
-    `);
+    `;
+    const tier1Results = await databricksService.query(
+      tier1Sql,
+      [sessionId, ...groupParams]
+    );
 
     // Retrieve Tier 2 insights  
-    const tier2Results = await databricksService.query(`
-      SELECT insights, created_at, analysis_timestamp
-      FROM classwaves.ai_insights.tier2_analysis 
-      WHERE session_id = '${sessionId}' ${timeFilter}
-      ORDER BY created_at ASC
-    `);
+    const tier2Results = await databricksService.query(
+      `SELECT insights, created_at, analysis_timestamp
+       FROM classwaves.ai_insights.tier2_analysis 
+       WHERE session_id = ? ${timeFilter}
+       ORDER BY created_at ASC`,
+      [sessionId]
+    );
 
     // Group Tier 1 insights by group
     const tier1Insights: Record<string, any[]> = {};

@@ -171,6 +171,28 @@ export const updateGroupStatusSchema = z.object({
     isReady: z.boolean(),
 });
 
+// WebSocket audio payload at the edge (sessions namespace)
+export const AudioChunkPayloadSchema = z.object({
+  groupId: z.string().min(1, 'groupId is required'),
+  // Accept unknown at the edge; coercion happens in adapter
+  audioData: z.any(),
+  mimeType: z.string().min(1, 'mimeType is required'),
+});
+
+// WebSocket: session join payload
+export const SessionJoinPayloadSchema = z.object({
+  sessionId: z.string().min(1, 'sessionId is required').or(z.string().min(1).transform((v) => v)),
+}).passthrough();
+
+// WebSocket: group status update payload
+export const GroupStatusUpdateSchema = z.object({
+  groupId: z.string().min(1),
+  sessionId: z.string().min(1),
+  status: z.enum(['connected', 'ready', 'active', 'paused', 'issue', 'waiting']).optional(),
+  isReady: z.boolean().optional(),
+  issueReason: z.string().max(200).optional(),
+}).passthrough();
+
 // Security schemas
 export const rateLimitSchema = z.object({
   windowMs: z.number().default(15 * 60 * 1000), // 15 minutes

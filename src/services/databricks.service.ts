@@ -507,6 +507,33 @@ export class DatabricksService {
   }
 
   /**
+   * Batch insert rows into a table using single INSERT ... VALUES (...), (...)
+   */
+  async batchInsert(table: string, rows: Record<string, any>[]): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    const schema = this.getSchemaForTable(table);
+    const columns = Object.keys(rows[0]);
+    // Ensure all rows have same columns
+    for (const r of rows) {
+      const keys = Object.keys(r);
+      if (keys.length !== columns.length || !columns.every((c) => keys.includes(c))) {
+        throw new Error('Inconsistent row columns for batchInsert');
+      }
+    }
+    const placeholdersRow = `(${columns.map(() => '?').join(', ')})`;
+    const valuesPlaceholders = new Array(rows.length).fill(placeholdersRow).join(', ');
+    const sql = `
+      INSERT INTO ${databricksConfig.catalog}.${schema}.${table} (${columns.join(', ')})
+      VALUES ${valuesPlaceholders}
+    `;
+    const params: any[] = [];
+    for (const r of rows) {
+      for (const c of columns) params.push(r[c]);
+    }
+    await this.query(sql, params);
+  }
+
+  /**
    * Update a record
    */
   async update(table: string, id: string, data: Record<string, any>): Promise<void> {
@@ -1035,6 +1062,7 @@ export const databricksService = {
   queryOne: <T = any>(sql: string, params: any[] = []) => getDatabricksService().queryOne<T>(sql, params),
   generateId: () => getDatabricksService().generateId(),
   insert: (table: string, data: Record<string, any>) => getDatabricksService().insert(table, data),
+  batchInsert: (table: string, rows: Record<string, any>[]) => getDatabricksService().batchInsert(table, rows),
   update: (table: string, id: string, data: Record<string, any>) => getDatabricksService().update(table, id, data),
   upsert: (table: string, whereCondition: Record<string, any>, data: Record<string, any>) => getDatabricksService().upsert(table, whereCondition, data),
   delete: (table: string, id: string) => getDatabricksService().delete(table, id),

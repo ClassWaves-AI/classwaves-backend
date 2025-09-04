@@ -50,6 +50,7 @@ resetDatabricksService();
 
 import { io as Client, Socket } from 'socket.io-client';
 import axios from 'axios';
+import { startSessionWithAxios } from './utils/session-factory';
 import { createTestSessionWithGroups, cleanupTestData } from '../test-utils/factories';
 import { databricksService } from '../../services/databricks.service';
 import { redisService } from '../../services/redis.service';
@@ -310,23 +311,12 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
     
     console.log(`✅ Session created: ${sessionId}`);
 
-    // STEP 3: Teacher starts session
+    // STEP 3: Teacher starts session (seed readiness first)
     console.log('📝 Step 3: Teacher starting session...');
-    const startResponse = await axios.post(`http://localhost:${port}/api/v1/sessions/${sessionId}/start`, null, {
-      headers: {
-        'Authorization': `Bearer ${teacherToken}`,
-        'User-Agent': 'axios-test',
-        'x-forwarded-for': '127.0.0.1',
-        'x-real-ip': '127.0.0.1',
-        'x-cw-fingerprint': 'integration-flow'
-      },
-      timeout: 30000,
-      validateStatus: () => true
-    });
-
+    const startResponse = await startSessionWithAxios(`http://localhost:${port}`, teacherToken, sessionId);
     expect(startResponse.status).toBe(200);
-    expect(startResponse.data.success).toBe(true);
-    expect(startResponse.data.data.session.status).toBe('active');
+    expect((startResponse.data as any).success).toBe(true);
+    expect((startResponse.data as any).data.session.status).toBe('active');
     
     console.log(`✅ Session started successfully`);
 
@@ -615,12 +605,8 @@ describe('Complete Teacher→Student→WebSocket→Analytics Flow Integration', 
     testSession = createResponse.data.data.session;
     sessionId = testSession.id;
 
-    // Start session
-    await axios.post(`http://localhost:${port}/api/v1/sessions/${sessionId}/start`, null, {
-      headers: { 'Authorization': `Bearer ${teacherToken}` },
-      timeout: 30000,
-      validateStatus: () => true
-    });
+    // Start session (ensure readiness again)
+    await startSessionWithAxios(`http://localhost:${port}`, teacherToken, sessionId);
 
     // Connect teacher WebSocket
     teacherSocket = Client(`http://localhost:${port}/sessions`, {

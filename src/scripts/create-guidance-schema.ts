@@ -552,7 +552,8 @@ async function auditLog(data: {
   error?: string;
 }): Promise<void> {
   try {
-    await databricksService.recordAuditLog({
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: data.actorId,
       actorType: 'system',
       eventType: data.eventType,
@@ -563,7 +564,7 @@ async function auditLog(data: {
       description: data.educationalPurpose,
       complianceBasis: 'legitimate_interest',
       dataAccessed: data.error ? `error: ${data.error}` : 'schema_metadata'
-    });
+    }).catch(() => {});
   } catch (error) {
     console.warn('⚠️ Audit logging failed in schema creation:', error);
   }

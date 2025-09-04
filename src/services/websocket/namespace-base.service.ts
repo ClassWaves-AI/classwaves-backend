@@ -1,7 +1,5 @@
 import { Namespace, Socket } from 'socket.io';
 import { verifyToken } from '../../utils/jwt.utils';
-import { databricksService } from '../databricks.service';
-import { webSocketSecurityValidator, SecurityContext } from './websocket-security-validator.service';
 
 export interface NamespaceSocketData {
   userId: string;
@@ -14,6 +12,7 @@ export interface NamespaceSocketData {
 export abstract class NamespaceBaseService {
   protected namespace: Namespace;
   protected connectedUsers: Map<string, Set<Socket>> = new Map();
+  private roomEmitChains: Map<string, Promise<any>> = new Map();
 
   constructor(namespace: Namespace) {
     this.namespace = namespace;
@@ -46,116 +45,33 @@ export abstract class NamespaceBaseService {
       if (!decoded || !decoded.userId) {
         return next(new Error('authentication failed'));
       }
+      // Stateless WS auth: decode and attach claims only; no DB
+      const userRole: 'teacher' | 'student' | 'admin' | 'super_admin' = (decoded.role as any) || 'teacher';
+      const schoolId: string | undefined = decoded.schoolId as string | undefined;
 
-      try {
-        // Enhanced user verification with school context
-        let user: any = null;
-        let userRole: 'teacher' | 'student' | 'admin' | 'super_admin' = decoded.role as any;
-        let schoolId: string | undefined = undefined;
+      socket.data = {
+        userId: decoded.userId,
+        role: userRole,
+        schoolId,
+        sessionId: decoded.sessionId,
+        connectedAt: new Date(),
+      } as NamespaceSocketData;
 
-        if (decoded.role === 'teacher' || decoded.role === 'admin' || decoded.role === 'super_admin') {
-          // Verify teacher/admin/super_admin exists and is active with school context
-          try {
-            user = await databricksService.queryOne(
-              `SELECT t.id, t.role, t.status, t.school_id, s.subscription_status 
-               FROM classwaves.users.teachers t
-               JOIN classwaves.users.schools s ON t.school_id = s.id
-               WHERE t.id = ? AND t.status = 'active' 
-               AND (s.subscription_status = 'active' OR t.role = 'super_admin')`,
-              [decoded.userId]
-            );
-          } catch (e) {
-            if (decoded.role === 'super_admin') {
-              return next(new Error('User not found or inactive (role: super_admin)'));
-            }
-            return next(new Error('authentication failed'));
-          }
-          schoolId = (user?.school_id as string | undefined);
-        } else if (decoded.role === 'student') {
-          // Verify student exists in active session participants with session context
-          user = await databricksService.queryOne(
-            `SELECT p.student_id as id, 'active' as status, cs.school_id
-             FROM classwaves.sessions.participants p
-             JOIN classwaves.sessions.classroom_sessions cs ON p.session_id = cs.id
-             WHERE p.student_id = ? AND p.is_active = true
-             ORDER BY p.join_time DESC
-             LIMIT 1`,
-            [decoded.userId]
-          );
-          if (user) {
-            (user as any).role = 'student';
-            schoolId = (user as any).school_id as string | undefined;
-          }
-        }
-
-        if (!user) {
-          return next(new Error(`User not found or inactive (role: ${decoded.role})`));
-        }
-
-        // Create security context for validation
-        const securityContext: SecurityContext = {
-          userId: decoded.userId,
-          role: userRole as 'teacher' | 'student' | 'admin' | 'super_admin',
-          schoolId,
-          sessionId: decoded.sessionId,
-          authenticatedAt: new Date(),
-          ipAddress: (socket as any)?.handshake?.address || 'unknown',
-          userAgent: ((socket as any)?.handshake?.headers as any)?.['user-agent'] || 'unknown'
-        };
-
-        // Enhanced namespace security validation (skip for super_admin to avoid false negatives in tests)
-        if (userRole !== 'super_admin' && typeof (webSocketSecurityValidator as any)?.validateNamespaceAccess === 'function') {
-          try {
-            const validationResult = await webSocketSecurityValidator.validateNamespaceAccess(
-              socket,
-              this.getNamespaceName(),
-              securityContext
-            );
-  
-            if (!validationResult.allowed) {
-              const errorMessage = `Access denied to ${this.getNamespaceName()}: ${validationResult.reason}`;
-              console.warn(`🚫 WebSocket Security: ${errorMessage}`, {
-                userId: decoded.userId,
-                role: userRole,
-                namespace: this.getNamespaceName(),
-                errorCode: validationResult.errorCode,
-                ipAddress: securityContext.ipAddress
-              });
-              return next(new Error(errorMessage));
-            }
-          } catch (e) {
-            return next(new Error('authentication failed'));
-          }
-        }
-
-        // Set enhanced socket data
-        socket.data = {
-          userId: decoded.userId,
-          role: userRole,
-          schoolId,
-          sessionId: decoded.sessionId,
-          connectedAt: new Date(),
-          securityContext
-        } as NamespaceSocketData & { securityContext: SecurityContext };
-
-        const authDuration = Date.now() - startTime;
-        console.log(`✅ ${this.getNamespaceName()} security validation passed for ${userRole} ${decoded.userId} in ${authDuration}ms`);
-
-        next();
-      } catch (err) {
-        // Preserve specific error for super_admin invalid users per tests
-        if (decoded?.role === 'super_admin') {
-          return next(new Error('User not found or inactive (role: super_admin)'));
-        }
-        return next(new Error('authentication failed'));
+      const authDuration = Date.now() - startTime;
+      if (process.env.API_DEBUG === '1') {
+        console.log(`WS ${this.getNamespaceName()}: auth ok for ${userRole} ${decoded.userId} in ${authDuration}ms`);
       }
+
+      next();
     });
   }
 
   private setupEventHandlers() {
     this.namespace.on('connection', (socket) => {
       const userId = socket.data.userId;
-      console.log(`${this.getNamespaceName()}: User ${userId} connected (${socket.id})`);
+      if (process.env.API_DEBUG === '1') {
+        console.log(`${this.getNamespaceName()}: User ${userId} connected (${socket.id})`);
+      }
       
       // Track multiple connections per user
       if (!this.connectedUsers.has(userId)) {
@@ -167,7 +83,9 @@ export abstract class NamespaceBaseService {
       this.onConnection(socket);
 
       socket.on('disconnect', (reason) => {
-        console.log(`${this.getNamespaceName()}: User ${userId} disconnected (${socket.id}) - ${reason}`);
+        if (process.env.API_DEBUG === '1') {
+          console.log(`${this.getNamespaceName()}: User ${userId} disconnected (${socket.id}) - ${reason}`);
+        }
         
         const userSockets = this.connectedUsers.get(userId);
         if (userSockets) {
@@ -178,24 +96,13 @@ export abstract class NamespaceBaseService {
           }
         }
 
-        // Ensure server-side connection counters are decremented for this namespace
-        try {
-          // securityContext was attached during middleware auth
-          const securityContext = (socket.data as any).securityContext as SecurityContext | undefined;
-          if (securityContext) {
-            // Fire and forget; do not block disconnect flow
-            void webSocketSecurityValidator.handleDisconnection(securityContext, this.getNamespaceName());
-          }
-        } catch (err) {
-          // Log but do not throw inside event handler
-          console.error(`${this.getNamespaceName()}: Failed to update security validator on disconnect`, err);
-        }
-
         this.onDisconnection(socket, reason);
       });
 
       socket.on('error', (error) => {
-        console.error(`${this.getNamespaceName()}: Socket error for ${userId}:`, error);
+        if (process.env.API_DEBUG === '1') {
+          console.error(`${this.getNamespaceName()}: Socket error for ${userId}:`, error);
+        }
         this.onError(socket, error);
       });
     });
@@ -223,8 +130,21 @@ export abstract class NamespaceBaseService {
 
   protected emitToRoom(room: string, event: string, data: any): boolean {
     try {
-      // Emit to room; tolerate empty rooms for test predictability
-      this.namespace.to(room).emit(event, data);
+      const ordered = process.env.WS_ORDERED_EMITS !== '0' && process.env.NODE_ENV !== 'test';
+      if (ordered) {
+        const prev = this.roomEmitChains.get(room) || Promise.resolve();
+        const next = prev.catch(() => undefined).then(async () => {
+          this.namespace.to(room).emit(event, data);
+        });
+        this.roomEmitChains.set(room, next);
+        // Avoid unbounded growth by cleaning up settled chains
+        next.finally(() => {
+          if (this.roomEmitChains.get(room) === next) this.roomEmitChains.delete(room);
+        });
+      } else {
+        // Emit to room; tolerate empty rooms for test predictability
+        this.namespace.to(room).emit(event, data);
+      }
 
       // Optional logging
       const participantCount = this.namespace.adapter.rooms.get(room)?.size || 0;

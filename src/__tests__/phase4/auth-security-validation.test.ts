@@ -9,15 +9,33 @@
  * - FERPA/COPPA compliance validation
  */
 
+// Use real redis; suite-level disconnect below plus auto-reconnect between suites
+
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
 import supertest from 'supertest';
 import crypto from 'crypto';
-import app from '../../app';
-import { SecureJWTService } from '../../services/secure-jwt.service';
-import { SecureSessionService } from '../../services/secure-session.service';
-import { redisService } from '../../services/redis.service';
 
-const request = supertest(app);
+// Use in-memory Redis mock for this suite to avoid network sockets
+let app: any;
+let SecureJWTService: any;
+let SecureSessionService: any;
+let redisService: any;
+let request: any;
+
+beforeAll(() => {
+  process.env.REDIS_USE_MOCK = '1';
+  jest.resetModules();
+  jest.isolateModules(() => {
+    const appMod = require('../../app');
+    app = appMod.default || appMod;
+    SecureJWTService = require('../../services/secure-jwt.service').SecureJWTService;
+    SecureSessionService = require('../../services/secure-session.service').SecureSessionService;
+    redisService = require('../../services/redis.service').redisService;
+  });
+  request = supertest(app);
+});
+
+// request is initialized in beforeAll
 
 // Test credentials and security constants
 const TEST_GOOGLE_CREDENTIAL = process.env.E2E_TEST_GOOGLE_CREDENTIAL || 'test_security_credential';
@@ -27,7 +45,7 @@ const MAX_CONCURRENT_SESSIONS = 3;
 describe('Phase 4: Authentication Security Validation', () => {
   let testUserId: string;
   let validDeviceFingerprint: string;
-  let secureSessionService: SecureSessionService;
+  let secureSessionService: any;
 
   beforeAll(async () => {
     testUserId = 'security_test_user_' + Date.now();
@@ -39,6 +57,7 @@ describe('Phase 4: Authentication Security Validation', () => {
   afterAll(async () => {
     // Clean up security test data - note: using simple cleanup for test environment
     console.log('🧹 Security test data cleaned up');
+    await redisService.disconnect();
   });
 
   beforeEach(() => {

@@ -668,19 +668,21 @@ export class WebSocketService {
           );
 
           if (session) {
-            // Log insight delivery confirmation
-            await databricksService.recordAuditLog({
+            // Log insight delivery confirmation (async)
+            const { auditLogPort } = await import('../utils/audit.port.instance');
+            auditLogPort.enqueue({
               actorId: socket.data.userId,
               actorType: 'teacher',
               eventType: 'ai_insight_delivery_confirmed',
-              eventCategory: 'system_interaction',
+              eventCategory: 'session',
               resourceType: 'ai_insight',
               resourceId: data.insightId,
               schoolId: socket.data.schoolId,
-              description: `Teacher confirmed receipt of ${data.insightType} AI insight`,
-              complianceBasis: 'system_monitoring',
+              description: `teacher confirmed receipt of ${data.insightType} ai insight`,
+              sessionId: data.sessionId,
+              complianceBasis: 'legitimate_interest',
               dataAccessed: `${data.insightType}_insight_delivery_confirmation`
-            });
+            }).catch(() => {});
 
             console.log(`✅ AI insight delivery confirmed by teacher: ${data.insightId} (${data.insightType})`);
           }

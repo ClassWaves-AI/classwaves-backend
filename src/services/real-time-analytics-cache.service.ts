@@ -768,8 +768,12 @@ export class RealTimeAnalyticsCacheService {
 export const realTimeAnalyticsCacheService = new RealTimeAnalyticsCacheService();
 
 // Schedule background sync job (every 5 minutes)
-setInterval(() => {
-  realTimeAnalyticsCacheService.syncCacheToDatabriks().catch(error => {
-    console.error('Scheduled cache sync failed:', error);
-  });
-}, 5 * 60 * 1000);
+// Skip in test environment to avoid keeping Jest workers alive
+if (process.env.NODE_ENV !== 'test') {
+  const t = setInterval(() => {
+    realTimeAnalyticsCacheService.syncCacheToDatabriks().catch(error => {
+      console.error('Scheduled cache sync failed:', error);
+    });
+  }, 5 * 60 * 1000);
+  (t as any).unref?.();
+}

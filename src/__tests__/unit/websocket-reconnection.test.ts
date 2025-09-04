@@ -4,7 +4,7 @@
  * Focused tests for WebSocket reconnection logic without full server setup
  */
 
-import { WebSocketService } from '../../services/websocket.service';
+import { WebSocketService } from '../../services/websocket';
 import { Server as HTTPServer } from 'http';
 
 describe('WebSocket Reconnection Logic', () => {
@@ -38,29 +38,27 @@ describe('WebSocket Reconnection Logic', () => {
       // Verify that the service handles connection errors appropriately
       const io = wsService.getIO();
       expect(io).toBeDefined();
-      
       // Check that engine connection error handling is set up
       expect(io.engine.listenerCount('connection_error')).toBeGreaterThan(0);
     });
 
     test('should support session join/leave events', () => {
-      const io = wsService.getIO();
-      
-      // Verify that session-level events are properly handled
-      // This tests the foundation for auto-rejoin functionality
-      expect(io).toBeDefined();
-      expect(io.listenerCount('connection')).toBeGreaterThan(0);
+      const sessionsNS = wsService.getIO().of('/sessions');
+      // Verify that session-level events are properly handled at the namespace level
+      expect(sessionsNS).toBeDefined();
+      expect(sessionsNS.listenerCount('connection')).toBeGreaterThan(0);
     });
   });
 
   describe('Auto-Join Logic Verification', () => {
     test('should handle session:join event for teachers', async () => {
-      const io = wsService.getIO();
+      const sessionsNS = wsService.getIO().of('/sessions');
       const mockSocket = {
         data: { userId: 'teacher-123' },
         join: jest.fn().mockResolvedValue(undefined),
         emit: jest.fn(),
-        on: jest.fn()
+        on: jest.fn(),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() })
       };
 
       // Mock databricks service for session verification
@@ -70,8 +68,8 @@ describe('WebSocket Reconnection Logic', () => {
         status: 'active'
       });
 
-      // Simulate a connection event
-      const connectionListeners = io.listeners('connection');
+      // Simulate a connection event on the sessions namespace
+      const connectionListeners = sessionsNS.listeners('connection');
       expect(connectionListeners.length).toBeGreaterThan(0);
 
       // Verify the connection handler sets up session events
@@ -82,12 +80,13 @@ describe('WebSocket Reconnection Logic', () => {
     });
 
     test('should handle group:leader_ready event for students', async () => {
-      const io = wsService.getIO();
+      const sessionsNS = wsService.getIO().of('/sessions');
       const mockSocket = {
         data: { userId: 'student-456' },
         join: jest.fn().mockResolvedValue(undefined),
         emit: jest.fn(),
-        on: jest.fn()
+        on: jest.fn(),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() })
       };
 
       // Mock databricks service for group verification
@@ -100,7 +99,7 @@ describe('WebSocket Reconnection Logic', () => {
       jest.spyOn(databricksService, 'update').mockResolvedValue(undefined);
 
       // Simulate connection and verify leader ready handler is set up
-      const connectionListeners = io.listeners('connection');
+      const connectionListeners = sessionsNS.listeners('connection');
       const connectionHandler = connectionListeners[0] as Function;
       connectionHandler(mockSocket);
 
@@ -110,21 +109,23 @@ describe('WebSocket Reconnection Logic', () => {
 
   describe('Connection State Management', () => {
     test('should track connected users', () => {
-      const io = wsService.getIO();
+      const sessionsNS = wsService.getIO().of('/sessions');
       const mockSocket = {
         data: { userId: 'user-789' },
         join: jest.fn(),
         emit: jest.fn(),
-        on: jest.fn()
+        on: jest.fn(),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() })
       };
 
       // Simulate connection
-      const connectionListeners = io.listeners('connection');
+      const connectionListeners = sessionsNS.listeners('connection');
       const connectionHandler = connectionListeners[0] as Function;
       connectionHandler(mockSocket);
 
-      // Verify user tracking (this supports reconnection detection)
-      expect(wsService['connectedUsers']).toBeDefined();
+      // Verify namespace tracks connected users (supports reconnection detection)
+      const nsService = (wsService as any).getSessionsService?.();
+      expect(nsService?.getConnectionStats().totalSockets).not.toBeUndefined();
     });
 
     test('should emit session status on join for sync', async () => {
@@ -138,11 +139,12 @@ describe('WebSocket Reconnection Logic', () => {
         data: { userId: 'teacher-123' },
         join: jest.fn().mockResolvedValue(undefined),
         emit: jest.fn(),
-        on: jest.fn()
+        on: jest.fn(),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() })
       };
 
-      const io = wsService.getIO();
-      const connectionListeners = io.listeners('connection');
+      const sessionsNS = wsService.getIO().of('/sessions');
+      const connectionListeners = sessionsNS.listeners('connection');
       const connectionHandler = connectionListeners[0] as Function;
       connectionHandler(mockSocket);
 
@@ -179,12 +181,10 @@ describe('WebSocket Reconnection Logic', () => {
       const next = jest.fn();
 
       // Test that authentication middleware exists (implementation details may vary)
-      const io = wsService.getIO();
-      expect(io).toBeDefined();
-      
-      // Verify that some form of authentication is configured
-      // This tests the foundation for secure reconnection
-      expect(io.listenerCount('connection')).toBeGreaterThan(0);
+      const sessionsNS = wsService.getIO().of('/sessions');
+      expect(sessionsNS).toBeDefined();
+      // Verify that connection handler exists at the namespace level
+      expect(sessionsNS.listenerCount('connection')).toBeGreaterThan(0);
     });
 
     test('should handle database errors during session operations', async () => {
@@ -195,11 +195,12 @@ describe('WebSocket Reconnection Logic', () => {
         data: { userId: 'teacher-123' },
         join: jest.fn(),
         emit: jest.fn(),
-        on: jest.fn()
+        on: jest.fn(),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() })
       };
 
-      const io = wsService.getIO();
-      const connectionListeners = io.listeners('connection');
+      const sessionsNS = wsService.getIO().of('/sessions');
+      const connectionListeners = sessionsNS.listeners('connection');
       const connectionHandler = connectionListeners[0] as Function;
       connectionHandler(mockSocket);
 
@@ -219,15 +220,13 @@ describe('WebSocket Reconnection Logic', () => {
 
   describe('Broadcasting and Room Management', () => {
     test('should support session room broadcasting', () => {
-      const io = wsService.getIO();
-      
-      // Verify the service can emit to session rooms (needed for reconnection sync)
-      expect(typeof io.to).toBe('function');
-      
+      const sessionsNS = wsService.getIO().of('/sessions');
+      // Verify the namespace can emit to rooms (needed for reconnection sync)
+      expect(typeof sessionsNS.to).toBe('function');
       // Test broadcasting functionality
-      const sessionRoom = io.to('session:test-123');
-      expect(sessionRoom).toBeDefined();
-      expect(typeof sessionRoom.emit).toBe('function');
+      const room = sessionsNS.to('session:test-123');
+      expect(room).toBeDefined();
+      expect(typeof (room as any).emit).toBe('function');
     });
 
     test('should handle room cleanup on disconnect', () => {
@@ -239,8 +238,8 @@ describe('WebSocket Reconnection Logic', () => {
         leave: jest.fn()
       };
 
-      const io = wsService.getIO();
-      const connectionListeners = io.listeners('connection');
+      const sessionsNS = wsService.getIO().of('/sessions');
+      const connectionListeners = sessionsNS.listeners('connection');
       const connectionHandler = connectionListeners[0] as Function;
       connectionHandler(mockSocket);
 
