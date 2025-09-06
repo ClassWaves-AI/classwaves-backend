@@ -10,10 +10,11 @@
  */
 
 import { Request, Response } from 'express';
-import { databricksService } from '../services/databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { redisService } from '../services/redis.service';
 import { errorLoggingMiddleware } from '../middleware/error-logging.middleware';
 import { getNamespacedWebSocketService } from '../services/websocket';
+import { cacheHealthMonitor } from '../services/cache-health-monitor.service';
 
 interface ServiceHealth {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -31,6 +32,7 @@ interface SystemHealth {
     redis: ServiceHealth;
     databricks: ServiceHealth;
     database: ServiceHealth;
+    cache?: ServiceHealth;
   };
   errors: {
     total: number;
@@ -82,7 +84,7 @@ class HealthController {
   private async checkDatabricksHealth(): Promise<ServiceHealth> {
     const startTime = Date.now();
     try {
-      const result = await databricksService.query('SELECT 1 as health_check, current_timestamp() as server_time');
+      const result = await getCompositionRoot().getHealthRepository().getServerTime();
       const responseTime = Date.now() - startTime;
       
       return {
@@ -91,7 +93,7 @@ class HealthController {
         lastCheck: new Date().toISOString(),
         details: {
           connection: 'active',
-          serverTime: result[0]?.server_time,
+          serverTime: (result as any)?.server_time,
           warehouse: 'connected'
         }
       };
@@ -116,10 +118,11 @@ class HealthController {
         'classwaves.users.teachers'
       ];
 
+      const healthRepo = getCompositionRoot().getHealthRepository();
       const tableChecks = await Promise.allSettled(
         criticalTables.map(async (table) => {
-          const result = await databricksService.query(`SELECT COUNT(*) as count FROM ${table} LIMIT 1`);
-          return { table, accessible: true, count: result[0]?.count };
+          const count = await healthRepo.countFromTable(table);
+          return { table, accessible: true, count };
         })
       );
 
@@ -179,16 +182,18 @@ class HealthController {
   }
 
   async getSystemHealth(): Promise<SystemHealth> {
-    const [redisHealth, databricksHealth, databaseHealth] = await Promise.all([
+    const [redisHealth, databricksHealth, databaseHealth, cacheMonitor] = await Promise.all([
       this.checkRedisHealth(),
       this.checkDatabricksHealth(),
-      this.checkDatabaseHealth()
+      this.checkDatabaseHealth(),
+      cacheHealthMonitor.checkHealth(),
     ]);
 
     const errorSummary = errorLoggingMiddleware.getErrorSummary();
     
     // Determine overall health
-    const serviceStatuses = [redisHealth.status, databricksHealth.status, databaseHealth.status];
+    const cacheStatus = cacheMonitor.overall === 'critical' ? 'unhealthy' : cacheMonitor.overall === 'degraded' ? 'degraded' : 'healthy';
+    const serviceStatuses = [redisHealth.status, databricksHealth.status, databaseHealth.status, cacheStatus];
     const overall = serviceStatuses.every(s => s === 'healthy') ? 'healthy' 
                    : serviceStatuses.some(s => s === 'unhealthy') ? 'unhealthy' 
                    : 'degraded';
@@ -201,7 +206,13 @@ class HealthController {
       services: {
         redis: redisHealth,
         databricks: databricksHealth,
-        database: databaseHealth
+        database: databaseHealth,
+        cache: {
+          status: cacheStatus,
+          responseTime: cacheMonitor.redis.latency >= 0 ? cacheMonitor.redis.latency : 0,
+          lastCheck: new Date().toISOString(),
+          details: cacheMonitor,
+        },
       },
       errors: {
         total: errorSummary.totalErrors,

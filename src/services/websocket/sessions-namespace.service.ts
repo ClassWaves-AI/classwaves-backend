@@ -145,7 +145,28 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     });
 
     socket.on('session:update_status', async (data: SessionStatusData) => {
-      await this.handleSessionStatusUpdate(socket, data);
+      // REST-first enforcement: disallow status updates via WebSocket
+      try {
+        const parsed = SessionStatusUpdateSchema.safeParse({
+          sessionId: (data?.session_id || data?.sessionId || '').trim(),
+          status: data?.status,
+          teacher_notes: (data as any)?.teacher_notes,
+        });
+        if (!parsed.success) {
+          socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'Invalid session status update payload' });
+          SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'session:update_status', school: (socket.data as any)?.schoolId || 'unknown' });
+          return;
+        }
+        // Notify client that this operation is not allowed via WS
+        socket.emit('error', {
+          code: 'UNSUPPORTED_OPERATION',
+          message: 'Session status changes must use REST API. WebSocket is notify-only.'
+        });
+        SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'session:update_status', school: (socket.data as any)?.schoolId || 'unknown' });
+      } catch {
+        socket.emit('error', { code: 'SESSION_UPDATE_FORBIDDEN', message: 'Use REST endpoint to change session status' });
+        SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'session:update_status', school: (socket.data as any)?.schoolId || 'unknown' });
+      }
     });
 
     // Group management events
@@ -253,21 +274,28 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // Verify session exists and user has access (teachers own sessions, super_admin can access any session)
-      let session;
-      if (socket.data.role === 'super_admin') {
-        // Super admin can join any session
-        session = await databricksService.queryOne(
-          `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
-           WHERE id = ?`,
-          [sessionId]
-        );
-      } else {
-        // Regular users (teachers/admin) must own the session  
-        session = await databricksService.queryOne(
-          `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
-           WHERE id = ? AND teacher_id = ?`,
-          [sessionId, socket.data.userId]
-        );
+      let session: any = null;
+      try {
+        const { getCompositionRoot } = await import('../../app/composition-root');
+        const repo = getCompositionRoot().getSessionRepository();
+        session = socket.data.role === 'super_admin'
+          ? await repo.getBasic(sessionId)
+          : await repo.getOwnedSessionBasic(sessionId, socket.data.userId);
+      } catch {}
+      if (!session) {
+        if (socket.data.role === 'super_admin') {
+          session = await databricksService.queryOne(
+            `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
+             WHERE id = ?`,
+            [sessionId]
+          );
+        } else {
+          session = await databricksService.queryOne(
+            `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
+             WHERE id = ? AND teacher_id = ?`,
+            [sessionId, socket.data.userId]
+          );
+        }
       }
 
       if (!session) {
@@ -295,13 +323,15 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       socket.to(roomName).emit('user:joined', {
         sessionId,
         userId: socket.data.userId,
-        role: socket.data.role
+        role: socket.data.role,
+        traceId: (socket.data as any)?.traceId || undefined,
       });
 
       // Send session status to user
       socket.emit('session:status_changed', { 
         sessionId, 
-        status: session.status 
+        status: session.status,
+        traceId: (socket.data as any)?.traceId || undefined,
       });
 
       // Inline snapshot via ack for race-free hydration
@@ -310,7 +340,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         if (ack) {
           ack({ ok: true, snapshot });
         } else {
-          socket.emit('session:state', snapshot);
+          socket.emit('session:state', { ...snapshot, traceId: (socket.data as any)?.traceId || undefined });
         }
       } catch (e) {
         if (process.env.API_DEBUG === '1') {
@@ -485,80 +515,9 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     }
   }
 
-  private async handleSessionStatusUpdate(socket: Socket, data: SessionStatusData) {
-    try {
-      const parsed = SessionStatusUpdateSchema.safeParse({
-        sessionId: (data?.session_id || data?.sessionId || '').trim(),
-        status: data?.status,
-        teacher_notes: (data as any)?.teacher_notes,
-      });
-      if (!parsed.success) {
-        socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'Invalid session status update payload' });
-        SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'session:update_status', school: (socket.data as any)?.schoolId || 'unknown' });
-        return;
-      }
-      const { sessionId, status, teacher_notes } = parsed.data;
-
-      // Verify ownership or super_admin access
-      let session;
-      if (socket.data.role === 'super_admin') {
-        // Super admin can update any session
-        session = await databricksService.queryOne(
-          `SELECT id FROM classwaves.sessions.classroom_sessions 
-           WHERE id = ?`,
-          [sessionId]
-        );
-      } else {
-        // Regular users must own the session
-        session = await databricksService.queryOne(
-          `SELECT id FROM classwaves.sessions.classroom_sessions 
-           WHERE id = ? AND teacher_id = ?`,
-          [sessionId, socket.data.userId]
-        );
-      }
-
-      if (!session) {
-        socket.emit('error', { 
-          code: 'SESSION_NOT_FOUND', 
-          message: socket.data.role === 'super_admin' ? 'Session not found' : 'Session not found or not owned by user'
-        });
-        SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'session:update_status', school: (socket.data as any)?.schoolId || 'unknown' });
-        return;
-      }
-
-      // Update session status in database
-      await databricksService.update('classroom_sessions', sessionId, {
-        status,
-        teacher_notes: teacher_notes || null
-      });
-
-      // Broadcast to all users in the session
-      const payload = { sessionId, status, updatedBy: socket.data.userId };
-      this.emitToRoom(`session:${sessionId}`, 'session:status_changed', payload);
-
-      // Invalidate cached snapshot and bump state version
-      await this.snapshotCache.invalidate(sessionId);
-
-      // Track session activation time for TTF metric
-      if (status === 'active') {
-        this.sessionActivatedAt.set(sessionId, Date.now());
-        this.sessionFirstTranscribed.delete(sessionId);
-      } else if (status === 'ended') {
-        this.sessionActivatedAt.delete(sessionId);
-        this.sessionFirstTranscribed.delete(sessionId);
-      }
-
-      if (process.env.API_DEBUG === '1') {
-        console.log(`Sessions namespace: Session ${sessionId} status updated to ${status}`);
-      }
-    } catch (error) {
-      console.error('Session status update error:', error);
-      socket.emit('error', { 
-        code: 'SESSION_UPDATE_FAILED', 
-        message: 'Failed to update session status' 
-      });
-      SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'session:update_status', school: (socket.data as any)?.schoolId || 'unknown' });
-    }
+  private async handleSessionStatusUpdate(_socket: Socket, _data: SessionStatusData) {
+    // Deprecated: retained for backward-compat wiring but enforced above.
+    return;
   }
 
   // Group Management Handlers
@@ -602,12 +561,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         groupId: parsed.data.groupId,
         sessionId: parsed.data.sessionId,
         userId: socket.data.userId,
-        role: socket.data.role
+        role: socket.data.role,
+        traceId: (socket.data as any)?.traceId || undefined,
       });
 
       socket.emit('group:joined', {
         groupId: parsed.data.groupId,
-        sessionId: parsed.data.sessionId
+        sessionId: parsed.data.sessionId,
+        traceId: (socket.data as any)?.traceId || undefined,
       });
 
       console.log(`Sessions namespace: User ${socket.data.userId} joined group ${parsed.data.groupId}`);
@@ -642,12 +603,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       socket.to(roomName).emit('group:user_left', {
         groupId: parsed.data.groupId,
         sessionId: parsed.data.sessionId,
-        userId: socket.data.userId
+        userId: socket.data.userId,
+        traceId: (socket.data as any)?.traceId || undefined,
       });
 
       socket.emit('group:left', {
         groupId: parsed.data.groupId,
-        sessionId: parsed.data.sessionId
+        sessionId: parsed.data.sessionId,
+        traceId: (socket.data as any)?.traceId || undefined,
       });
     } catch (error) {
       console.error('Group leave error:', error);
@@ -732,7 +695,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       };
 
       // Broadcast to session participants (including teacher dashboard)
-      const sessionBroadcastSuccess = this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', broadcastPayload);
+      const sessionBroadcastSuccess = this.emitToRoom(`session:${data.sessionId}`, 'group:status_changed', { ...broadcastPayload, traceId: (socket.data as any)?.traceId || undefined });
       
       // Broadcast to group members with additional context
       const groupBroadcastSuccess = this.emitToRoom(`group:${data.groupId}`, 'group:status_update', {
@@ -821,7 +784,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       
       // Broadcast group status change to all session participants (including teacher dashboard)
       const payload = { groupId, sessionId, status: ready ? 'ready' : 'waiting', isReady: ready, idempotencyKey, updatedBy: socket.data.userId, timestamp: new Date().toISOString() };
-      const broadcastSuccess = this.emitToRoom(`session:${sessionId}`, 'group:status_changed', payload);
+      const broadcastSuccess = this.emitToRoom(`session:${sessionId}`, 'group:status_changed', { ...payload, traceId: (socket.data as any)?.traceId || undefined });
 
       // Log broadcast failure for monitoring
       if (!broadcastSuccess) {
@@ -895,7 +858,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         isReady: false,
         issueReason: reason,
         reportedBy: socket.data.userId,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        traceId: (socket.data as any)?.traceId || undefined,
       });
 
       // Notify group members about the issue
@@ -1184,7 +1148,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         const dedupeBase = `${sessionId}|${data.groupId}|${result.timestamp}|${result.text}`;
         const id = createHash('sha1').update(dedupeBase).digest('hex');
 
-        // Emit to session room so teacher UI receives it
+        // Emit to session room so teacher UI receives it (attach traceId if available)
         this.emitToRoom(`session:${sessionId}`, 'transcription:group:new', {
           id,
           groupId: data.groupId,
@@ -1193,6 +1157,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           timestamp: result.timestamp,
           confidence: result.confidence,
           language: result.language,
+          traceId: (socket.data as any)?.traceId || undefined,
         });
 
         // Persist transcription row (idempotent)

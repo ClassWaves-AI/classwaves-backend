@@ -88,6 +88,18 @@ class RedisService {
       async decr(key: string) { return client.incrby(key, -1); },
       async incrbyfloat(key: string, by: number) { ensureAlive(key); const v = Number(kv.get(key)?.value ?? '0') + by; kv.set(key, { value: String(v) }); return v; },
       async keys(pattern: string) { const rx = wildcardToRegex(pattern); const keys = new Set<string>([...kv.keys(), ...sets.keys(), ...hashes.keys()]); return Array.from(keys).filter(k => { ensureAlive(k); return rx.test(k); }); },
+      async scan(cursor: string | number, ...args: any[]) {
+        // Minimal SCAN implementation: returns all matching keys in one page
+        let match = '*';
+        for (let i = 0; i < args.length; i++) {
+          const t = String(args[i]).toUpperCase();
+          if (t === 'MATCH' && args[i + 1]) { match = String(args[i + 1]); i++; }
+        }
+        const rx = wildcardToRegex(match);
+        const keys = new Set<string>([...kv.keys(), ...sets.keys(), ...hashes.keys()]);
+        const matched = Array.from(keys).filter(k => { ensureAlive(k); return rx.test(k); });
+        return ['0', matched];
+      },
       async ping() { return 'PONG'; },
       // Sets
       async sadd(key: string, member: string) { if (!sets.has(key)) sets.set(key, new Set()); const s = sets.get(key)!; const had = s.has(member); s.add(member); return had ? 0 : 1; },
@@ -412,7 +424,7 @@ class RedisService {
    */
   async getTeacherActiveSessions(teacherId: string): Promise<string[]> {
     const pattern = 'session:*';
-    const keys = await this.client.keys(pattern);
+    const keys = await this.scanKeys(pattern);
     const activeSessions: string[] = [];
     
     for (const key of keys) {
@@ -436,6 +448,21 @@ class RedisService {
     }
     
     return activeSessions;
+  }
+
+  /**
+   * SCAN utility to retrieve all keys matching a pattern without blocking Redis.
+   */
+  private async scanKeys(pattern: string, count: number = 1000): Promise<string[]> {
+    const out: string[] = [];
+    let cursor: string = '0';
+    do {
+      // @ts-ignore ioredis scan signature
+      const [nextCursor, batch]: [string, string[]] = await (this.client as any).scan(cursor, 'MATCH', pattern, 'COUNT', count);
+      if (Array.isArray(batch) && batch.length) out.push(...batch);
+      cursor = nextCursor;
+    } while (cursor !== '0');
+    return out;
   }
 
   /**
@@ -642,6 +669,10 @@ export const redisService = {
   },
   
   async keys(pattern: string): Promise<string[]> {
-    return getRedisService().getClient().keys(pattern);
+    // Prefer scan-based retrieval to avoid blocking
+    const svc = getRedisService();
+    // @ts-ignore access private method in same module
+    if ((svc as any).scanKeys) return (svc as any).scanKeys(pattern);
+    return svc.getClient().keys(pattern);
   }
 };

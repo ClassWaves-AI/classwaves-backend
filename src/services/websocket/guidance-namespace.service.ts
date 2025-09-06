@@ -238,12 +238,20 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
 
   private async handleSessionGuidanceSubscription(socket: Socket, data: { sessionId: string }) {
     try {
-      // Verify teacher owns this session
-      const session = await databricksService.queryOne(
-        `SELECT id, status FROM classwaves.sessions.classroom_sessions 
-         WHERE id = ? AND teacher_id = ?`,
-        [data.sessionId, socket.data.userId]
-      );
+      // Verify teacher owns this session (repository preferred)
+      let session: any = null;
+      try {
+        const { getCompositionRoot } = await import('../../app/composition-root');
+        const repo = getCompositionRoot().getSessionRepository();
+        session = await repo.getOwnedSessionBasic(data.sessionId, socket.data.userId);
+      } catch {}
+      if (!session) {
+        session = await databricksService.queryOne(
+          `SELECT id, status FROM classwaves.sessions.classroom_sessions 
+           WHERE id = ? AND teacher_id = ?`,
+          [data.sessionId, socket.data.userId]
+        );
+      }
 
       if (!session) {
         socket.emit('error', {
@@ -305,16 +313,29 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
   // Prompt Interaction Handlers
   private async handlePromptInteraction(socket: Socket, data: PromptInteractionData) {
     try {
-      // Verify prompt belongs to teacher or session they own
+      // Verify prompt exists and teacher owns the session
       const prompt = await databricksService.queryOne(
-        `SELECT p.id, p.session_id, s.teacher_id 
-         FROM classwaves.ai_insights.teacher_guidance_metrics p
-         JOIN classwaves.sessions.classroom_sessions s ON p.session_id = s.id
-         WHERE p.id = ? AND s.teacher_id = ?`,
-        [data.promptId, socket.data.userId]
+        `SELECT id, session_id FROM classwaves.ai_insights.teacher_guidance_metrics WHERE id = ?`,
+        [data.promptId]
       );
 
-      if (!prompt) {
+      if (!prompt || !prompt.session_id) {
+        socket.emit('error', {
+          code: 'PROMPT_NOT_FOUND',
+          message: 'Prompt not found or access denied'
+        });
+        return;
+      }
+
+      // Ownership via SessionRepository
+      let owns = false;
+      try {
+        const { getCompositionRoot } = await import('../../app/composition-root');
+        const repo = getCompositionRoot().getSessionRepository();
+        const session = await repo.getOwnedSessionBasic(prompt.session_id, socket.data.userId);
+        owns = !!session;
+      } catch {}
+      if (!owns) {
         socket.emit('error', {
           code: 'PROMPT_NOT_FOUND',
           message: 'Prompt not found or access denied'
@@ -332,7 +353,8 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
           action: data.action,
           userId: socket.data.userId,
           feedback: data.feedback,
-          timestamp: new Date()
+          timestamp: new Date(),
+          traceId: (socket.data as any)?.traceId || undefined,
         });
       }
 
@@ -379,14 +401,51 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
           insights = {}; // Graceful degradation
         }
       } else {
-        // Get all active prompts for this teacher
-        prompts = await databricksService.query(
-          `SELECT p.* FROM classwaves.ai_insights.teacher_guidance_metrics p
-           JOIN classwaves.sessions.classroom_sessions s ON p.session_id = s.id
-           WHERE s.teacher_id = ? AND p.status = 'active'
-           ORDER BY p.priority_level DESC, p.generated_at DESC`,
-          [socket.data.userId]
-        );
+        // Get all active prompts for this teacher using repository-owned sessions
+        try {
+          const { getCompositionRoot } = await import('../../app/composition-root');
+          const repo = getCompositionRoot().getSessionRepository();
+          const sessionIds = await repo.listOwnedSessionIds(socket.data.userId);
+          if (Array.isArray(sessionIds) && sessionIds.length > 0) {
+            const placeholders = sessionIds.map(() => '?').join(', ');
+            const sql = `
+              SELECT 
+                p.id,
+                p.session_id,
+                p.group_id,
+                p.prompt_message,
+                p.priority_level,
+                p.generated_at,
+                p.expires_at
+              FROM classwaves.ai_insights.teacher_guidance_metrics p
+              WHERE p.session_id IN (${placeholders})
+                AND p.dismissed_at IS NULL
+                AND (p.expires_at IS NULL OR p.expires_at > CURRENT_TIMESTAMP)
+              ORDER BY p.priority_level DESC, p.generated_at DESC`;
+            prompts = await databricksService.query(sql, sessionIds as any[]);
+          } else {
+            prompts = [];
+          }
+        } catch (e) {
+          // Fallback to existing join if repository approach fails
+          prompts = await databricksService.query(
+            `SELECT 
+               p.id,
+               p.session_id,
+               p.group_id,
+               p.prompt_message,
+               p.priority_level,
+               p.generated_at,
+               p.expires_at
+             FROM classwaves.ai_insights.teacher_guidance_metrics p
+             JOIN classwaves.sessions.classroom_sessions s ON p.session_id = s.id
+             WHERE s.teacher_id = ?
+               AND p.dismissed_at IS NULL
+               AND (p.expires_at IS NULL OR p.expires_at > CURRENT_TIMESTAMP)
+             ORDER BY p.priority_level DESC, p.generated_at DESC`,
+            [socket.data.userId]
+          );
+        }
       }
 
       socket.emit('guidance:current_state', {
@@ -520,11 +579,10 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       const tier = opts?.tier || 'tier1';
       let school = 'unknown';
       try {
-        const row = await databricksService.queryOne(
-          `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
-          [sessionId]
-        );
-        school = (row as any)?.school_id || 'unknown';
+        const { getCompositionRoot } = await import('../../app/composition-root');
+        const repo = getCompositionRoot().getSessionRepository();
+        const basic = await repo.getBasic(sessionId);
+        school = (basic as any)?.school_id || 'unknown';
       } catch {}
       const delivered = hasSessionSubs || hasAllSubs;
       try { GuidanceNamespaceService.promptDeliveryTotal.inc({ tier, status: delivered ? 'delivered' : 'no_subscriber', school }); } catch {}
@@ -552,11 +610,10 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     // Per-school SLI (best-effort)
     (async () => {
       try {
-        const row = await databricksService.queryOne(
-          `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
-          [sessionId]
-        );
-        const school = (row as any)?.school_id || 'unknown';
+        const { getCompositionRoot } = await import('../../app/composition-root');
+        const repo = getCompositionRoot().getSessionRepository();
+        const basic = await repo.getBasic(sessionId);
+        const school = (basic as any)?.school_id || 'unknown';
         try { GuidanceNamespaceService.tier1DeliveredBySchool.inc({ school }); } catch {}
       } catch {}
     })();
@@ -572,11 +629,10 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     try { GuidanceNamespaceService.tier2Emits.inc({ namespace: this.getNamespaceName() }); } catch {}
     (async () => {
       try {
-        const row = await databricksService.queryOne(
-          `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
-          [sessionId]
-        );
-        const school = (row as any)?.school_id || 'unknown';
+        const { getCompositionRoot } = await import('../../app/composition-root');
+        const repo = getCompositionRoot().getSessionRepository();
+        const basic = await repo.getBasic(sessionId);
+        const school = (basic as any)?.school_id || 'unknown';
         try { GuidanceNamespaceService.tier2DeliveredBySchool.inc({ school }); } catch {}
       } catch {}
     })();
@@ -589,6 +645,11 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
   public emitGuidanceAnalytics(sessionId: string, analytics: any): void {
     this.emitToRoom(`analytics:session:${sessionId}`, 'guidance:analytics', analytics);
     this.emitToRoom('analytics:global', 'guidance:analytics', analytics);
+  }
+
+  // Generic cache update emission for clients subscribed to guidance namespace
+  public emitCacheUpdatedGlobal(payload: any): void {
+    this.emitToRoom('guidance:all', 'cache:updated', payload);
   }
 
   public getSessionGuidanceSubscribers(sessionId: string): string[] {

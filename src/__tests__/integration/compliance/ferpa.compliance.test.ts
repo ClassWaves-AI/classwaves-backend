@@ -8,6 +8,7 @@ import { mockDatabricksService } from '../../mocks/databricks.mock';
 import { mockRedisService } from '../../mocks/redis.mock';
 import { testData } from '../../fixtures/test-data';
 import { generateAccessToken } from '../../../utils/jwt.utils';
+import { auditLogPort } from '../../../utils/audit.port.instance';
 
 // Mock dependencies
 jest.mock('../../../services/databricks.service', () => {
@@ -21,6 +22,9 @@ jest.mock('../../../services/redis.service', () => {
 });
 
 jest.mock('../../../middleware/auth.middleware');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
 
 describe('FERPA Compliance Tests', () => {
   let app: express.Application;
@@ -33,6 +37,7 @@ describe('FERPA Compliance Tests', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (auditLogPort.enqueue as unknown as jest.Mock).mockClear();
     
     // Setup Express app
     app = express();
@@ -155,7 +160,7 @@ describe('FERPA Compliance Tests', () => {
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalled();
+      expect(auditLogPort.enqueue).toHaveBeenCalled();
     });
 
     it('should log student data access', async () => {
@@ -166,7 +171,7 @@ describe('FERPA Compliance Tests', () => {
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalled();
+      expect(auditLogPort.enqueue).toHaveBeenCalled();
     });
 
     it('should log data modifications', async () => {
@@ -184,8 +189,8 @@ describe('FERPA Compliance Tests', () => {
         .send(updateData)
         .expect(200);
 
-      // Controller uses recordAuditLog now
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalled();
+      // Controller enqueues audit events via port
+      expect(auditLogPort.enqueue).toHaveBeenCalled();
     });
 
     it('should log data deletion', async () => {
@@ -197,7 +202,7 @@ describe('FERPA Compliance Tests', () => {
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalled();
+      expect(auditLogPort.enqueue).toHaveBeenCalled();
     });
 
     it('should log authentication events', async () => {
@@ -236,7 +241,7 @@ describe('FERPA Compliance Tests', () => {
         .set('User-Agent', 'Mozilla/5.0 Test Browser')
         .expect(200);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalled();
+      expect(auditLogPort.enqueue).toHaveBeenCalled();
     });
   });
 

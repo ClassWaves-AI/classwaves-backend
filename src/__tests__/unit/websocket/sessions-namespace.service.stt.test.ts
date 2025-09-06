@@ -213,4 +213,6 @@ describe('SessionsNamespaceService.handleAudioChunk (unified STT)', () => {
       expect.objectContaining({ groupId: 'g-paused', error: 'SESSION_PAUSED' })
     );
   });
+
+  
 });

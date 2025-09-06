@@ -35,6 +35,17 @@ import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
 import { errorLoggingHandler } from './middleware/error-logging.middleware';
 import client from 'prom-client';
+import { traceIdMiddleware } from './middleware/trace-id.middleware';
+import { httpMetricsMiddleware } from './middleware/metrics.middleware';
+
+// Optional OTEL: initialize and wire tracing when enabled
+try {
+  if (process.env.OTEL_ENABLED === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const otel = require('./observability/otel');
+    try { otel.initOtel(); } catch {}
+  }
+} catch {}
 
 const app = express();
 
@@ -83,6 +94,18 @@ app.use((req, res, next) => {
   
   next();
 });
+
+// Correlation: assign/propagate X-Trace-Id for every request
+app.use(traceIdMiddleware);
+
+// Attach OTEL HTTP tracing middleware if enabled
+try {
+  if (process.env.OTEL_ENABLED === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { httpTraceMiddleware } = require('./observability/otel');
+    app.use(httpTraceMiddleware());
+  }
+} catch {}
 
 /**
  * SECURITY HARDENING - Phase 2 Implementation
@@ -316,6 +339,9 @@ app.use(requireCSRF({
   ]
 }));
 
+// HTTP request metrics (after security middleware, before routes)
+app.use(httpMetricsMiddleware);
+
 // Lightweight readiness endpoint for orchestration/tests
 // Always returns 200 once the HTTP server is up, regardless of downstream service health
 app.get('/api/v1/ready', (_req, res) => {
@@ -416,6 +442,16 @@ app.get('/metrics', async (_req, res) => {
 app.use('/', jwksRoutes);
 
 // API routes
+// Add OTEL route-level spans for key controllers
+try {
+  if (process.env.OTEL_ENABLED === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createRouteSpanMiddleware } = require('./observability/otel');
+    app.use('/api/v1/sessions', createRouteSpanMiddleware('sessions'));
+    app.use('/api/v1/analytics', createRouteSpanMiddleware('analytics'));
+  }
+} catch {}
+
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/sessions', sessionRoutes);
 app.use('/api/v1/roster', rosterRoutes);

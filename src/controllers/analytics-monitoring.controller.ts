@@ -505,10 +505,10 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
     for (const table of tables) {
       try {
         console.log(`🔄 Creating table: ${table.name}...`);
-        await databricksService.query(table.sql);
+        await getCompositionRoot().getMonitoringRepository().executeSql(table.sql);
         
         // Verify table exists
-        const verification = await databricksService.queryOne(`DESCRIBE TABLE ${table.name} LIMIT 1`);
+        const verification = await getCompositionRoot().getMonitoringRepository().describeTable(table.name);
         
         results.push({
           table: table.name,
@@ -648,3 +648,4 @@ export const triggerCacheSync = async (req: Request, res: Response): Promise<Res
     });
   }
 };
+import { getCompositionRoot } from '../app/composition-root';

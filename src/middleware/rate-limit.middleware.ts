@@ -2,6 +2,12 @@ import { Request, Response } from 'express';
 import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
 import { redisService } from '../services/redis.service';
 
+function buildRlPrefix(name: string): string {
+  const env = process.env.NODE_ENV || 'development';
+  // Enabled by default; disable by setting CW_RL_PREFIX_ENABLED=0
+  return process.env.CW_RL_PREFIX_ENABLED !== '0' ? `cw:${env}:rl:${name}` : `rl:${name}`;
+}
+
 // Fallback to memory store if Redis is not available
 let rateLimiter: RateLimiterRedis | RateLimiterMemory;
 let authRateLimiter: RateLimiterRedis | RateLimiterMemory;
@@ -16,7 +22,7 @@ async function initializeRateLimiter() {
       
       rateLimiter = new RateLimiterRedis({
         storeClient: redisClient,
-        keyPrefix: 'rl:general',
+        keyPrefix: buildRlPrefix('general'),
         points: process.env.NODE_ENV === 'development' ? 1000 : 100, // Higher limit for dev
         duration: 900, // Per 15 minutes (in seconds)
         blockDuration: process.env.NODE_ENV === 'development' ? 60 : 900, // Shorter block for dev
@@ -32,7 +38,7 @@ async function initializeRateLimiter() {
     console.warn('⚠️  Rate limiter falling back to memory store:', error);
     
     rateLimiter = new RateLimiterMemory({
-      keyPrefix: 'rl:general',
+      keyPrefix: buildRlPrefix('general'),
       points: process.env.NODE_ENV === 'development' ? 1000 : 100, // Higher limit for dev
       duration: 900,
       blockDuration: process.env.NODE_ENV === 'development' ? 60 : 900, // Shorter block for dev
@@ -52,7 +58,7 @@ async function initializeAuthRateLimiter() {
       
       authRateLimiter = new RateLimiterRedis({
         storeClient: redisClient,
-        keyPrefix: 'rl:auth',
+        keyPrefix: buildRlPrefix('auth'),
         points: process.env.NODE_ENV === 'development' ? 50 : 5, // 50 for dev, 5 for prod
         duration: 900, // Per 15 minutes
         blockDuration: process.env.NODE_ENV === 'development' ? 60 : 900, // 1 min dev, 15 min prod
@@ -68,7 +74,7 @@ async function initializeAuthRateLimiter() {
     console.warn('⚠️  Auth rate limiter falling back to memory store:', error);
     
     authRateLimiter = new RateLimiterMemory({
-      keyPrefix: 'rl:auth',
+      keyPrefix: buildRlPrefix('auth'),
       points: process.env.NODE_ENV === 'development' ? 50 : 5, // 50 for dev, 5 for prod
       duration: 900,
       blockDuration: process.env.NODE_ENV === 'development' ? 60 : 900, // 1 min dev, 15 min prod
@@ -184,14 +190,14 @@ export const createUserRateLimiter = (keyPrefix: string, points: number, duratio
         const redisClient = redisService.getClient();
         userRateLimiter = new RateLimiterRedis({
           storeClient: redisClient,
-          keyPrefix: `rl:${keyPrefix}`,
+          keyPrefix: buildRlPrefix(keyPrefix),
           points,
           duration,
           blockDuration: duration,
         });
       } else {
         userRateLimiter = new RateLimiterMemory({
-          keyPrefix: `rl:${keyPrefix}`,
+          keyPrefix: buildRlPrefix(keyPrefix),
           points,
           duration,
           blockDuration: duration,

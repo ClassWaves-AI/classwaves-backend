@@ -13,39 +13,34 @@
  * ✅ PERFORMANCE: Cached recommendations with real-time updates
  */
 
-import { z } from 'zod';
 import { databricksService } from './databricks.service';
 import { databricksAIService } from './databricks-ai.service';
 import { TeacherPrompt } from '../types/teacher-guidance.types';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 
-// ============================================================================
-// Input Validation Schemas
-// ============================================================================
-
-const recommendationContextSchema = z.object({
-  sessionId: z.string().uuid(),
-  teacherId: z.string().uuid(),
-  schoolId: z.string().uuid(),
-  subject: z.enum(['math', 'science', 'literature', 'history', 'general']),
-  gradeLevel: z.string().optional(),
-  sessionPhase: z.enum(['opening', 'development', 'synthesis', 'closure']),
-  sessionDuration: z.number().min(5).max(480),
-  groupCount: z.number().min(1).max(20),
-  studentCount: z.number().min(1).max(100),
-  learningObjectives: z.array(z.string()).max(10),
-  currentEngagementScore: z.number().min(0).max(1).optional(),
-  previousSessionData: z.any().optional()
-});
-
-const recommendationOptionsSchema = z.object({
-  maxRecommendations: z.number().min(1).max(20).default(10),
-  recommendationTypes: z.array(z.enum(['pedagogical', 'strategic', 'intervention', 'enhancement', 'assessment'])).optional(),
-  confidenceThreshold: z.number().min(0).max(1).default(0.6),
-  includeReasoning: z.boolean().default(true),
-  personalizeToTeacher: z.boolean().default(true),
-  includeResources: z.boolean().default(false)
-});
+// Validation moved to edges; define types here.
+type RecommendationContext = {
+  sessionId: string;
+  teacherId: string;
+  schoolId: string;
+  subject: 'math' | 'science' | 'literature' | 'history' | 'general';
+  gradeLevel?: string;
+  sessionPhase: 'opening' | 'development' | 'synthesis' | 'closure';
+  sessionDuration: number;
+  groupCount: number;
+  studentCount: number;
+  learningObjectives: string[];
+  currentEngagementScore?: number;
+  previousSessionData?: any;
+};
+type RecommendationOptions = Partial<{
+  maxRecommendations: number;
+  recommendationTypes: Array<'pedagogical' | 'strategic' | 'intervention' | 'enhancement' | 'assessment'>;
+  confidenceThreshold: number;
+  includeReasoning: boolean;
+  personalizeToTeacher: boolean;
+  includeResources: boolean;
+}>;
 
 // ============================================================================
 // Recommendation Types
@@ -192,15 +187,22 @@ export class RecommendationEngineService {
    */
   async generateRecommendations(
     insights: Tier1Insights | Tier2Insights,
-    context: z.infer<typeof recommendationContextSchema>,
-    options?: z.infer<typeof recommendationOptionsSchema>
+    context: RecommendationContext,
+    options?: RecommendationOptions
   ): Promise<TeachingRecommendation[]> {
     const startTime = Date.now();
     
     try {
-      // ✅ SECURITY: Input validation
-      const validatedContext = recommendationContextSchema.parse(context);
-      const validatedOptions = recommendationOptionsSchema.parse(options || {});
+      // Normalize options at the edge; assume validated here
+      const validatedContext: RecommendationContext = context;
+      const validatedOptions: Required<RecommendationOptions> = {
+        maxRecommendations: Math.max(1, Math.min(20, options?.maxRecommendations ?? 10)),
+        recommendationTypes: options?.recommendationTypes ?? ['pedagogical', 'strategic', 'intervention', 'enhancement', 'assessment'],
+        confidenceThreshold: Math.max(0, Math.min(1, options?.confidenceThreshold ?? 0.6)),
+        includeReasoning: options?.includeReasoning ?? true,
+        personalizeToTeacher: options?.personalizeToTeacher ?? true,
+        includeResources: options?.includeResources ?? false,
+      };
 
       // Check cache first
       const cacheKey = this.generateCacheKey(insights, validatedContext);
@@ -324,7 +326,7 @@ export class RecommendationEngineService {
    */
   async getRecommendationsByType(
     type: 'pedagogical' | 'strategic' | 'intervention' | 'enhancement' | 'assessment',
-    context: z.infer<typeof recommendationContextSchema>,
+    context: RecommendationContext,
     limit: number = 5
   ): Promise<TeachingRecommendation[]> {
     const allRecommendations = await this.generateRecommendations(
@@ -387,7 +389,7 @@ export class RecommendationEngineService {
 
   private async generateInsightBasedRecommendations(
     insights: Tier1Insights | Tier2Insights,
-    context: z.infer<typeof recommendationContextSchema>,
+    context: RecommendationContext,
     teacherProfile: TeacherProfile
   ): Promise<TeachingRecommendation[]> {
     const recommendations: TeachingRecommendation[] = [];
@@ -474,7 +476,7 @@ export class RecommendationEngineService {
   }
 
   private async generateHistoricalRecommendations(
-    context: z.infer<typeof recommendationContextSchema>,
+    context: RecommendationContext,
     teacherProfile: TeacherProfile
   ): Promise<TeachingRecommendation[]> {
     const recommendations: TeachingRecommendation[] = [];
@@ -514,7 +516,7 @@ export class RecommendationEngineService {
   }
 
   private async generateBestPracticeRecommendations(
-    context: z.infer<typeof recommendationContextSchema>,
+    context: RecommendationContext,
     teacherProfile: TeacherProfile
   ): Promise<TeachingRecommendation[]> {
     const recommendations: TeachingRecommendation[] = [];
@@ -543,7 +545,7 @@ export class RecommendationEngineService {
   }
 
   private async generateAdaptiveRecommendations(
-    context: z.infer<typeof recommendationContextSchema>,
+    context: RecommendationContext,
     teacherProfile: TeacherProfile
   ): Promise<TeachingRecommendation[]> {
     const recommendations: TeachingRecommendation[] = [];
@@ -605,7 +607,7 @@ export class RecommendationEngineService {
     expectedOutcome: string;
     reasoning: string;
     triggeringInsights: string[];
-    context: z.infer<typeof recommendationContextSchema>;
+    context: RecommendationContext;
   }): TeachingRecommendation {
     const now = new Date();
     
@@ -644,9 +646,9 @@ export class RecommendationEngineService {
 
   private async rankAndFilterRecommendations(
     recommendations: TeachingRecommendation[],
-    context: z.infer<typeof recommendationContextSchema>,
+    context: RecommendationContext,
     teacherProfile: TeacherProfile,
-    options: z.infer<typeof recommendationOptionsSchema>
+    options: Required<RecommendationOptions>
   ): Promise<TeachingRecommendation[]> {
     // Calculate personalized scores
     for (const rec of recommendations) {
@@ -842,7 +844,7 @@ export class RecommendationEngineService {
 
   private applyRecommendationFilters(
     recommendations: TeachingRecommendation[],
-    options: z.infer<typeof recommendationOptionsSchema>
+    options: Required<RecommendationOptions>
   ): TeachingRecommendation[] {
     let filtered = recommendations;
 

@@ -142,7 +142,7 @@ export class AuditLogWorker {
         const rollupRows = flushRollupsNow ? rollups.flushToAuditRows() : [];
         if (rollupRows.length > 0) {
           try {
-            await databricksService.batchInsert('audit_log', rollupRows);
+            await databricksService.recordAuditLogBatch(rollupRows as any);
             incRollupFlushed(rollupRows.length);
             this.lastRollupFlush = Date.now();
           } catch (e) {
@@ -157,7 +157,7 @@ export class AuditLogWorker {
         if (rows.length > 0) {
           if (!inCooldown) {
             try {
-              await databricksService.batchInsert('audit_log', rows);
+              await databricksService.recordAuditLogBatch(rows as any);
               incProcessed(rows.length);
             } catch (e) {
               console.error('audit: batch insert failed, entering cooldown', e);

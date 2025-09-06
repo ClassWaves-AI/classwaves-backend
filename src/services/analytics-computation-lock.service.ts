@@ -327,7 +327,16 @@ export class AnalyticsComputationLockService {
 
     try {
       // Get all lock keys
-      const lockKeys = await redisService.keys(`${this.LOCK_PREFIX}:*`);
+      // Scan for lock keys without blocking Redis
+      const client = redisService.getClient();
+      let cursor = '0';
+      const lockKeys: string[] = [];
+      do {
+        // @ts-ignore
+        const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', `${this.LOCK_PREFIX}:*`, 'COUNT', 1000);
+        if (Array.isArray(batch) && batch.length) lockKeys.push(...batch);
+        cursor = nextCursor;
+      } while (cursor !== '0');
       
       for (const lockKey of lockKeys) {
         const sessionId = lockKey.replace(`${this.LOCK_PREFIX}:`, '');
@@ -357,7 +366,15 @@ export class AnalyticsComputationLockService {
     let cleanedCount = 0;
     
     try {
-      const lockKeys = await redisService.keys(`${this.LOCK_PREFIX}:*`);
+      const client = redisService.getClient();
+      let cursor = '0';
+      const lockKeys: string[] = [];
+      do {
+        // @ts-ignore
+        const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', `${this.LOCK_PREFIX}:*`, 'COUNT', 1000);
+        if (Array.isArray(batch) && batch.length) lockKeys.push(...batch);
+        cursor = nextCursor;
+      } while (cursor !== '0');
       
       for (const lockKey of lockKeys) {
         const ttl = await redisService.ttl(lockKey);

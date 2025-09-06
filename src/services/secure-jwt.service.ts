@@ -533,7 +533,15 @@ static createDeviceFingerprint(req: Request): string {
         
         // Get all blacklist keys
         const pattern = `${this.BLACKLIST_PREFIX}*`;
-        const blacklistKeys = await redisService.getClient().keys(pattern);
+        const client = redisService.getClient();
+        let cursor = '0';
+        let blacklistKeys: string[] = [];
+        do {
+          // @ts-ignore ioredis scan
+          const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+          if (Array.isArray(batch) && batch.length) blacklistKeys.push(...batch);
+          cursor = nextCursor;
+        } while (cursor !== '0');
         
         let cleanupCount = 0;
         for (const key of blacklistKeys) {
@@ -560,10 +568,21 @@ static createDeviceFingerprint(req: Request): string {
     activeTokens: number;
   }> {
     try {
+      const client = redisService.getClient();
+      const scanAll = async (pattern: string): Promise<string[]> => {
+        let cursor = '0'; const acc: string[] = [];
+        do {
+          // @ts-ignore ioredis scan
+          const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+          if (Array.isArray(batch) && batch.length) acc.push(...batch);
+          cursor = nextCursor;
+        } while (cursor !== '0');
+        return acc;
+      };
       const [blacklistKeys, suspiciousKeys, tokenKeys] = await Promise.all([
-        redisService.getClient().keys(`${this.BLACKLIST_PREFIX}*`),
-        redisService.getClient().keys('suspicious:*'),
-        redisService.getClient().keys('tokens:*')
+        scanAll(`${this.BLACKLIST_PREFIX}*`),
+        scanAll('suspicious:*'),
+        scanAll('tokens:*')
       ]);
       
       return {

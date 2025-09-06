@@ -1,3 +1,4 @@
+/* eslint-disable no-useless-catch */
 /**
  * Analytics Computation Service
  * 
@@ -654,22 +655,24 @@ export class AnalyticsComputationService {
       try {
         const gaRows = (await databricksService.query(`
           SELECT 
-            group_id as id,
-            group_name as name,
-            COUNT(*) as member_count,
-            AVG(engagement_rate) as engagement_rate,
-            MIN(first_member_joined) as first_member_joined
-          FROM ${databricksConfig.catalog}.analytics.group_analytics
-          WHERE session_id = ?
-          GROUP BY group_id, group_name
+            ga.group_id as id,
+            sg.name as name,
+            COUNT(sgm.student_id) as member_count,
+            AVG(COALESCE(ga.engagement_score, 0)) as engagement_score,
+            MIN(sgm.created_at) as first_member_joined
+          FROM ${databricksConfig.catalog}.analytics.group_analytics ga
+          JOIN ${databricksConfig.catalog}.sessions.student_groups sg ON ga.group_id = sg.id
+          LEFT JOIN ${databricksConfig.catalog}.sessions.student_group_members sgm ON sgm.group_id = ga.group_id
+          WHERE ga.session_id = ?
+          GROUP BY ga.group_id, sg.name
         `, [sessionId])) || [];
         if (Array.isArray(gaRows) && gaRows.length > 0) {
           return gaRows.map((group: any) => ({
             groupId: group.id,
             groupName: group.name,
             memberCount: group.member_count || 0,
-            engagementScore: group.engagement_rate != null ? Math.round(group.engagement_rate * 100) : 0,
-            participationRate: group.engagement_rate != null ? Math.round(group.engagement_rate * 100) : 0,
+            engagementScore: group.engagement_score != null ? Math.round(group.engagement_score * 100) : 0,
+            participationRate: group.engagement_score != null ? Math.round(group.engagement_score * 100) : 0,
             readyTime: group.first_member_joined
           }));
         }

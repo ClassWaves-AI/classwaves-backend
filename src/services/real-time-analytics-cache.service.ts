@@ -5,10 +5,14 @@
  * expensive Databricks queries for frequently accessed session metrics.
  */
 
-import { redisService } from './redis.service';
+import type { CachePort } from './cache.port';
+import { cachePort } from '../utils/cache.port.instance';
 import { databricksService } from './databricks.service';
 import { databricksConfig } from '../config/databricks.config';
 import { analyticsLogger } from '../utils/analytics-logger';
+import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
+import { CacheTTLPolicy, ttlWithJitter } from './cache-ttl.policy';
+import { cacheAdminPort } from '../utils/cache-admin.port.instance';
 
 interface SessionMetricsCache {
   sessionId: string;
@@ -33,10 +37,11 @@ interface GroupMetricsCache {
 }
 
 export class RealTimeAnalyticsCacheService {
-  private readonly CACHE_TTL = 300; // 5 minutes
   private readonly SESSION_PREFIX = 'analytics:session:';
   private readonly GROUP_PREFIX = 'analytics:group:';
   private readonly TEACHER_PREFIX = 'analytics:teacher:';
+  private metrics: { legacyFallbacks: number } = { legacyFallbacks: 0 };
+  constructor(private cache: CachePort = cachePort) {}
 
   /**
    * Get cached session metrics with fallback to Databricks
@@ -45,9 +50,22 @@ export class RealTimeAnalyticsCacheService {
     const startTime = Date.now();
     
     try {
-      // Try Redis cache first
-      const cacheKey = `${this.SESSION_PREFIX}${sessionId}`;
-      const cachedData = await redisService.get(cacheKey);
+      // Try Redis cache first with dual-read (prefixed then legacy)
+      const legacyKey = `${this.SESSION_PREFIX}${sessionId}`;
+      const prefixedKey = makeKey('analytics', 'session', sessionId);
+      let cachedData: string | null = null;
+      if (isPrefixEnabled()) {
+        cachedData = await this.cache.get(prefixedKey);
+        if (!cachedData) {
+          const legacy = await this.cache.get(legacyKey);
+          if (legacy) {
+            this.metrics.legacyFallbacks++;
+            cachedData = legacy;
+          }
+        }
+      } else {
+        cachedData = await this.cache.get(legacyKey);
+      }
       
       if (cachedData) {
         const metrics = JSON.parse(cachedData) as SessionMetricsCache;
@@ -112,10 +130,13 @@ export class RealTimeAnalyticsCacheService {
     const startTime = Date.now();
     
     try {
-      const cacheKey = `${this.SESSION_PREFIX}${sessionId}`;
+      const legacyKey = `${this.SESSION_PREFIX}${sessionId}`;
+      const prefixedKey = makeKey('analytics', 'session', sessionId);
       
       // Get current cached data
-      const currentData = await redisService.get(cacheKey);
+      const currentData = isPrefixEnabled()
+        ? (await this.cache.get(prefixedKey)) ?? (await this.cache.get(legacyKey))
+        : await this.cache.get(legacyKey);
       let metrics: SessionMetricsCache;
       
       if (currentData) {
@@ -137,8 +158,16 @@ export class RealTimeAnalyticsCacheService {
 
       metrics.lastUpdate = new Date().toISOString();
       
-      // Update cache
-      await redisService.set(cacheKey, JSON.stringify(metrics), this.CACHE_TTL);
+      // Update cache (prefixed, optionally legacy during migration)
+      const ttlSession = ttlWithJitter(CacheTTLPolicy.analyticsSession);
+      if (isPrefixEnabled()) {
+        await this.cache.set(prefixedKey, JSON.stringify(metrics), ttlSession);
+        if (isDualWriteEnabled()) {
+          await this.cache.set(legacyKey, JSON.stringify(metrics), ttlSession);
+        }
+      } else {
+        await this.cache.set(legacyKey, JSON.stringify(metrics), ttlSession);
+      }
       
       analyticsLogger.logOperation(
         'session_metrics_cache_update',
@@ -178,7 +207,7 @@ export class RealTimeAnalyticsCacheService {
     
     try {
       const cacheKey = `${this.GROUP_PREFIX}${groupId}`;
-      const cachedData = await redisService.get(cacheKey);
+      const cachedData = await this.cache.get(cacheKey);
       
       if (cachedData) {
         const metrics = JSON.parse(cachedData) as GroupMetricsCache;
@@ -216,7 +245,7 @@ export class RealTimeAnalyticsCacheService {
       const cacheKey = `${this.GROUP_PREFIX}${groupId}`;
       
       // Get current cached data
-      const currentData = await redisService.get(cacheKey);
+      const currentData = await cachePort.get(cacheKey);
       let metrics: GroupMetricsCache;
       
       if (currentData) {
@@ -237,7 +266,7 @@ export class RealTimeAnalyticsCacheService {
       metrics.lastActivity = new Date().toISOString();
       
       // Update cache
-      await redisService.set(cacheKey, JSON.stringify(metrics), this.CACHE_TTL);
+      await this.cache.set(cacheKey, JSON.stringify(metrics), ttlWithJitter(CacheTTLPolicy.analyticsSession));
       
       // Also update session-level aggregates
       await this.updateSessionAggregatesFromGroup(sessionId, groupId, metrics);
@@ -274,8 +303,11 @@ export class RealTimeAnalyticsCacheService {
     const startTime = Date.now();
     
     try {
-      const cacheKey = `${this.TEACHER_PREFIX}${teacherId}:dashboard`;
-      const cachedData = await redisService.get(cacheKey);
+      const legacyKey = `${this.TEACHER_PREFIX}${teacherId}:dashboard`;
+      const prefixedKey = makeKey('analytics', 'teacher', teacherId, 'dashboard');
+      const cachedData = isPrefixEnabled()
+        ? (await this.cache.get(prefixedKey)) ?? (await this.cache.get(legacyKey))
+        : await this.cache.get(legacyKey);
       
       if (cachedData) {
         const metrics = JSON.parse(cachedData);
@@ -319,8 +351,16 @@ export class RealTimeAnalyticsCacheService {
         sessionsData
       };
 
-      // Cache for 1 minute (shorter TTL for dashboard)
-      await redisService.set(cacheKey, JSON.stringify(dashboardMetrics), 60);
+      // Cache for short TTL with jitter (dashboard)
+      const ttlDashboard = ttlWithJitter(CacheTTLPolicy.analyticsDashboard);
+      if (isPrefixEnabled()) {
+        await this.cache.set(prefixedKey, JSON.stringify(dashboardMetrics), ttlDashboard);
+        if (isDualWriteEnabled()) {
+          await this.cache.set(legacyKey, JSON.stringify(dashboardMetrics), ttlDashboard);
+        }
+      } else {
+        await this.cache.set(legacyKey, JSON.stringify(dashboardMetrics), ttlDashboard);
+      }
       
       analyticsLogger.logOperation(
         'teacher_dashboard_cache_miss',
@@ -360,13 +400,17 @@ export class RealTimeAnalyticsCacheService {
     const startTime = Date.now();
     
     try {
-      const cacheKey = `${this.SESSION_PREFIX}${sessionId}`;
+      const legacyKey = `${this.SESSION_PREFIX}${sessionId}`;
+      const prefixedKey = makeKey('analytics', 'session', sessionId);
       
       // Check if cache entry exists before deletion
-      const existingData = await redisService.get(cacheKey);
+      const existingData = isPrefixEnabled()
+        ? (await this.cache.get(prefixedKey)) ?? (await this.cache.get(legacyKey))
+        : await this.cache.get(legacyKey);
       
       if (existingData) {
         // Log cache invalidation with context
+        const logKey = legacyKey;
         analyticsLogger.logOperation(
           'session_cache_invalidated',
           'redis_cache',
@@ -376,7 +420,7 @@ export class RealTimeAnalyticsCacheService {
             sessionId,
             recordCount: 1,
             metadata: {
-              cacheKey,
+              cacheKey: logKey,
               invalidationReason: 'session_completed',
               cacheSize: existingData.length
             }
@@ -384,7 +428,14 @@ export class RealTimeAnalyticsCacheService {
         );
         
         // Remove the cache entry completely
-        await redisService.del(cacheKey);
+        if (isPrefixEnabled()) {
+          await this.cache.del(prefixedKey);
+          if (isDualWriteEnabled()) {
+            await this.cache.del(legacyKey);
+          }
+        } else {
+          await this.cache.del(legacyKey);
+        }
         console.log(`🗑️ Invalidated cache for completed session ${sessionId}`);
       } else {
         console.log(`ℹ️ No cache found for session ${sessionId} (already invalidated)`);
@@ -429,7 +480,7 @@ export class RealTimeAnalyticsCacheService {
       
       for (const key of sessionKeys) {
         try {
-          const cachedData = await redisService.get(key);
+          const cachedData = await this.cache.get(key);
           if (cachedData) {
             const metrics = JSON.parse(cachedData) as SessionMetricsCache;
             
@@ -596,7 +647,7 @@ export class RealTimeAnalyticsCacheService {
 
       // Cache the fetched data
       const cacheKey = `${this.SESSION_PREFIX}${sessionId}`;
-      await redisService.set(cacheKey, JSON.stringify(metrics), this.CACHE_TTL);
+      await cachePort.set(cacheKey, JSON.stringify(metrics), ttlWithJitter(CacheTTLPolicy.analyticsSession));
 
       return metrics;
       
@@ -618,7 +669,7 @@ export class RealTimeAnalyticsCacheService {
       const sessionGroups: GroupMetricsCache[] = [];
       
       for (const key of groupKeys) {
-        const groupData = await redisService.get(key);
+        const groupData = await cachePort.get(key);
         if (groupData) {
           const group = JSON.parse(groupData) as GroupMetricsCache;
           if (group.sessionId === sessionId) {
@@ -669,8 +720,8 @@ export class RealTimeAnalyticsCacheService {
    */
   private async getActiveSessionCacheKeys(): Promise<string[]> {
     try {
-      // Scan Redis for all session cache keys
-      const keys = await redisService.keys(`${this.SESSION_PREFIX}*`);
+      // Scan Redis for all session cache keys without blocking
+      const keys: string[] = await cacheAdminPort.scan(`${this.SESSION_PREFIX}*`, 1000);
       
       if (!keys || keys.length === 0) {
         console.log('ℹ️ No active session caches found in Redis');
@@ -686,26 +737,26 @@ export class RealTimeAnalyticsCacheService {
       
       for (const key of keys) {
         try {
-          const cachedData = await redisService.get(key);
+          const cachedData = await this.cache.get(key);
           if (cachedData) {
             const metrics = JSON.parse(cachedData) as SessionMetricsCache;
             
             // Check if cache entry is still valid (not too old)
             const cacheAge = Date.now() - new Date(metrics.lastUpdate).getTime();
-            const maxAge = this.CACHE_TTL * 1000; // Convert to milliseconds
+            const maxAge = CacheTTLPolicy.analyticsSession * 1000; // Convert to ms using policy TTL
             
             if (cacheAge < maxAge && metrics.sessionId) {
               validKeys.push(key);
             } else {
               // Remove expired cache entries
-              await redisService.del(key);
+              await cachePort.del(key);
               expiredCount++;
               console.log(`🗑️ Removed expired cache entry: ${key} (age: ${Math.round(cacheAge / 1000)}s)`);
             }
           }
         } catch (parseError) {
           // Remove corrupted cache entries
-          await redisService.del(key);
+          await cachePort.del(key);
           corruptedCount++;
           console.warn(`🗑️ Removed corrupted cache entry: ${key} (parse error: ${parseError instanceof Error ? parseError.message : String(parseError)})`);
         }

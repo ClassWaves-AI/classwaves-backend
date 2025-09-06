@@ -713,11 +713,13 @@ describe('Session Controller', () => {
       (websocketService.endSession as jest.Mock).mockImplementation(() => {});
       (websocketService.notifySessionUpdate as jest.Mock).mockImplementation(() => {});
 
+      // Populate traceId to verify WS payload includes it
+      (mockRes as any).locals = { traceId: 'trace-end-123' };
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
       expect(databricksService.updateSessionStatus).toHaveBeenCalledWith(sessionId, 'ended');
       // Namespaced sessions emitter should be called with status change to 'ended'
-      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ sessionId, status: 'ended' }));
+      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ sessionId, status: 'ended', traceId: 'trace-end-123' }));
 
       expect(mockRes.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -747,6 +749,23 @@ describe('Session Controller', () => {
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
       assertErrorResponse(mockRes, 'SESSION_ALREADY_ENDED', 400);
+    });
+  });
+
+  describe('traceId propagation', () => {
+    it('includes traceId in session:status_changed for pauseSession', async () => {
+      const sessionId = 'session-trace-2';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+      (mockRes as any) = createMockResponse();
+      (mockRes as any).locals = { traceId: 'trace-pause-xyz' };
+
+      (databricksService.queryOne as jest.Mock)
+        .mockResolvedValueOnce({ id: sessionId, teacher_id: mockTeacher.id, school_id: mockTeacher.school_id, status: 'active' });
+
+      const { pauseSession } = await import('../../../controllers/session.controller');
+      await pauseSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ status: 'paused', traceId: 'trace-pause-xyz' }));
     });
   });
 

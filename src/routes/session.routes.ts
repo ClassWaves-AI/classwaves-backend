@@ -82,7 +82,15 @@ router.get('/:sessionId/student-debug/:studentId', async (req, res) => {
     
     // Check participant record
     const participant = await databricksService.queryOne(
-      `SELECT p.*, sg.name as group_name 
+      `SELECT 
+         p.id,
+         p.session_id,
+         p.student_id,
+         p.group_id,
+         p.is_active,
+         p.join_time,
+         p.device_type,
+         sg.name as group_name 
        FROM classwaves.sessions.participants p 
        LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
        WHERE p.session_id = ? AND p.student_id = ?`,

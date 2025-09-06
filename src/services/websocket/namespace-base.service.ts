@@ -1,5 +1,7 @@
 import { Namespace, Socket } from 'socket.io';
+import * as client from 'prom-client';
 import { verifyToken } from '../../utils/jwt.utils';
+import { webSocketSecurityValidator, type SecurityContext } from './websocket-security-validator.service';
 
 export interface NamespaceSocketData {
   userId: string;
@@ -7,6 +9,7 @@ export interface NamespaceSocketData {
   role: 'teacher' | 'student' | 'admin' | 'super_admin';
   schoolId?: string;
   connectedAt: Date;
+  traceId?: string;
 }
 
 export abstract class NamespaceBaseService {
@@ -48,6 +51,10 @@ export abstract class NamespaceBaseService {
       // Stateless WS auth: decode and attach claims only; no DB
       const userRole: 'teacher' | 'student' | 'admin' | 'super_admin' = (decoded.role as any) || 'teacher';
       const schoolId: string | undefined = decoded.schoolId as string | undefined;
+      // Trace correlation: accept from auth or headers and fallback to random
+      const rawHeaderTrace = (socket.handshake as any)?.headers?.['x-trace-id'] || (socket.handshake as any)?.headers?.['x-traceid'];
+      const authTrace = (socket.handshake as any)?.auth?.traceId || (socket.handshake as any)?.auth?.traceid;
+      const traceId = (Array.isArray(authTrace) ? authTrace[0] : authTrace) || (Array.isArray(rawHeaderTrace) ? rawHeaderTrace[0] : rawHeaderTrace) || undefined;
 
       socket.data = {
         userId: decoded.userId,
@@ -55,7 +62,32 @@ export abstract class NamespaceBaseService {
         schoolId,
         sessionId: decoded.sessionId,
         connectedAt: new Date(),
+        traceId: traceId ? String(traceId) : undefined,
       } as NamespaceSocketData;
+
+      // Enforce namespace-level security (role access, connection limits, rate limiting, optional school verification)
+      try {
+        const nsName = this.getNamespaceName();
+        const ip = (socket.handshake as any)?.headers?.['x-forwarded-for'] || (socket.handshake as any)?.address || '';
+        const userAgent = String((socket.handshake as any)?.headers?.['user-agent'] || '');
+        const securityContext: SecurityContext = {
+          userId: decoded.userId,
+          role: userRole,
+          schoolId,
+          sessionId: decoded.sessionId,
+          authenticatedAt: new Date(),
+          ipAddress: Array.isArray(ip) ? ip[0] : String(ip),
+          userAgent,
+        };
+
+        const result = await webSocketSecurityValidator.validateNamespaceAccess(socket, nsName, securityContext);
+        if (!result.allowed) {
+          const reason = result.errorCode || result.reason || 'NAMESPACE_ACCESS_DENIED';
+          return next(new Error(reason));
+        }
+      } catch (e) {
+        return next(new Error('NAMESPACE_VALIDATION_FAILED'));
+      }
 
       const authDuration = Date.now() - startTime;
       if (process.env.API_DEBUG === '1') {
@@ -68,6 +100,13 @@ export abstract class NamespaceBaseService {
 
   private setupEventHandlers() {
     this.namespace.on('connection', (socket) => {
+      // Metrics: connection counter
+      try {
+        const c = (client.register.getSingleMetric('ws_connections_total') as client.Counter<string>)
+          || new client.Counter({ name: 'ws_connections_total', help: 'WebSocket connections', labelNames: ['namespace'] });
+        c.inc({ namespace: this.getNamespaceName() });
+      } catch {}
+
       const userId = socket.data.userId;
       if (process.env.API_DEBUG === '1') {
         console.log(`${this.getNamespaceName()}: User ${userId} connected (${socket.id})`);
@@ -82,7 +121,22 @@ export abstract class NamespaceBaseService {
       // Setup namespace-specific handlers
       this.onConnection(socket);
 
+      // Connection ack with correlation ID (best-effort)
+      try {
+        socket.emit('ws:connected', {
+          namespace: this.getNamespaceName(),
+          traceId: (socket.data as any)?.traceId || null,
+          serverTime: new Date().toISOString(),
+        });
+      } catch {}
+
       socket.on('disconnect', (reason) => {
+        // Metrics: disconnect counter
+        try {
+          const c = (client.register.getSingleMetric('ws_disconnects_total') as client.Counter<string>)
+            || new client.Counter({ name: 'ws_disconnects_total', help: 'WebSocket disconnects', labelNames: ['namespace', 'reason'] });
+          c.inc({ namespace: this.getNamespaceName(), reason });
+        } catch {}
         if (process.env.API_DEBUG === '1') {
           console.log(`${this.getNamespaceName()}: User ${userId} disconnected (${socket.id}) - ${reason}`);
         }
@@ -95,6 +149,23 @@ export abstract class NamespaceBaseService {
             this.onUserFullyDisconnected(userId);
           }
         }
+
+        // Update security validator connection counts on disconnect (best-effort)
+        try {
+          const nsName = this.getNamespaceName();
+          const ip = (socket.handshake as any)?.headers?.['x-forwarded-for'] || (socket.handshake as any)?.address || '';
+          const userAgent = String((socket.handshake as any)?.headers?.['user-agent'] || '');
+          const secCtx: SecurityContext = {
+            userId: socket.data.userId,
+            role: socket.data.role,
+            schoolId: (socket.data as any)?.schoolId,
+            sessionId: (socket.data as any)?.sessionId,
+            authenticatedAt: (socket.data as any)?.connectedAt || new Date(),
+            ipAddress: Array.isArray(ip) ? ip[0] : String(ip),
+            userAgent,
+          };
+          void webSocketSecurityValidator.handleDisconnection(secCtx, nsName);
+        } catch {}
 
         this.onDisconnection(socket, reason);
       });
@@ -130,6 +201,18 @@ export abstract class NamespaceBaseService {
 
   protected emitToRoom(room: string, event: string, data: any): boolean {
     try {
+      // Metrics: count emits by namespace and event
+      try {
+        const c = (client.register.getSingleMetric('ws_messages_emitted_total') as client.Counter<string>)
+          || new client.Counter({ name: 'ws_messages_emitted_total', help: 'WebSocket messages emitted', labelNames: ['namespace', 'event'] });
+        c.inc({ namespace: this.getNamespaceName(), event });
+      } catch {}
+
+      // Event versioning: attach schemaVersion to payload if object-like and absent (non-breaking)
+      if (data && typeof data === 'object' && !('schemaVersion' in data)) {
+        try { (data as any).schemaVersion = '1.0'; } catch {}
+      }
+
       const ordered = process.env.WS_ORDERED_EMITS !== '0' && process.env.NODE_ENV !== 'test';
       if (ordered) {
         const prev = this.roomEmitChains.get(room) || Promise.resolve();

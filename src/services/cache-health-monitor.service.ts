@@ -1,6 +1,7 @@
 import { cacheManager } from './cache-manager.service';
 import { cacheEventBus } from './cache-event-bus.service';
 import { redisService } from './redis.service';
+import { queryCacheService } from './query-cache.service';
 
 /**
  * Cache Health Monitoring and Alerting System
@@ -20,6 +21,19 @@ export interface CacheHealthMetrics {
     errorRate: number;
     avgResponseTime: number;
     totalOperations: number;
+  };
+  queryCache?: {
+    totals: {
+      hits: number;
+      misses: number;
+      totalQueries: number;
+      hitRate: number;
+      legacyFallbacks: number;
+      coalesced: number;
+      refreshAhead: number;
+      staleServed: number;
+    };
+    byType: Record<string, any>;
   };
   events: {
     processed: number;
@@ -177,6 +191,20 @@ export class CacheHealthMonitor {
       const avgResponseTime = this.calculateAverageResponseTime();
       const errorRate = this.calculateErrorRate(cacheMetrics);
 
+      // Query cache metrics
+      const qcByType = queryCacheService.getCacheMetrics();
+      const qcTotals = Object.values(qcByType).reduce((acc, m: any) => {
+        acc.hits += m.hits || 0;
+        acc.misses += m.misses || 0;
+        acc.totalQueries += m.totalQueries || 0;
+        acc.legacyFallbacks += m.legacyFallbacks || 0;
+        acc.coalesced += m.coalesced || 0;
+        acc.refreshAhead += m.refreshAhead || 0;
+        acc.staleServed += m.staleServed || 0;
+        return acc;
+      }, { hits: 0, misses: 0, totalQueries: 0, legacyFallbacks: 0, coalesced: 0, refreshAhead: 0, staleServed: 0 });
+      const qcHitRate = qcTotals.totalQueries > 0 ? (qcTotals.hits / qcTotals.totalQueries) * 100 : 0;
+
       // Build health report
       const healthMetrics: CacheHealthMetrics = {
         overall: this.determineOverallHealth(cacheMetrics, redisHealth, errorRate),
@@ -186,6 +214,10 @@ export class CacheHealthMonitor {
           errorRate,
           avgResponseTime,
           totalOperations: cacheMetrics.hits + cacheMetrics.misses,
+        },
+        queryCache: {
+          totals: { ...qcTotals, hitRate: Math.round(qcHitRate * 100) / 100 },
+          byType: qcByType,
         },
         events: {
           processed: eventStats.eventCount,

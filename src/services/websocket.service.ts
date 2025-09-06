@@ -285,11 +285,19 @@ export class WebSocketService {
             return;
           }
 
-          // Verify session belongs to authenticated teacher
-          const session = await databricksService.queryOne(
-            `SELECT id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-            [sessionId, socket.data.userId]
-          );
+          // Verify session belongs to authenticated teacher (via repository when available)
+          let session: any = null;
+          try {
+            const { getCompositionRoot } = await import('../app/composition-root');
+            const repo = getCompositionRoot()?.getSessionRepository();
+            session = repo ? await repo.getOwnedSessionBasic(sessionId, socket.data.userId) : null;
+          } catch {}
+          if (!session) {
+            session = await databricksService.queryOne(
+              `SELECT id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+              [sessionId, socket.data.userId]
+            );
+          }
           if (!session) {
             socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
             return;

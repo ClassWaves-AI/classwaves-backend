@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { AuthRequest } from '../types/auth.types';
-import { databricksService } from '../services/databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { v4 as uuidv4 } from 'uuid';
 import { composeDisplayName } from '../utils/name.utils';
 
@@ -22,51 +22,9 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
     const gradeLevel = req.query.gradeLevel as string;
     const status = req.query.status as string;
 
-    // Build query with optional filters
-    let whereClause = 'WHERE s.school_id = ?';
-    const queryParams: any[] = [school.id];
-
-    if (gradeLevel) {
-      whereClause += ' AND s.grade_level = ?';
-      queryParams.push(gradeLevel);
-    }
-
-    if (status) {
-      whereClause += ' AND s.status = ?';
-      queryParams.push(status);
-    }
-
-    // Get students for this school
-    const students = await databricksService.query(`
-      SELECT 
-        s.id,
-        s.display_name as name,
-        s.email,
-        s.grade_level,
-        s.status,
-        s.has_parental_consent,
-        s.consent_date,
-        s.parent_email,
-        s.data_sharing_consent,
-        s.audio_recording_consent,
-        s.created_at,
-        s.updated_at,
-        sch.name as school_name
-      FROM classwaves.users.students s
-      JOIN classwaves.users.schools sch ON s.school_id = sch.id
-      ${whereClause}
-      ORDER BY s.display_name ASC
-      LIMIT ${limit} OFFSET ${offset}
-    `, queryParams);
-
-    // Get total count for pagination
-    const countResult = await databricksService.queryOne(`
-      SELECT COUNT(*) as total 
-      FROM classwaves.users.students s
-      ${whereClause}
-    `, queryParams);
-
-    const total = countResult?.total || 0;
+    const rosterRepo = getCompositionRoot().getRosterRepository();
+    const studentsRaw = await rosterRepo.listStudentsBySchool(school.id, { gradeLevel, status }, limit, offset);
+    const total = await rosterRepo.countStudentsBySchool(school.id, { gradeLevel, status });
     const totalPages = Math.ceil(total / limit);
 
     // Log audit event (async)
@@ -86,9 +44,9 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
     }).catch(() => {});
 
     // Transform students to match frontend interface
-    const transformedStudents = students.map(student => {
+    const transformedStudents = studentsRaw.map(student => {
       // Split display name into first/last name
-      const nameParts = (student.name || '').split(' ');
+      const nameParts = (student.display_name || '').split(' ');
       const firstName = nameParts[0] || '';
       const lastName = nameParts.slice(1).join(' ') || '';
       
@@ -171,10 +129,8 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     }
 
     // Check if student already exists
-    const existingStudent = await databricksService.queryOne(`
-      SELECT id FROM classwaves.users.students 
-      WHERE school_id = ? AND display_name = ?
-    `, [school.id, name]);
+    const rosterRepoExist = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoExist.findStudentByNameInSchool(school.id, name);
 
     if (existingStudent) {
       return res.status(409).json({
@@ -188,48 +144,30 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     const studentId = uuidv4();
     const now = new Date().toISOString();
 
-    await databricksService.query(`
-      INSERT INTO classwaves.users.students (
-        id, display_name, school_id, email, grade_level, status,
-        has_parental_consent, consent_date, parent_email,
-        data_sharing_consent, audio_recording_consent,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      studentId,
-      name,
-      school.id,
-      null, // email - not captured in simplified flow
-      gradeLevel || null,
-      'active',
-      hasParentalConsent, // Direct boolean from teacher's confirmation
-      hasParentalConsent ? now : null, // Set consent date if consent given
-      parentEmail || null,
-      dataConsentGiven,
-      audioConsentGiven,
-      now,
-      now
-    ]);
+    const rosterRepo = getCompositionRoot().getRosterRepository();
+    await rosterRepo.insertStudent({
+      id: studentId,
+      display_name: name,
+      school_id: school.id,
+      email: null,
+      grade_level: gradeLevel || null,
+      status: 'active',
+      has_parental_consent: hasParentalConsent,
+      consent_date: hasParentalConsent ? now : null,
+      parent_email: parentEmail || null,
+      data_sharing_consent: dataConsentGiven,
+      audio_recording_consent: audioConsentGiven,
+      created_at: now,
+      updated_at: now,
+    });
 
     // Best effort: store structured names if columns exist
     try {
-      await databricksService.query(
-        `UPDATE classwaves.users.students SET given_name = ?, family_name = ?, preferred_name = ?, updated_at = ? WHERE id = ?`,
-        [firstName || null, lastName || null, preferredName || null, now, studentId]
-      );
-    } catch (e) {
-      // Column(s) may not exist yet; ignore
-    }
+      await rosterRepo.updateStudentNames(studentId, { given_name: firstName ?? null, family_name: lastName ?? null, preferred_name: preferredName ?? null, updated_at: now });
+    } catch {}
 
     // Get the created student
-    const createdStudent = await databricksService.queryOne(`
-      SELECT 
-        s.*,
-        sch.name as school_name
-      FROM classwaves.users.students s
-      JOIN classwaves.users.schools sch ON s.school_id = sch.id
-      WHERE s.id = ?
-    `, [studentId]);
+    const createdStudent = await rosterRepo.getStudentWithSchool(studentId);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -309,9 +247,8 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     const school = authReq.school!;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoUpdate = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoUpdate.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -392,33 +329,19 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     // Debug: log which columns are being updated (no values)
     console.log('🛠️ Roster Update Columns:', updateFields.map(f => f.split('=')[0].trim()));
 
-    await databricksService.query(`
-      UPDATE classwaves.users.students 
-      SET ${updateFields.join(', ')}
-      WHERE id = ?
-    `, updateValues);
+    // Build field map for repository update
+    const fieldsMap = Object.fromEntries(updateFields.map((f, i) => [f.replace(' = ?', ''), updateValues[i]]));
+    await rosterRepoUpdate.updateStudentFields(studentId, fieldsMap);
 
     // Best effort: also persist structured names if provided and columns exist
     if (firstName !== undefined || lastName !== undefined || preferredName !== undefined) {
       try {
-        await databricksService.query(
-          `UPDATE classwaves.users.students SET given_name = COALESCE(?, given_name), family_name = COALESCE(?, family_name), preferred_name = COALESCE(?, preferred_name), updated_at = ? WHERE id = ?`,
-          [firstName ?? null, lastName ?? null, preferredName ?? null, new Date().toISOString(), studentId]
-        );
-      } catch (e) {
-        // Ignore if columns not present
-      }
+        await rosterRepoUpdate.updateStudentNames(studentId, { given_name: firstName ?? null, family_name: lastName ?? null, preferred_name: preferredName ?? null, updated_at: new Date().toISOString() });
+      } catch {}
     }
 
     // Get the updated student
-    const updatedStudent = await databricksService.queryOne(`
-      SELECT 
-        s.*, 
-        sch.name as school_name
-      FROM classwaves.users.students s
-      JOIN classwaves.users.schools sch ON s.school_id = sch.id
-      WHERE s.id = ?
-    `, [studentId]);
+    const updatedStudent = await rosterRepoUpdate.getStudentWithSchool(studentId);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -468,9 +391,8 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
     const school = authReq.school!;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoDel = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoDel.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -481,19 +403,11 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
     }
 
     // Check if student is in any active groups (FERPA compliance)
-    const groupMembership = await databricksService.queryOne(`
-      SELECT COUNT(*) as group_count 
-      FROM classwaves.sessions.student_groups 
-      WHERE JSON_ARRAY_CONTAINS(student_ids, ?)
-    `, [studentId]);
+    const groupCount = await rosterRepoDel.countStudentGroupMembership(studentId);
 
-    if (groupMembership?.group_count > 0) {
+    if (groupCount > 0) {
       // For FERPA compliance, deactivate rather than delete if student has group data
-      await databricksService.query(`
-        UPDATE classwaves.users.students 
-        SET status = 'deactivated', updated_at = ?
-        WHERE id = ?
-      `, [new Date().toISOString(), studentId]);
+      await rosterRepoDel.setStudentDeactivated(studentId);
 
       // Log audit event (async)
       const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -519,9 +433,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
       });
     } else {
       // Safe to delete if no session participation
-      await databricksService.query(`
-        DELETE FROM classwaves.users.students WHERE id = ?
-      `, [studentId]);
+      await rosterRepoDel.deleteStudent(studentId);
 
       // Log audit event (async)
       const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -572,9 +484,8 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
     const { birthDate, parentEmail } = req.body;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoAge = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoAge.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -623,11 +534,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
     const updateValues = Object.values(updateData);
     const setClause = updateFields.map(field => `${field} = ?`).join(', ');
 
-    await databricksService.query(`
-      UPDATE classwaves.users.students 
-      SET ${setClause}
-      WHERE id = ?
-    `, [...updateValues, studentId]);
+    await rosterRepoAge.updateStudentFields(studentId, Object.fromEntries(updateFields.map((f, i) => [f.split('=')[0].trim(), updateValues[i]])));
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -683,9 +590,8 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
     const { consentGiven = false, parentSignature, consentDate } = req.body;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT id, display_name, email, grade_level, parent_email, school_id, status FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoConsent = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoConsent.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -705,11 +611,7 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
 
     // Update consent status
     const now = new Date().toISOString();
-    await databricksService.query(`
-      UPDATE classwaves.users.students 
-      SET has_parental_consent = ?, consent_date = ?, updated_at = ?
-      WHERE id = ?
-    `, [consentGiven, consentDate || now, now, studentId]);
+    await rosterRepoConsent.updateParentalConsent(studentId, consentGiven, consentDate || now);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -761,22 +663,10 @@ export async function getRosterOverview(req: Request, res: Response): Promise<Re
     const school = authReq.school!;
 
     // Get comprehensive metrics in a single query for efficiency
-    const metrics = await databricksService.queryOne(`
-      SELECT 
-        COUNT(*) as totalStudents,
-        COUNT(CASE WHEN s.status = 'active' THEN 1 END) as activeStudents,
-        COUNT(CASE WHEN s.parent_email IS NOT NULL AND s.has_parental_consent = false THEN 1 END) as pendingConsent,
-        COUNT(CASE WHEN s.status != 'active' THEN 1 END) as inactiveStudents
-      FROM classwaves.users.students s
-      WHERE s.school_id = ?
-    `, [school.id]);
+    const rosterRepoOverview = getCompositionRoot().getRosterRepository();
+    const metrics = await rosterRepoOverview.getRosterOverviewMetrics(school.id);
 
-    const overview = {
-      totalStudents: metrics?.totalStudents || 0,
-      activeStudents: metrics?.activeStudents || 0,
-      pendingConsent: metrics?.pendingConsent || 0,
-      inactiveStudents: metrics?.inactiveStudents || 0
-    };
+    const overview = metrics;
 
     // Log audit event for data access (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');

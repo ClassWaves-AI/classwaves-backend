@@ -23,6 +23,7 @@
 - [Quick Start](#quick-start)
 - [API Documentation](#api-documentation)
 - [WebSocket Events](#websocket-events)
+- [REST-First Session Control](#rest-first-session-control)
 - [Admin Controls](#admin-controls)
 - [Testing](#testing)
 - [Security & Compliance](#security--compliance)
@@ -238,10 +239,21 @@ REDIS_PASSWORD=
 # implements the subset of Redis APIs used by the app. Do not enable in prod.
 # REDIS_USE_MOCK=1
 
+# Sizing and timeouts
+REDIS_POOL_SIZE=5
+REDIS_TIMEOUT=3000
+
 # === WebSocket Backpressure Hints ===
 # Emit a soft hint after N consecutive drops and then cool down to avoid spamming
 # WS_BACKPRESSURE_HINT_THRESHOLD=3
 # WS_BACKPRESSURE_HINT_COOLDOWN_MS=5000
+
+# === Per-socket Audio Backpressure ===
+# Upper bounds for per-socket audio traffic. Exceeding these causes soft drops
+# with client-side hints to reduce send rate.
+# WS_MAX_AUDIO_EVENTS_PER_SEC=20           # Max audio:chunk events per socket per second
+# WS_MAX_AUDIO_BYTES_PER_SEC=1048576       # Max bytes/sec per socket (default 1MB)
+# WS_MAX_AUDIO_CHUNK_BYTES=2097152         # Hard cap per chunk (default 2MB)
 
 # === Multi-level Quotas ===
 # Per-school and per-session bytes/sec quotas (in addition to per-socket bucket)
@@ -257,6 +269,28 @@ REDIS_PASSWORD=
 # === WebSocket Emit Ordering ===
 # Serialize emits per room to preserve event ordering (disable for max throughput)
 # WS_ORDERED_EMITS=1
+
+# === Dev Observability ===
+# Token used to gate /api/v1/debug/websocket/active-connections in production.
+# In development (NODE_ENV !== 'production'), this endpoint is open.
+# DEV_OBSERVABILITY_TOKEN=
+
+# === Cache & Rate Limiting (Enabled by Default) ===
+# Prefix Redis keys with cw:{env}: to ensure isolation and clarity
+CW_CACHE_PREFIX_ENABLED=1            # set 0 to disable
+# During migration, write to legacy keys as well for safety
+CW_CACHE_DUAL_WRITE=1               # set 0 to disable
+# Tag epochs for O(1) invalidation (versioned keys)
+CW_CACHE_EPOCHS_ENABLED=1           # set 0 to disable
+# Cross-instance NX locks to prevent stampedes on hot keys
+CW_CACHE_NX_LOCKS=1                 # set 0 to disable
+# Compress large cache payloads (applies to specific cache types)
+CW_CACHE_COMPRESS_THRESHOLD=4096    # bytes; adjust if needed
+
+# Rate limiter key prefixes (cw:{env}:rl:*); set 0 to revert
+CW_RL_PREFIX_ENABLED=1
+
+# See `docs/REDIS_KEY_MIGRATION.md` for key migration details and rollout strategy.
 
 # === Guidance Emission Mode ===
 # When set to '1', guidance namespace becomes canonical for AI insights
@@ -386,6 +420,8 @@ npm test
 ### Real-time Communication
 The backend uses Socket.IO for real-time communication with the frontend and student applications.
 
+All server-emitted events include a non-breaking `schemaVersion` field (currently `"1.0"`). Where available, clients should also propagate and log `traceId` for correlation across HTTP and WebSocket.
+
 #### Server-to-Client Events
 ```typescript
 // Group-based events
@@ -425,6 +461,30 @@ The backend uses Socket.IO for real-time communication with the frontend and stu
 'audio:start': { groupId: string; format: string }
 'audio:stop': { groupId: string }
 ```
+
+## REST-First Session Control
+
+- Source of truth: All session lifecycle changes (start, pause, end) go through REST endpoints.
+- WebSocket is notify-only: Controllers emit `session:status_changed` so connected clients stay in sync.
+- Deprecated input: Client event `session:update_status` no longer performs any database mutation and returns `UNSUPPORTED_OPERATION`.
+- Trace & versioning:
+  - All server-emitted WS payloads include `schemaVersion` (currently "1.0").
+  - Controllers/WS attach a `traceId` (from `X-Trace-Id` middleware or WS auth) to key events like `session:status_changed`, `transcription:group:new`, and `group:status_changed`.
+- Relevant code:
+  - `src/controllers/session.controller.ts` lifecycle handlers (broadcasts + traceId)
+  - `src/services/websocket/sessions-namespace.service.ts` (REST-first enforcement + schemaVersion + traceId)
+
+## Hexagonal & DI
+
+- Ports live under `src/services/ports`; adapters in `src/adapters/**`.
+- Composition root: `src/app/composition-root.ts` wires default adapters (Databricks, Redis, etc.).
+- Repositories (partial list):
+  - SessionRepository: ownership/basic (`getOwnedSessionBasic`, `getBasic`, `updateStatus`)
+  - SessionDetailRepository: minimal-field detail for cacheable fetch
+  - GroupRepository: `countReady`, `countTotal`, `getGroupsBasic`, `getMembersBySession`
+  - SessionStatsRepository: end-session summary metrics
+- Controllers use repositories (e.g., `startSession`, `pauseSession`, `endSession`, `getGroupsStatus`) and keep caching at the edge.
+- Validation: Zod only at the edges (routes/controllers/WS adapters). Domain services are Zod-free (guarded by unit test).
 
 ## Admin Controls
 
@@ -686,6 +746,20 @@ GET /api/v1/health/components
 - **AI System Monitoring**: Whisper latency, analysis success rates
 - **Database Health**: Connection pool status, query performance
 - **WebSocket Metrics**: Connection counts, message throughput
+
+#### Correlation ID
+- Every HTTP response includes `X-Trace-Id`.
+- Clients may send `X-Trace-Id` to correlate logs; server will echo it or generate one.
+- WebSocket handshake propagates `traceId` (via `auth.traceId` or `X-Trace-Id` header) and acknowledges with `ws:connected { traceId }`.
+
+#### HTTP Metrics
+- `http_requests_total{method,route,status}`: Counter of requests.
+- `http_request_duration_seconds{method,route,status}`: Histogram with SLO buckets (50ms–6.4s).
+
+#### WebSocket Metrics
+- `ws_connections_total{namespace}`: Connection counter by namespace.
+- `ws_disconnects_total{namespace,reason}`: Disconnect counter.
+- `ws_messages_emitted_total{namespace,event}`: Emitted message counter.
 
 ### Key Metrics
 ```typescript

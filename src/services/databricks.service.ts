@@ -616,7 +616,22 @@ export class DatabricksService {
   async getSchoolByDomain(domain: string): Promise<School | null> {
     const sql = `
       SELECT 
-        *,
+        id,
+        name,
+        domain,
+        admin_email,
+        subscription_tier,
+        subscription_status,
+        max_teachers,
+        current_teachers,
+        subscription_start_date,
+        subscription_end_date,
+        trial_ends_at,
+        ferpa_agreement,
+        coppa_compliant,
+        data_retention_days,
+        created_at,
+        updated_at,
         current_teachers as teacher_count,
         0 as student_count
       FROM ${databricksConfig.catalog}.users.schools 
@@ -630,7 +645,21 @@ export class DatabricksService {
    */
   async getTeacherByGoogleId(googleId: string): Promise<Teacher | null> {
     const sql = `
-      SELECT t.*, s.name as school_name, s.domain as school_domain
+      SELECT 
+        t.id,
+        t.google_id,
+        t.email,
+        t.name,
+        t.picture,
+        t.school_id,
+        t.role,
+        t.status,
+        t.access_level,
+        t.login_count,
+        t.created_at,
+        t.updated_at,
+        s.name as school_name,
+        s.domain as school_domain
       FROM ${databricksConfig.catalog}.users.teachers t
       JOIN ${databricksConfig.catalog}.users.schools s ON t.school_id = s.id
       WHERE t.google_id = ? AND t.status = 'active'
@@ -643,7 +672,21 @@ export class DatabricksService {
    */
   async getTeacherByEmail(email: string): Promise<Teacher | null> {
     const sql = `
-      SELECT t.*, s.name as school_name, s.domain as school_domain
+      SELECT 
+        t.id,
+        t.google_id,
+        t.email,
+        t.name,
+        t.picture,
+        t.school_id,
+        t.role,
+        t.status,
+        t.access_level,
+        t.login_count,
+        t.created_at,
+        t.updated_at,
+        s.name as school_name,
+        s.domain as school_domain
       FROM ${databricksConfig.catalog}.users.teachers t
       JOIN ${databricksConfig.catalog}.users.schools s ON t.school_id = s.id
       WHERE t.email = ? AND t.status = 'active'
@@ -905,6 +948,53 @@ export class DatabricksService {
   }
 
   /**
+   * Record multiple audit log entries in a single batch (canonical batch API)
+   */
+  async recordAuditLogBatch(rows: Array<{
+    id?: string;
+    actor_id: string;
+    actor_type: 'teacher' | 'student' | 'system' | 'admin';
+    event_type: string;
+    event_category: string;
+    event_timestamp?: Date;
+    resource_type: string;
+    resource_id?: string | null;
+    school_id: string;
+    session_id?: string | null;
+    description?: string;
+    ip_address?: string | null;
+    user_agent?: string | null;
+    compliance_basis?: string | null;
+    data_accessed?: string | null;
+    affected_student_ids?: string[] | string | null;
+    created_at?: Date;
+  }>): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    const norm = rows.map((r) => ({
+      id: r.id || this.generateId(),
+      actor_id: r.actor_id,
+      actor_type: r.actor_type,
+      event_type: r.event_type,
+      event_category: r.event_category,
+      event_timestamp: r.event_timestamp || new Date(),
+      resource_type: r.resource_type,
+      resource_id: r.resource_id ?? null,
+      school_id: r.school_id,
+      session_id: r.session_id ?? null,
+      description: r.description || '',
+      ip_address: r.ip_address ?? null,
+      user_agent: r.user_agent ?? null,
+      compliance_basis: r.compliance_basis ?? null,
+      data_accessed: r.data_accessed ?? null,
+      affected_student_ids: Array.isArray(r.affected_student_ids)
+        ? JSON.stringify(r.affected_student_ids)
+        : (r.affected_student_ids ?? null),
+      created_at: r.created_at || new Date(),
+    }));
+    await this.batchInsert('audit_log', norm);
+  }
+
+  /**
    * OPTIMIZED: Batch auth operations to reduce database round trips
    */
   async batchAuthOperations(googleUser: any, domain: string): Promise<{
@@ -918,14 +1008,27 @@ export class DatabricksService {
     const sql = `
       WITH school_lookup AS (
         SELECT 
-          s.*,
+          s.id,
+          s.name,
+          s.domain,
+          s.subscription_tier,
+          s.subscription_status,
           s.current_teachers as teacher_count,
           0 as student_count
         FROM ${databricksConfig.catalog}.users.schools s
         WHERE s.domain = ? AND s.subscription_status IN ('active', 'trial')
       ),
       teacher_lookup AS (
-        SELECT t.*, s.name as school_name, s.domain as school_domain
+        SELECT 
+          t.school_id,
+          t.id,
+          t.email,
+          t.name,
+          t.role,
+          t.access_level,
+          t.login_count,
+          s.name as school_name, 
+          s.domain as school_domain
         FROM ${databricksConfig.catalog}.users.teachers t
         JOIN ${databricksConfig.catalog}.users.schools s ON t.school_id = s.id
         WHERE t.google_id = ? AND t.status = 'active'
@@ -1074,6 +1177,7 @@ export const databricksService = {
   createSession: (sessionData: CreateSessionData) => getDatabricksService().createSession(sessionData),
   updateSessionStatus: (sessionId: string, status: SessionStatus, additionalData?: any) => getDatabricksService().updateSessionStatus(sessionId, status, additionalData),
   recordAuditLog: (auditData: any) => getDatabricksService().recordAuditLog(auditData),
+  recordAuditLogBatch: (rows: any[]) => getDatabricksService().recordAuditLogBatch(rows),
   batchAuthOperations: (googleUser: any, domain: string) => getDatabricksService().batchAuthOperations(googleUser, domain),
   // STT removed
 };

@@ -8,33 +8,13 @@
  * - Comprehensive audit logging
  */
 
-import { z } from 'zod';
 import { databricksService } from './databricks.service';
 import * as client from 'prom-client';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 import type { TeacherPrompt, PromptCategory, PromptPriority, PromptTiming, SessionPhase, SubjectArea } from '../types/teacher-guidance.types';
 
-// ============================================================================
-// Input Validation Schemas
-// ============================================================================
-
-const promptContextSchema = z.object({
-  sessionPhase: z.enum(['opening', 'development', 'synthesis', 'closure']),
-  subject: z.enum(['math', 'science', 'literature', 'history', 'general']),
-  learningObjectives: z.array(z.string().min(1).max(200)).max(5),
-  groupSize: z.number().min(1).max(8),
-  sessionDuration: z.number().min(1).max(480), // minutes
-  sessionId: z.string().uuid(),
-  groupId: z.string().uuid(),
-  teacherId: z.string().uuid()
-});
-
-const promptGenerationOptionsSchema = z.object({
-  maxPrompts: z.number().min(1).max(15).default(5),
-  priorityFilter: z.enum(['all', 'high', 'medium', 'low']).default('all'),
-  categoryFilter: z.array(z.enum(['facilitation', 'deepening', 'redirection', 'collaboration', 'assessment', 'energy', 'clarity'])).optional(),
-  includeEffectivenessScore: z.boolean().default(true)
-}).optional();
+// Validation moved to edges (routes/controllers/websocket). Domain service assumes
+// inputs are pre-validated. Types below reflect expected shapes.
 
 // ============================================================================
 // Teacher Prompt Service Types
@@ -115,21 +95,26 @@ export class TeacherPromptService {
    * Generate contextual teaching prompts from AI insights
    * 
    * ✅ COMPLIANCE: Group-level analysis only (no individual student identification)
-   * ✅ SECURITY: Input validation with Zod schemas
+   * ✅ SECURITY: Validation handled at edges
    * ✅ AUDIT: Comprehensive logging for AI-generated teacher guidance
    * ✅ RATE LIMITING: Maximum 15 prompts per session
    */
   async generatePrompts(
     insights: Tier1Insights | Tier2Insights,
     context: PromptGenerationContext,
-    options?: z.infer<typeof promptGenerationOptionsSchema>
+    options?: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
   ): Promise<TeacherPrompt[]> {
     const startTime = Date.now();
 
     try {
-      // ✅ SECURITY: Input validation
-      const validatedContext = promptContextSchema.parse(context);
-      const validatedOptions = promptGenerationOptionsSchema.parse(options || {});
+      // Normalize options (defaults and clamping) without Zod in domain
+      const validatedContext = context; // assume edge validation
+      const validatedOptions = {
+        maxPrompts: Math.max(1, Math.min(15, options?.maxPrompts ?? 5)),
+        priorityFilter: options?.priorityFilter ?? 'all',
+        categoryFilter: options?.categoryFilter,
+        includeEffectivenessScore: options?.includeEffectivenessScore ?? true,
+      };
 
       // ✅ RATE LIMITING: Check session prompt limit
       await this.checkRateLimit(validatedContext.sessionId);
@@ -461,7 +446,7 @@ export class TeacherPromptService {
   private async generateFromTier1Insights(
     insights: Tier1Insights,
     context: PromptGenerationContext,
-    options: z.infer<typeof promptGenerationOptionsSchema>
+    options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
   ): Promise<TeacherPrompt[]> {
     const prompts: TeacherPrompt[] = [];
 
@@ -516,7 +501,7 @@ export class TeacherPromptService {
   private async generateFromTier2Insights(
     insights: Tier2Insights,
     context: PromptGenerationContext,
-    options: z.infer<typeof promptGenerationOptionsSchema>
+    options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
   ): Promise<TeacherPrompt[]> {
     const prompts: TeacherPrompt[] = [];
 
@@ -728,7 +713,7 @@ export class TeacherPromptService {
 
   private applyFilters(
     prompts: TeacherPrompt[], 
-    options: z.infer<typeof promptGenerationOptionsSchema> | {}
+    options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }> | {}
   ): TeacherPrompt[] {
     let filtered = prompts;
 

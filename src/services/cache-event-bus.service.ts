@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events';
 import { cacheManager } from './cache-manager.service';
+import { bumpTagEpoch } from './tag-epoch.service';
+import { getNamespacedWebSocketService } from './websocket/namespaced-websocket.service';
 
 /**
  * Event-Driven Cache Invalidation System
@@ -70,6 +72,20 @@ export type CacheEvent =
  * Cache invalidation strategies for different event types
  */
 export class CacheInvalidationStrategies {
+  private static emitCacheUpdated(payload: { scope: 'teacher' | 'session' | 'analytics'; teacherId?: string; sessionId?: string; tags?: string[]; changes?: string[] }) {
+    try {
+      const ws = getNamespacedWebSocketService();
+      if (!ws) return;
+      const stamp = { ...payload, timestamp: Date.now() };
+      if (payload.scope === 'session' && payload.sessionId) {
+        ws.getSessionsService().emitToSession(payload.sessionId, 'cache:updated', stamp);
+      }
+      // Emit to guidance:all for dashboards/teacher pages
+      ws.getGuidanceService().emitCacheUpdatedGlobal(stamp);
+    } catch (e) {
+      console.warn('⚠️  WS cache:updated emit failed:', e instanceof Error ? e.message : String(e));
+    }
+  }
   
   /**
    * Session created - invalidate teacher's session lists
@@ -81,6 +97,9 @@ export class CacheInvalidationStrategies {
     
     // Invalidate teacher's session lists
     await cacheManager.invalidateByTag(`teacher:${teacherId}`);
+    // Bump epoch for teacher lists (O(1) invalidation)
+    await bumpTagEpoch(`teacher:${teacherId}`);
+    CacheInvalidationStrategies.emitCacheUpdated({ scope: 'teacher', teacherId, tags: [`teacher:${teacherId}`], changes: ['session.created'] });
     
     // Invalidate school-wide session caches if they exist
     await cacheManager.invalidateByTag(`school:${schoolId}`);
@@ -101,17 +120,23 @@ export class CacheInvalidationStrategies {
     
     // Always invalidate the specific session detail
     await cacheManager.invalidateByTag(`session:${sessionId}`);
+    await bumpTagEpoch(`session:${sessionId}`);
+    CacheInvalidationStrategies.emitCacheUpdated({ scope: 'session', sessionId, tags: [`session:${sessionId}`], changes });
     
     // If metadata changed (title, description, etc), invalidate lists
     const listAffectingChanges = ['title', 'description', 'status', 'scheduled_start'];
     if (changes.some(change => listAffectingChanges.includes(change))) {
       await cacheManager.invalidateByTag(`teacher:${teacherId}`);
+      await bumpTagEpoch(`teacher:${teacherId}`);
+      CacheInvalidationStrategies.emitCacheUpdated({ scope: 'teacher', teacherId, tags: [`teacher:${teacherId}`], changes });
     }
     
     // If analytics-related changes, invalidate analytics caches
     const analyticsChanges = ['status', 'actual_start', 'actual_end'];
     if (changes.some(change => analyticsChanges.includes(change))) {
       await cacheManager.invalidateByTag(`analytics:${sessionId}`);
+      await bumpTagEpoch(`analytics:${sessionId}`);
+      CacheInvalidationStrategies.emitCacheUpdated({ scope: 'analytics', sessionId, tags: [`analytics:${sessionId}`], changes });
     }
   }
 
@@ -128,7 +153,11 @@ export class CacheInvalidationStrategies {
       cacheManager.invalidateByTag(`session:${sessionId}`),
       cacheManager.invalidateByTag(`analytics:${sessionId}`),
       cacheManager.invalidateByTag(`teacher:${teacherId}`),
+      bumpTagEpoch(`session:${sessionId}`),
+      bumpTagEpoch(`analytics:${sessionId}`),
+      bumpTagEpoch(`teacher:${teacherId}`),
     ]);
+    CacheInvalidationStrategies.emitCacheUpdated({ scope: 'session', sessionId, tags: [`session:${sessionId}`, `analytics:${sessionId}`, `teacher:${teacherId}`], changes: ['session.deleted'] });
   }
 
   /**
@@ -143,11 +172,16 @@ export class CacheInvalidationStrategies {
     await Promise.all([
       cacheManager.invalidateByTag(`session:${sessionId}`),
       cacheManager.invalidateByTag(`teacher:${teacherId}`),
+      bumpTagEpoch(`session:${sessionId}`),
+      bumpTagEpoch(`teacher:${teacherId}`),
     ]);
+    CacheInvalidationStrategies.emitCacheUpdated({ scope: 'session', sessionId, tags: [`session:${sessionId}`, `teacher:${teacherId}`], changes: ['status_changed'] });
     
     // If session ended, invalidate analytics (they become available)
     if (newStatus === 'ended') {
       await cacheManager.invalidateByTag(`analytics:${sessionId}`);
+      await bumpTagEpoch(`analytics:${sessionId}`);
+      CacheInvalidationStrategies.emitCacheUpdated({ scope: 'analytics', sessionId, tags: [`analytics:${sessionId}`], changes: ['session.ended'] });
     }
     
     // If session started, warm real-time data caches
@@ -170,6 +204,8 @@ export class CacheInvalidationStrategies {
     const profileChanges = ['name', 'email', 'role', 'status'];
     if (changes.some(change => profileChanges.includes(change))) {
       await cacheManager.invalidateByTag(`teacher:${teacherId}`);
+       await bumpTagEpoch(`teacher:${teacherId}`);
+       CacheInvalidationStrategies.emitCacheUpdated({ scope: 'teacher', teacherId, tags: [`teacher:${teacherId}`], changes });
     }
   }
 }

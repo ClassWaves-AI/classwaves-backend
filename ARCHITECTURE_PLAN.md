@@ -217,6 +217,21 @@ jobs:
           echo "Monitoring PID: $!" > monitoring.pid
 ```
 
+## 🔧 Hexagonal Ports/Adapters & DI — Current State (Backend)
+
+We introduced a composition root and repositories to keep framework code thin, align with hexagonal patterns, and enforce minimal-field projections:
+
+- Composition root: `src/app/composition-root.ts` wires default adapters and exposes domain ports.
+- Repositories (Ports → Adapters):
+  - SessionRepository → `src/adapters/repositories/databricks-session.repository.ts` (ownership/basic session status, lifecycle updates)
+  - SessionDetailRepository → `src/adapters/repositories/databricks-session-detail.repository.ts` (minimal-field detail for cache/correctness)
+  - GroupRepository → `src/adapters/repositories/databricks-group.repository.ts` (`countReady`, `countTotal`, `getGroupsBasic`, `getMembersBySession`)
+  - SessionStatsRepository → `src/adapters/repositories/databricks-session-stats.repository.ts` (end-session summary metrics)
+- Controller adoption: `startSession`, `pauseSession`, `endSession`, `getGroupsStatus` use repositories; `getSessionWithGroups` uses SessionDetailRepository + GroupRepository with cache maintained at the edge.
+- WebSocket adoption: namespaced `/sessions` and `/guidance` use repositories for ownership checks; SLI helpers use `SessionRepository.getBasic` for school lookup.
+- Validation: Zod only at edges (routes/controllers/WS adapters). Domain services are Zod-free (guarded by unit test).
+
+
 ### **Phase 3: Monitoring Integration** (30 minutes)
 ```typescript
 // Enhanced monitoring with alerting

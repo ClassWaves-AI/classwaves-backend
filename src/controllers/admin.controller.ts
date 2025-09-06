@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { AuthRequest } from '../types/auth.types';
-import { databricksService } from '../services/databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { redisService } from '../services/redis.service';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -26,36 +26,11 @@ export async function listSchools(req: Request, res: Response): Promise<Response
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
     const offset = (page - 1) * limit;
 
-    // Get schools with pagination
-    const schools = await databricksService.query(`
-      SELECT 
-        id,
-        name,
-        domain,
-        admin_email,
-        subscription_tier,
-        subscription_status,
-        max_teachers,
-        current_teachers,
-        subscription_start_date,
-        subscription_end_date,
-        trial_ends_at,
-        ferpa_agreement,
-        coppa_compliant,
-        data_retention_days,
-        created_at,
-        updated_at
-      FROM classwaves.users.schools
-      ORDER BY created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `);
+    const adminRepo = getCompositionRoot().getAdminRepository();
+    const schools = await adminRepo.listSchools(limit, offset);
+    const total = await adminRepo.countSchools();
 
-    // Get total count for pagination
-    const countResult = await databricksService.queryOne(`
-      SELECT COUNT(*) as total FROM classwaves.users.schools
-    `);
-
-    const total = countResult?.total || 0;
+    
     const totalPages = Math.ceil(total / limit);
 
     // Log audit event (async, fire-and-forget)
@@ -129,10 +104,8 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
       dataRetentionDays = 2555 // 7 years default
     } = req.body;
 
-    // Check if domain already exists
-    const existingSchool = await databricksService.queryOne(`
-      SELECT id FROM classwaves.users.schools WHERE domain = ?
-    `, [domain]);
+    const adminRepo = getCompositionRoot().getAdminRepository();
+    const existingSchool = await adminRepo.findSchoolByDomain(domain);
 
     if (existingSchool) {
       return res.status(409).json({
@@ -148,37 +121,27 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
     const trialEndDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days trial
     const subscriptionEndDate = subscriptionStatus === 'trial' ? trialEndDate : new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
-    await databricksService.query(`
-      INSERT INTO classwaves.users.schools (
-        id, name, domain, admin_email,
-        subscription_tier, subscription_status, max_teachers,
-        current_teachers, subscription_start_date, subscription_end_date,
-        trial_ends_at, ferpa_agreement, coppa_compliant,
-        data_retention_days, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      schoolId,
+    await adminRepo.insertSchool({
+      id: schoolId,
       name,
       domain,
-      adminEmail,
-      subscriptionTier,
-      subscriptionStatus,
-      maxTeachers,
-      0, // current_teachers starts at 0
-      now, // subscription_start_date
-      subscriptionEndDate,
-      subscriptionStatus === 'trial' ? trialEndDate : null,
-      ferpaAgreement,
-      coppaCompliant,
-      dataRetentionDays,
-      now,
-      now
-    ]);
+      admin_email: adminEmail,
+      subscription_tier: subscriptionTier,
+      subscription_status: subscriptionStatus,
+      max_teachers: maxTeachers,
+      current_teachers: 0,
+      subscription_start_date: now,
+      subscription_end_date: subscriptionEndDate,
+      trial_ends_at: subscriptionStatus === 'trial' ? trialEndDate : null,
+      ferpa_agreement: ferpaAgreement,
+      coppa_compliant: coppaCompliant,
+      data_retention_days: dataRetentionDays,
+      created_at: now,
+      updated_at: now,
+    });
 
     // Get the created school
-    const createdSchool = await databricksService.queryOne(`
-      SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
-    `, [schoolId]);
+    const createdSchool = await adminRepo.getSchoolSummaryById(schoolId);
 
     // Log audit event (async, fire-and-forget)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -232,10 +195,8 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
       });
     }
 
-    // Check if school exists
-    const existingSchool = await databricksService.queryOne(`
-      SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
-    `, [schoolId]);
+    const adminRepo = getCompositionRoot().getAdminRepository();
+    const existingSchool = await adminRepo.getSchoolSummaryById(schoolId);
 
     if (!existingSchool) {
       return res.status(404).json({
@@ -308,16 +269,11 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
     // Add school ID for WHERE clause
     updateValues.push(schoolId);
 
-    await databricksService.query(`
-      UPDATE classwaves.users.schools 
-      SET ${updateFields.join(', ')}
-      WHERE id = ?
-    `, updateValues);
+    const fieldsMap = Object.fromEntries(updateFields.map((f, i) => [f.replace(' = ?', ''), updateValues[i]]));
+    await adminRepo.updateSchoolById(schoolId, fieldsMap);
 
     // Get the updated school
-    const updatedSchool = await databricksService.queryOne(`
-      SELECT id, name, domain, subscription_status, subscription_tier, ferpa_agreement, coppa_compliant, admin_email FROM classwaves.users.schools WHERE id = ?
-    `, [schoolId]);
+    const updatedSchool = await adminRepo.getSchoolSummaryById(schoolId);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -422,44 +378,11 @@ export async function listTeachers(req: Request, res: Response): Promise<Respons
       queryParams = [authReq.school!.id];
     }
 
-    // Get teachers with school info
-    const teachers = await databricksService.query(`
-      SELECT 
-        t.id,
-        t.email,
-        t.name,
-        t.picture,
-        t.school_id,
-        t.role,
-        t.status,
-        t.access_level,
-        t.max_concurrent_sessions,
-        t.current_sessions,
-        t.grade,
-        t.subject,
-        t.timezone,
-        t.last_login,
-        t.login_count,
-        t.total_sessions_created,
-        t.created_at,
-        t.updated_at,
-        s.name as school_name,
-        s.domain as school_domain
-      FROM classwaves.users.teachers t
-      JOIN classwaves.users.schools s ON t.school_id = s.id
-      ${whereClause}
-      ORDER BY t.created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `, queryParams);
+    const adminRepo = getCompositionRoot().getAdminRepository();
+    const teachers = await adminRepo.listTeachers({ schoolId: queryParams[0] }, limit, offset);
+    const total = await adminRepo.countTeachers({ schoolId: queryParams[0] });
 
-    // Get total count for pagination
-    const countResult = await databricksService.queryOne(`
-      SELECT COUNT(*) as total 
-      FROM classwaves.users.teachers t
-      ${whereClause}
-    `, queryParams);
-
-    const total = countResult?.total || 0;
+    
     const totalPages = Math.ceil(total / limit);
 
     // Log audit event (async)
@@ -523,9 +446,8 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
     }
 
     // Check if teacher exists and get their school
-    const existingTeacher = await databricksService.queryOne(`
-      SELECT id, email, name, school_id, role, status, grade, subject FROM classwaves.users.teachers WHERE id = ?
-    `, [teacherId]);
+    const adminRepo = getCompositionRoot().getAdminRepository();
+    const existingTeacher = await adminRepo.getTeacherSummaryById(teacherId);
 
     if (!existingTeacher) {
       return res.status(404).json({
@@ -615,22 +537,18 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
     // Add teacher ID for WHERE clause
     updateValues.push(teacherId);
 
-    await databricksService.query(`
-      UPDATE classwaves.users.teachers 
-      SET ${updateFields.join(', ')}
-      WHERE id = ?
-    `, updateValues);
+    const fieldsMap = Object.fromEntries(updateFields.map((f, i) => [f.replace(' = ?', ''), updateValues[i]]));
+    await adminRepo.updateTeacherById(teacherId, fieldsMap);
 
     // Get the updated teacher
-    const updatedTeacher = await databricksService.queryOne(`
-      SELECT 
-        t.*,
-        s.name as school_name,
-        s.domain as school_domain
-      FROM classwaves.users.teachers t
-      JOIN classwaves.users.schools s ON t.school_id = s.id
-      WHERE t.id = ?
-    `, [teacherId]);
+    const updatedTeacher = await adminRepo.getTeacherSummaryById(teacherId);
+    if (!updatedTeacher) {
+      return res.status(500).json({
+        success: false,
+        error: 'TEACHER_UPDATE_FAILED',
+        message: 'Teacher was updated but could not be retrieved'
+      });
+    }
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
