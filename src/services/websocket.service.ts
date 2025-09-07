@@ -34,6 +34,10 @@ interface SocketData {
   sessionId: string;
   schoolId: string;
   role: string;
+  // Defense-in-depth: track sessions already joined by this socket to make joins idempotent
+  joinedSessions?: Set<string>;
+  joinedSessionInfo?: Record<string, { groupId: string | null; groupName: string | null }>;
+  pendingJoins?: Set<string>;
 }
 
 interface ClientToServerEvents {
@@ -274,6 +278,10 @@ export class WebSocketService {
     this.io.on('connection', (socket) => {
       console.log(`🔧 DEBUG: User ${socket.data.userId} connected via WebSocket with role ${socket.data.role}`);
       this.connectedUsers.set(socket.data.userId, socket);
+      // Initialize per-socket tracking structures
+      socket.data.joinedSessions = socket.data.joinedSessions || new Set<string>();
+      socket.data.joinedSessionInfo = socket.data.joinedSessionInfo || {};
+      socket.data.pendingJoins = socket.data.pendingJoins || new Set<string>();
 
       // Replace participant-based joinSession with group-based joinGroup
       // Session-level join for teacher dashboard
@@ -284,6 +292,20 @@ export class WebSocketService {
             socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'session_id is required' });
             return;
           }
+
+          // Idempotency for teacher joins as well (prevents repeated DB verification and joins)
+          if (socket.data.joinedSessions?.has(sessionId)) {
+            // Echo current status for UI sync without DB hit
+            try {
+              const { getCompositionRoot } = await import('../app/composition-root');
+              const repo = getCompositionRoot()?.getSessionRepository();
+              const session = repo ? await repo.getOwnedSessionBasic(sessionId, socket.data.userId) : null;
+              if (session) socket.emit('session:status_changed', { sessionId, status: session.status });
+            } catch {}
+            return;
+          }
+          if (socket.data.pendingJoins?.has(sessionId)) return;
+          socket.data.pendingJoins?.add(sessionId);
 
           // Verify session belongs to authenticated teacher (via repository when available)
           let session: any = null;
@@ -300,14 +322,18 @@ export class WebSocketService {
           }
           if (!session) {
             socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
+            socket.data.pendingJoins?.delete(sessionId);
             return;
           }
 
           await socket.join(`session:${sessionId}`);
           // Optionally echo current status so UI can sync
           socket.emit('session:status_changed', { sessionId, status: session.status });
+          socket.data.joinedSessions?.add(sessionId);
+          socket.data.pendingJoins?.delete(sessionId);
         } catch (err) {
           socket.emit('error', { code: 'SESSION_JOIN_FAILED', message: 'Failed to join session' });
+          try { socket.data.pendingJoins?.clear(); } catch {}
         }
       });
 
@@ -317,6 +343,21 @@ export class WebSocketService {
           if (!sessionId) return;
           await socket.leave(`session:${sessionId}`);
           socket.emit('sessionLeft', { sessionCode: sessionId });
+
+          // If this was a student join, also leave the group room and clear tracking
+          try {
+            const info = socket.data.joinedSessionInfo?.[sessionId];
+            if (info?.groupId) {
+              await socket.leave(`group:${info.groupId}`);
+            }
+          } catch {}
+          if (socket.data.joinedSessions?.has(sessionId)) {
+            socket.data.joinedSessions.delete(sessionId);
+          }
+          if (socket.data.joinedSessionInfo && sessionId in socket.data.joinedSessionInfo) {
+            delete socket.data.joinedSessionInfo[sessionId];
+          }
+          socket.data.pendingJoins?.delete(sessionId);
         } catch (err) {
           socket.emit('error', { code: 'SESSION_LEAVE_FAILED', message: 'Failed to leave session' });
         }
@@ -332,6 +373,19 @@ export class WebSocketService {
             return;
           }
 
+          // Idempotency guard: ignore duplicate joins from the same socket for the same session
+          if (socket.data.joinedSessions?.has(sessionId)) {
+            const info = socket.data.joinedSessionInfo?.[sessionId] || { groupId: null, groupName: null };
+            socket.emit('student:session:joined', {
+              sessionId,
+              groupId: info.groupId,
+              groupName: info.groupName,
+            });
+            return;
+          }
+          if (socket.data.pendingJoins?.has(sessionId)) return;
+          socket.data.pendingJoins?.add(sessionId);
+
           // Verify student is a participant in this session
           const participant = await databricksService.queryOne(
             `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
@@ -346,6 +400,7 @@ export class WebSocketService {
               code: 'SESSION_ACCESS_DENIED', 
               message: 'Student not enrolled in this session' 
             });
+            socket.data.pendingJoins?.delete(sessionId);
             return;
           }
 
@@ -362,14 +417,25 @@ export class WebSocketService {
             groupId: participant.group_id,
             groupName: participant.group_name
           });
+
+          // Record successful join for idempotency
+          socket.data.joinedSessions?.add(sessionId);
+          if (socket.data.joinedSessionInfo) {
+            socket.data.joinedSessionInfo[sessionId] = {
+              groupId: participant.group_id ?? null,
+              groupName: participant.group_name ?? null,
+            };
+          }
           
           console.log(`Student ${socket.data.userId} joined session ${sessionId} and group ${participant.group_id}`);
+          socket.data.pendingJoins?.delete(sessionId);
         } catch (error) {
           console.error('Student session join error:', error);
           socket.emit('error', { 
             code: 'STUDENT_SESSION_JOIN_FAILED', 
             message: 'Failed to join session as student' 
           });
+          try { socket.data.pendingJoins?.clear(); } catch {}
         }
       });
 

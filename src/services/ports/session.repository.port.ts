@@ -24,6 +24,13 @@ export interface SessionRepositoryPort {
     limit: number
   ): Promise<Array<SessionBasic & { group_count: number; student_count: number; participation_rate?: number; engagement_score?: number }>>;
   /**
+   * Ultra-lean projection for dashboard recent sessions view
+   */
+  listOwnedSessionsForDashboard(
+    teacherId: string,
+    limit?: number
+  ): Promise<Array<SessionBasic & { group_count: number; student_count: number; participation_rate?: number; engagement_score?: number; access_code?: string }>>;
+  /**
    * Update session to active and set timing fields when starting a session
    */
   updateOnStart(sessionId: string, startedAt: Date): Promise<void>;

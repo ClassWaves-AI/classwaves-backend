@@ -223,20 +223,23 @@ export class CacheWarmer {
       console.log(`🔥 Warming session caches for teacher ${teacherId}`);
       
       // Import dynamically to avoid circular dependencies
-      const { getTeacherSessionsOptimized } = await import('../controllers/session.controller');
+      const { getTeacherSessionsOptimized, getTeacherSessionsForDashboard } = await import('../controllers/session.controller');
       
       // Common query patterns to pre-warm
       const commonQueries = [
-        { limit: 3, tags: [`teacher:${teacherId}`, 'sessions'], ttl: 300 },   // Dashboard
-        { limit: 20, tags: [`teacher:${teacherId}`, 'sessions'], ttl: 300 },  // Sessions page
+        { view: 'dashboard' as const, limit: 3, tags: [`teacher:${teacherId}`, 'sessions'], ttl: 300 },   // Dashboard
+        { view: 'default' as const,   limit: 20, tags: [`teacher:${teacherId}`, 'sessions'], ttl: 300 },  // Sessions page
       ];
       
       // Execute warming in background (don't await to avoid blocking)
       Promise.all(
-        commonQueries.map(async ({ limit, tags, ttl }) => {
+        commonQueries.map(async ({ view, limit, tags, ttl }) => {
           try {
-            const cacheKey = `sessions:teacher:${teacherId}:limit:${limit}`;
-            const data = await getTeacherSessionsOptimized(teacherId, limit);
+            const viewKey = view ? `:view:${view}` : ':view:default';
+            const cacheKey = `sessions:teacher:${teacherId}${viewKey}:limit:${limit}`;
+            const data = view === 'dashboard'
+              ? await getTeacherSessionsForDashboard(teacherId, limit)
+              : await getTeacherSessionsOptimized(teacherId, limit);
             await cacheManager.set(cacheKey, data, { tags, ttl, autoWarm: false });
             console.log(`🔥 Warmed cache: ${cacheKey}`);
           } catch (error) {

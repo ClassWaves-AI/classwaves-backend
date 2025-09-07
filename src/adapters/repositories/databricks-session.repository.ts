@@ -100,11 +100,11 @@ export class DatabricksSessionRepository implements SessionRepositoryPort {
       SELECT
         s.id, s.status, s.teacher_id, s.school_id,
         s.title, s.description, s.target_group_size, s.scheduled_start, s.actual_start,
-        s.planned_duration_minutes, s.created_at,
+        s.planned_duration_minutes, s.created_at, s.access_code,
         g.group_count,
         g.student_count,
-        sa.participation_rate,
-        sa.engagement_score
+        s.participation_rate,
+        s.engagement_score
       FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
       LEFT JOIN (
         SELECT session_id,
@@ -113,7 +113,29 @@ export class DatabricksSessionRepository implements SessionRepositoryPort {
         FROM ${databricksConfig.catalog}.sessions.student_groups
         GROUP BY session_id
       ) g ON s.id = g.session_id
-      LEFT JOIN ${databricksConfig.catalog}.analytics.session_analytics sa ON sa.session_id = s.id
+      WHERE s.teacher_id = ?
+      ORDER BY s.created_at DESC
+      LIMIT ?
+    `;
+    return (await databricksService.query(sql, [teacherId, limit])) as any[];
+  }
+
+  async listOwnedSessionsForDashboard(
+    teacherId: string,
+    limit = 3
+  ): Promise<Array<SessionBasic & { group_count: number; student_count: number; participation_rate?: number; engagement_score?: number; access_code?: string }>> {
+    const sql = `
+      SELECT
+        s.id, s.status, s.teacher_id, s.school_id,
+        s.title, s.description,
+        s.scheduled_start, s.actual_start, s.created_at,
+        s.target_group_size,
+        s.total_groups   AS group_count,
+        s.total_students AS student_count,
+        s.participation_rate,
+        s.engagement_score,
+        s.access_code
+      FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
       WHERE s.teacher_id = ?
       ORDER BY s.created_at DESC
       LIMIT ?

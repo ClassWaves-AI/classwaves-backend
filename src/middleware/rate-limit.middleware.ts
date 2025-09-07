@@ -93,6 +93,8 @@ export async function initializeRateLimiters() {
 
 // General rate limiting middleware
 export const rateLimitMiddleware = async (req: Request, res: Response, next: Function) => {
+  // Skip preflight and safe methods
+  if (req.method === 'OPTIONS' || req.method === 'HEAD') return next();
   if (process.env.NODE_ENV === 'test') {
     return next();
   }
@@ -133,6 +135,9 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
   console.log('🔧 DEBUG: NODE_ENV:', process.env.NODE_ENV);
   console.log('🔧 DEBUG: Request path:', req.path);
   console.log('🔧 DEBUG: Rate limiter initialized:', authRateLimiterInitialized);
+  
+  // Skip preflight and safe methods
+  if (req.method === 'OPTIONS' || req.method === 'HEAD') return next();
   
   if (process.env.NODE_ENV === 'test') {
     console.log('🔧 DEBUG: Skipping auth rate limit in test environment');

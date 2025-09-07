@@ -768,6 +768,7 @@ export class AnalyticsComputationService {
 
     await databricksService.upsert('session_metrics', { session_id: sessionId }, {
       session_id: sessionId,
+      calculation_timestamp: new Date(),
       total_students: sessionAnalyticsOverview.engagementMetrics.totalParticipants || 0,
       active_students: Math.round(rateDecimal * (sessionAnalyticsOverview.engagementMetrics.totalParticipants || 0)),
       participation_rate: rateDecimal,
@@ -930,6 +931,7 @@ export class AnalyticsComputationService {
     try {
       await databricksService.upsert('session_metrics', { session_id: sessionId }, {
         session_id: sessionId,
+        calculation_timestamp: new Date(),
         technical_issues_count: 1
       });
     } catch (e) {

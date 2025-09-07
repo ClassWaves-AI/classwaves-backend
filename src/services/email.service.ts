@@ -256,43 +256,56 @@ export class EmailService {
    * Validate email consent and COPPA compliance
    */
   private async validateEmailConsent(studentId: string): Promise<EmailComplianceValidation> {
-    // Prefer new fields when available; gracefully fallback to legacy schema
+    // Prefer new fields when available; avoid throwing on missing columns by checking schema
     try {
-      const studentNew = await databricksService.queryOne<any>(
-        `SELECT id, email_consent, coppa_compliant, teacher_verified_age 
-         FROM classwaves.users.students WHERE id = ?`,
-        [studentId]
-      );
-
-      if (studentNew) {
-        if (!studentNew.coppa_compliant) {
-          return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'coppa_verification_required_by_teacher' };
+      // Prefer new fields; if schema-check helper is unavailable (mocked tests), try the new path directly
+      let useNewPath = true;
+      try {
+        if (typeof (databricksService as any).tableHasColumns === 'function') {
+          useNewPath = await (databricksService as any).tableHasColumns('users', 'students', ['email_consent', 'coppa_compliant']);
         }
-        if (!studentNew.email_consent) {
-          return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'email_consent_required' };
-        }
-        return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+      } catch {
+        // If schema lookup fails, attempt new path and fallback on query error
+        useNewPath = true;
       }
 
-      return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
-    } catch (e) {
-      // Likely columns do not exist in current DB; use legacy fields
+      if (useNewPath) {
+        try {
+          const studentNew = await databricksService.queryOne<any>(
+            `SELECT id, email_consent, coppa_compliant 
+             FROM classwaves.users.students WHERE id = ?`,
+            [studentId]
+          );
+          if (studentNew) {
+            if (studentNew.coppa_compliant === false) {
+              return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'coppa_verification_required_by_teacher' };
+            }
+            if (studentNew.email_consent !== true) {
+              return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'email_consent_required' };
+            }
+            return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+          }
+        } catch {
+          // New columns not available; fall through to legacy path
+        }
+      }
+
+      // Legacy / current schema path
       const studentLegacy = await databricksService.queryOne<any>(
         `SELECT id, has_parental_consent, parent_email 
          FROM classwaves.users.students WHERE id = ?`,
         [studentId]
       );
-
       if (!studentLegacy) {
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
       }
-
       if (studentLegacy.has_parental_consent === true) {
         return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
       }
-
-      // No explicit consent on file
       return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'email_consent_required' };
+    } catch {
+      // Fallback safest default if schema lookup or queries fail unexpectedly
+      return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
     }
   }
 
@@ -316,8 +329,8 @@ export class EmailService {
     } catch (err: any) {
       const message = err?.message || String(err);
       // Gracefully tolerate missing audit table so session creation/emails don't fail
-      if (message.includes('TABLE_OR_VIEW_NOT_FOUND') || message.includes('email_audit')) {
-        console.warn('⚠️ Email audit table missing - skipping daily rate limit enforcement. Suggest creating compliance.email_audit table.');
+      if (message.includes('TABLE_OR_VIEW_NOT_FOUND') || message.includes('email_audit') || message.includes('notification_queue')) {
+        console.warn('⚠️ Notification/audit table missing - skipping daily rate limit enforcement. Suggest creating notifications.notification_queue and compliance.email_audit tables.');
         return; // Allow sending to proceed
       }
       // Re-throw other unexpected errors
@@ -398,7 +411,8 @@ export class EmailService {
         subject: auditRecord.subject,
         content: null,
         template_id: templateId,
-        template_data: JSON.stringify({ sessionId }),
+        // Column is MAP<STRING, STRING>; use raw SQL map expression
+        template_data: databricksService.mapStringString({ sessionId }),
         scheduled_for: null,
         expires_at: null,
         retry_count: 0,

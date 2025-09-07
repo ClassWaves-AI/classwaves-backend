@@ -183,7 +183,7 @@ export class DatabricksAnalyticsRepository implements AnalyticsRepositoryPort {
   }
 
   async updateSessionMetrics(sessionId: string, fields: Record<string, any>): Promise<void> {
-    await databricksService.update('session_metrics', `session_id = '${sessionId}'`, fields);
+    await databricksService.updateWhere('session_metrics', { session_id: sessionId }, fields);
   }
 
   async insertTier1Analysis(data: Record<string, any>): Promise<void> {

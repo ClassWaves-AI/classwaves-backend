@@ -1022,3 +1022,14 @@ DLQ replay:
 - Key: `AUDIT_LOG_DLQ_KEY` (default `audit:log:dlq`).
 - Mode: `AUDIT_DLQ_REPLAY_MODE` = `stream` (default) re-enqueues to `AUDIT_LOG_STREAM_KEY`, or `db` writes rows directly to `compliance.audit_log`.
 - Usage: `npm run audit:dlq:replay`. Safe to re-run; deletes DLQ entries after successful replay.
+#### Sessions List Query Parameters
+
+- `view`: Adjusts the projection and defaults for specific UI views.
+  - `view=dashboard` → Returns the 3 most recent sessions using an ultra-lean projection from `sessions.classroom_sessions` only. Fields include:
+    - `id, status, teacher_id, school_id, title, description, scheduled_start, actual_start, created_at, target_group_size`
+    - `total_groups AS group_count, total_students AS student_count`
+    - `participation_rate, engagement_score, access_code`
+  - Limit is hard-capped to 3 for this view (any provided `limit` is ignored).
+  - Caching keys include the `view` dimension: `sessions:teacher:<id>:view:<view|default>:limit:<n>`.
+
+- Default (no `view`): Uses the standard minimal list projection and respects the provided `limit` (defaults to 20).

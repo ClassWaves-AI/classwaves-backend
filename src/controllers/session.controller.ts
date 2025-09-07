@@ -109,13 +109,18 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     
     // Get query parameters
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
+    const view = (req.query.view as string) || undefined;
+    let limit = parseInt(req.query.limit as string) || 20;
+    if (view === 'dashboard') {
+      limit = 3; // Hard-cap dashboard view to 3
+    }
     const status = req.query.status as string;
     const sort = req.query.sort as string || 'created_at:desc';
     
     // Generate cache key and tags
     const statusFilter = status ? `:status:${status}` : '';
-    const cacheKey = `sessions:teacher:${teacher.id}:limit:${limit}${statusFilter}`;
+    const viewKey = view ? `:view:${view}` : ':view:default';
+    const cacheKey = `sessions:teacher:${teacher.id}${viewKey}:limit:${limit}${statusFilter}`;
     const cacheTags = [`teacher:${teacher.id}`, 'sessions'];
     const ttl = ttlWithJitter(CacheTTLPolicy.query['session-list']);
 
@@ -127,8 +132,10 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
       async () => {
         console.log('🔍 Cache MISS - fetching from database');
         
-        // Get raw session data
-        const rawSessions = await getTeacherSessionsOptimized(teacher.id, limit);
+        // Get raw session data (route by view)
+        const rawSessions = view === 'dashboard'
+          ? await getTeacherSessionsForDashboard(teacher.id, limit)
+          : await getTeacherSessionsOptimized(teacher.id, limit);
         
         console.log('🔍 Raw sessions returned:', rawSessions?.length || 0);
         if (rawSessions && rawSessions.length > 0) {
@@ -137,8 +144,8 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
 
         // Map DB rows to frontend contract
         const mappedSessions = await Promise.all((rawSessions || []).map(async (s: any) => {
-          const accessCode = await getAccessCodeBySession(s.id);
-          
+          // Prefer DB column; fallback to Redis mapping only if missing
+          const accessCode = s.access_code ?? (await getAccessCodeBySession(s.id));
           return {
             id: s.id,
             accessCode, // Retrieved from Redis
@@ -1055,6 +1062,16 @@ export async function getTeacherSessionsOptimized(teacherId: string, limit: numb
 }
 
 /**
+ * Ultra-lean helper for dashboard view: returns 3 most recent sessions
+ */
+export async function getTeacherSessionsForDashboard(teacherId: string, limit: number = 3): Promise<any[]> {
+  const sessionRepo = getCompositionRoot().getSessionRepository();
+  const result = await sessionRepo.listOwnedSessionsForDashboard(teacherId, Math.min(limit, 3));
+  console.log('🔍 DEBUG: listOwnedSessionsForDashboard result count:', result?.length || 0);
+  return result;
+}
+
+/**
  * Helper: Fetch complete session with groups and members
  */
 async function getSessionWithGroups(sessionId: string, teacherId: string): Promise<Session> {
@@ -1509,6 +1526,16 @@ export async function startSession(req: Request, res: Response): Promise<Respons
               forceLog: true // Always log session gating events
             }
           );
+          // Increment Prometheus counter for operational visibility
+          try {
+            const { getSessionStartGatedCounter } = await import('../metrics/session.metrics');
+            getSessionStartGatedCounter().inc({ session_id: sessionId });
+          } catch (metricError) {
+            // Metrics failures are non-blocking
+            if (process.env.API_DEBUG === '1') {
+              console.warn('Metrics counter increment failed:', metricError);
+            }
+          }
         }
       } catch (metricsError) {
         console.warn('⚠️ Session gating metrics recording failed (non-critical):', metricsError);

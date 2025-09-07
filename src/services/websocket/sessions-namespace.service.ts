@@ -1168,20 +1168,24 @@ export class SessionsNamespaceService extends NamespaceBaseService {
             [id]
           );
           if (!existing) {
-            await databricksService.insert('transcriptions', {
+            const start = new Date(result.timestamp);
+            const durSec = (result.duration ?? 0) as number;
+            const end = Number.isFinite(durSec) && durSec > 0 ? new Date(start.getTime() + Math.floor(durSec * 1000)) : start;
+            await databricksService.insert('sessions.transcriptions', {
               id,
               session_id: sessionId,
               group_id: data.groupId,
-              speaker_id: 'group',
+              speaker_id: String(data.groupId),
+              speaker_type: 'group',
               speaker_name: groupName,
-              text: result.text,
-              confidence: result.confidence,
-              language: result.language || 'en',
-              duration: result.duration || 0,
-              audio_format: resolvedMime,
-              processing_time_ms: Date.now() - startTs,
+              content: result.text,
+              language_code: result.language || 'en',
+              start_time: start,
+              end_time: end,
+              duration_seconds: durSec || 0,
+              confidence_score: result.confidence ?? 0,
+              is_final: true,
               created_at: new Date(),
-              timestamp: new Date(result.timestamp),
             });
           }
         } catch (e) {

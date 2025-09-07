@@ -117,53 +117,7 @@ try {
  * - Additional security headers
  */
 
-// SECURITY 1: Global rate limiting to prevent brute-force attacks
-const globalRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per windowMs
-  message: {
-    error: 'RATE_LIMIT_EXCEEDED',
-    message: 'Too many requests from this IP, please try again later.',
-    retryAfter: '15 minutes'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => {
-    console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
-    // Skip rate limiting for health checks and internal monitoring
-    const shouldSkip = req.path === '/api/v1/health' || req.path === '/metrics';
-    console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
-    return shouldSkip;
-  },
-  handler: (req, res) => {
-    console.error('🔧 DEBUG: Global rate limit exceeded for path:', req.path);
-    res.status(429).json({
-      error: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many requests from this IP, please try again later.',
-      retryAfter: '15 minutes'
-    });
-  }
-  // Use default IP-based key generator (handles IPv6 correctly)
-});
-
-// Add debugging wrapper for global rate limit
-app.use((req, res, next) => {
-  console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
-  console.log('🔧 DEBUG: About to apply global rate limit');
-  globalRateLimit(req, res, (err) => {
-    if (err) {
-      console.error('🔧 DEBUG: Global rate limit error:', err);
-      return res.status(500).json({
-        error: 'RATE_LIMIT_ERROR', 
-        message: 'Rate limiting service error'
-      });
-    }
-    console.log('🔧 DEBUG: Global rate limit passed');
-    next();
-  });
-});
-
-// SECURITY 2: Enhanced CORS with strict origin validation
+// SECURITY 2: Enhanced CORS with strict origin validation (must be BEFORE rate limiting)
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     // In dev and test, apply a strict whitelist to avoid echoing malicious origins in headers
@@ -196,6 +150,56 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-E2E-Test-Secret'],
 };
 app.use(cors(corsOptions));
+// Explicitly handle preflight requests globally
+try { app.options('*', cors(corsOptions)); } catch {}
+
+// SECURITY 1: Global rate limiting to prevent brute-force attacks
+const globalRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Limit each IP to 1000 requests per windowMs
+  message: {
+    error: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many requests from this IP, please try again later.',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
+    // Skip rate limiting for preflight and safe/infra endpoints
+    const isPreflight = req.method === 'OPTIONS' || req.method === 'HEAD';
+    const isInfra = req.path === '/api/v1/health' || req.path === '/metrics';
+    const shouldSkip = isPreflight || isInfra;
+    console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
+    return shouldSkip;
+  },
+  handler: (req, res) => {
+    console.error('🔧 DEBUG: Global rate limit exceeded for path:', req.path);
+    res.status(429).json({
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests from this IP, please try again later.',
+      retryAfter: '15 minutes'
+    });
+  }
+  // Use default IP-based key generator (handles IPv6 correctly)
+});
+
+// Add debugging wrapper for global rate limit (after CORS so preflight succeeds)
+app.use((req, res, next) => {
+  console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
+  console.log('🔧 DEBUG: About to apply global rate limit');
+  globalRateLimit(req, res, (err) => {
+    if (err) {
+      console.error('🔧 DEBUG: Global rate limit error:', err);
+      return res.status(500).json({
+        error: 'RATE_LIMIT_ERROR', 
+        message: 'Rate limiting service error'
+      });
+    }
+    console.log('🔧 DEBUG: Global rate limit passed');
+    next();
+  });
+});
 
 // SECURITY 3: Enhanced Content Security Policy and security headers
 app.use(helmet({
