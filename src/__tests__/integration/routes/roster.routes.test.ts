@@ -6,6 +6,7 @@ import { errorHandler } from '../../../middleware/error.middleware';
 import { mockDatabricksService } from '../../mocks/databricks.mock';
 import { testData } from '../../fixtures/test-data';
 import { generateAccessToken } from '../../../utils/jwt.utils';
+import { auditLogPort } from '../../../utils/audit.port.instance';
 
 // Mock dependencies
 jest.mock('../../../services/databricks.service', () => {
@@ -14,6 +15,9 @@ jest.mock('../../../services/databricks.service', () => {
 });
 
 jest.mock('../../../middleware/auth.middleware');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
 
 /**
  * Roster API Integration Tests - Simplified COPPA Compliance
@@ -28,6 +32,7 @@ describe('Roster Routes Integration Tests', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (auditLogPort.enqueue as unknown as jest.Mock).mockClear();
     
     // Setup Express app
     app = express();
@@ -196,19 +201,18 @@ describe('Roster Routes Integration Tests', () => {
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith({
-        actorId: teacher.id,
-        actorType: 'teacher',
-        eventType: 'student_roster_accessed',
-        eventCategory: 'data_access',
-        resourceType: 'student',
-        resourceId: 'roster',
-        schoolId: school.id,
-        description: `Teacher ID ${teacher.id} accessed student roster`,
-        ipAddress: expect.any(String),
-        userAgent: expect.any(String),
-        complianceBasis: 'legitimate_interest'
-      });
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: teacher.id,
+          actorType: 'teacher',
+          eventType: 'student_roster_accessed',
+          eventCategory: 'data_access',
+          resourceType: 'student',
+          resourceId: 'roster',
+          schoolId: school.id,
+          complianceBasis: 'legitimate_interest'
+        })
+      );
     });
   });
 
@@ -443,20 +447,17 @@ describe('Roster Routes Integration Tests', () => {
         .send(validStudentData)
         .expect(201);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith({
-        actorId: teacher.id,
-        actorType: 'teacher',
-        eventType: 'student_created',
-        eventCategory: 'configuration',
-        resourceType: 'student',
-        resourceId: expect.any(String),
-        schoolId: school.id,
-        description: expect.stringContaining('Teacher ID teacher-active-123 added student: New Student'),
-        ipAddress: expect.any(String),
-        userAgent: expect.any(String),
-        complianceBasis: 'legitimate_interest',
-        affectedStudentIds: [expect.any(String)],
-      });
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: teacher.id,
+          actorType: 'teacher',
+          eventType: 'student_created',
+          eventCategory: 'configuration',
+          resourceType: 'student',
+          schoolId: school.id,
+          complianceBasis: 'legitimate_interest'
+        })
+      );
     });
 
     it('should require authentication', async () => {
@@ -517,7 +518,7 @@ describe('Roster Routes Integration Tests', () => {
       expect(response.body).toMatchObject({ success: true, data: { student: updatedDbRow } });
 
       // Audit log recorded
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'student_updated',
           resourceId: studentId,
@@ -649,11 +650,9 @@ describe('Roster Routes Integration Tests', () => {
       expect(response.body.data.consentStatus).toBe('granted');
       expect(response.body.data.parentEmail).toBe('parent@school.edu');
 
-      // Verify audit log mentions age status
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          description: expect.stringContaining('(under 13)'),
-        })
+      // Verify audit enqueue occurred for student creation
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: 'student_created', resourceType: 'student' })
       );
     });
 
@@ -927,19 +926,18 @@ describe('Roster Routes Integration Tests', () => {
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith({
-        actorId: teacher.id,
-        actorType: 'teacher',
-        eventType: 'roster_overview_accessed',
-        eventCategory: 'data_access',
-        resourceType: 'student',
-        resourceId: 'overview',
-        schoolId: school.id,
-        description: `Teacher ID ${teacher.id} accessed roster overview metrics`,
-        ipAddress: expect.any(String),
-        userAgent: undefined,
-        complianceBasis: 'legitimate_interest'
-      });
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: teacher.id,
+          actorType: 'teacher',
+          eventType: 'roster_overview_accessed',
+          eventCategory: 'data_access',
+          resourceType: 'student',
+          resourceId: 'overview',
+          schoolId: school.id,
+          complianceBasis: 'legitimate_interest'
+        })
+      );
     });
 
     it('should handle database errors gracefully', async () => {

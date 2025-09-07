@@ -47,7 +47,7 @@ export class AnalyticsQueryRouterService {
     },
     'session_analytics': {
       name: 'session_analytics_cache',
-      tableName: 'classwaves.analytics.session_analytics_cache',
+      tableName: 'classwaves.users.session_analytics_cache',
       priority: 2,
       queryPatterns: ['session_analytics', 'session_overview', 'session_metrics'], // ✅ Updated to include correct table name
       fallbackStrategy: 'source'
@@ -338,7 +338,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'classwaves.analytics.session_analytics_cache':
+        case 'classwaves.users.session_analytics_cache':
           freshnessQuery = `
             SELECT TIMESTAMPDIFF(HOUR, MAX(last_updated), CURRENT_TIMESTAMP()) as age_hours
             FROM ${tableName}
@@ -417,7 +417,7 @@ export class AnalyticsQueryRouterService {
           `;
           break;
           
-        case 'classwaves.analytics.session_analytics_cache':
+        case 'classwaves.users.session_analytics_cache':
           countQuery = `
             SELECT COUNT(*) as record_count
             FROM ${tableName}
@@ -494,7 +494,7 @@ export class AnalyticsQueryRouterService {
     includeRealTime: boolean
   ): Promise<any> {
     try {
-      // ✅ FIXED: Use correct schema - session_analytics_cache is in users schema, not analytics
+      // ✅ Canonical schema - session_analytics_cache in users schema
       const query = `
         SELECT 
           session_id,
@@ -502,22 +502,20 @@ export class AnalyticsQueryRouterService {
           planned_groups,
           actual_groups,
           planned_duration_minutes,
-          actual_duration_minutes,
-          total_students,
-          active_students,
-          avg_participation_rate,
-          ready_groups_at_start,
-          ready_groups_at_5m,
-          ready_groups_at_10m,
-          avg_group_readiness_time,
-          total_transcriptions,
+          session_duration_minutes,
+          total_participants,
+          participation_rate,
+          groups_ready_at_start,
+          groups_ready_at_5min,
+          groups_ready_at_10min,
+          avg_readiness_time_minutes,
           avg_engagement_score,
           avg_collaboration_score,
-          cache_key,
-          expires_at,
-          last_updated,
-          created_at
-        FROM classwaves.analytics.session_analytics_cache
+          key_insights,
+          intervention_recommendations,
+          leader_ready_events,
+          cached_at
+        FROM classwaves.users.session_analytics_cache
         WHERE session_id = ?
       `;
 

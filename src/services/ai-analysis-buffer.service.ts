@@ -8,29 +8,11 @@
  * - Automatic memory cleanup
  */
 
-import { z } from 'zod';
 import { databricksService } from './databricks.service';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 
-// ============================================================================
-// Input Validation Schemas
-// ============================================================================
-
-const transcriptionSchema = z.object({
-  // Service-level accepts generic strings; strict UUID validation enforced at route edges.
-  groupId: z.string().min(1, 'Invalid group ID'),
-  sessionId: z.string().min(1, 'Invalid session ID'),
-  // Allow empty transcription to represent silence; still validated as string with max length.
-  transcription: z.string().min(0).max(10000, 'Transcription too long'),
-  timestamp: z.date()
-});
-
-const bufferOptionsSchema = z.object({
-  maxBufferSize: z.number().min(1).max(100).default(50),
-  maxBufferAgeMs: z.number().min(1000).max(300000).default(60000), // 1 minute default
-  tier1WindowMs: z.number().min(5000).max(120000).default(30000), // 30 seconds
-  tier2WindowMs: z.number().min(60000).max(600000).default(180000), // 3 minutes
-}).optional();
+// Validation moved to edges (routes/controllers/websocket). This service assumes
+// inputs are pre-validated and focuses on buffering and analytics logic.
 
 // ============================================================================
 // Buffer Types
@@ -144,20 +126,18 @@ export class AIAnalysisBufferService {
     groupId: string,
     sessionId: string,
     transcription: string,
-    options?: z.infer<typeof bufferOptionsSchema>
+    options?: Partial<{ maxBufferSize: number; maxBufferAgeMs: number; tier1WindowMs: number; tier2WindowMs: number }>
   ): Promise<void> {
     const startTime = Date.now();
     
     try {
-      // ✅ SECURITY: Input validation
-      const validated = transcriptionSchema.parse({
-        groupId,
-        sessionId,
-        transcription,
-        timestamp: new Date()
-      });
-
-      const validatedOptions = bufferOptionsSchema.parse(options || {});
+      // Normalize lightweight options (no Zod in domain)
+      const normalizedOptions = {
+        maxBufferSize: Math.max(1, Math.min(100, options?.maxBufferSize ?? this.config.maxBufferSize)),
+        maxBufferAgeMs: Math.max(1000, Math.min(300000, options?.maxBufferAgeMs ?? this.config.maxBufferAgeMs)),
+        tier1WindowMs: Math.max(5000, Math.min(120000, options?.tier1WindowMs ?? this.config.tier1WindowMs)),
+        tier2WindowMs: Math.max(60000, Math.min(600000, options?.tier2WindowMs ?? this.config.tier2WindowMs)),
+      };
 
       // ✅ COMPLIANCE: Audit logging for educational data processing
       await this.auditLog({
@@ -173,8 +153,8 @@ export class AIAnalysisBufferService {
 
       // Add to both tier buffers
       await Promise.all([
-        this.addToBuffer('tier1', validated, validatedOptions),
-        this.addToBuffer('tier2', validated, validatedOptions)
+        this.addToBuffer('tier1', { groupId, sessionId, transcription, timestamp: new Date() } as any, normalizedOptions as any),
+        this.addToBuffer('tier2', { groupId, sessionId, transcription, timestamp: new Date() } as any, normalizedOptions as any)
       ]);
 
       // ✅ MEMORY: Force garbage collection after processing
@@ -243,6 +223,34 @@ export class AIAnalysisBufferService {
     } catch (error) {
       console.error(`❌ Failed to get buffered transcripts for group ${groupId}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Get timestamp of the most recent buffered transcript for a given tier.
+   * For tier1, requires groupId; for tier2, returns latest across session groups.
+   */
+  public getLastBufferedAt(
+    tier: 'tier1' | 'tier2',
+    sessionId: string,
+    groupId?: string
+  ): Date | null {
+    try {
+      if (tier === 'tier1') {
+        if (!groupId) return null;
+        const buf = this.tier1Buffers.get(`${sessionId}:${groupId}`);
+        return buf?.lastUpdate || null;
+      }
+      // tier2: scan buffers for the session and return latest update
+      let latest: Date | null = null;
+      for (const [, buf] of Array.from(this.tier2Buffers.entries())) {
+        if (buf.sessionId === sessionId) {
+          if (!latest || buf.lastUpdate > latest) latest = buf.lastUpdate;
+        }
+      }
+      return latest;
+    } catch {
+      return null;
     }
   }
 
@@ -623,8 +631,8 @@ export class AIAnalysisBufferService {
 
   private async addToBuffer(
     tier: 'tier1' | 'tier2',
-    validated: z.infer<typeof transcriptionSchema>,
-    options: z.infer<typeof bufferOptionsSchema>
+    validated: { groupId: string; sessionId: string; transcription: string; timestamp: Date },
+    options: { maxBufferSize: number; maxBufferAgeMs: number; tier1WindowMs: number; tier2WindowMs: number }
   ): Promise<void> {
     const buffers = tier === 'tier1' ? this.tier1Buffers : this.tier2Buffers;
     const bufferKey = `${validated.sessionId}:${validated.groupId}`;
@@ -752,7 +760,8 @@ export class AIAnalysisBufferService {
     error?: string;
   }): Promise<void> {
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: data.actorId,
         actorType: 'system',
         eventType: data.eventType,
@@ -760,10 +769,11 @@ export class AIAnalysisBufferService {
         resourceType: data.targetType,
         resourceId: data.targetId,
         schoolId: 'system', // System-level operation
-        description: `${data.educationalPurpose} - Session: ${data.sessionId}`,
+        description: `${data.educationalPurpose} - session:${data.sessionId}`,
+        sessionId: data.sessionId,
         complianceBasis: 'legitimate_interest',
         dataAccessed: data.transcriptionLength ? `transcription_${data.transcriptionLength}_chars` : 'buffer_metadata'
-      });
+      }).catch(() => {});
     } catch (error) {
       // Don't fail the main operation if audit logging fails
       console.warn('⚠️ Audit logging failed in AI buffer service:', error);

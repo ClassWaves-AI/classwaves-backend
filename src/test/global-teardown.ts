@@ -7,6 +7,8 @@
 
 import { databricksService } from '../services/databricks.service';
 import { redisService } from '../services/redis.service';
+import * as promClient from 'prom-client';
+import { closeNamespacedWebSocket } from '../services/websocket/namespaced-websocket.service';
 
 export default async (): Promise<void> => {
   console.log('🧹 Starting global test teardown...');
@@ -41,6 +43,12 @@ export default async (): Promise<void> => {
   
   // Wait for all cleanup tasks to complete
   await Promise.allSettled(cleanupTasks);
+
+  // Close Socket.IO server if initialized
+  try { await closeNamespacedWebSocket(); } catch {}
+
+  // Clear Prometheus registry to avoid open handles between workers
+  try { promClient.register.clear(); } catch {}
   
   // Give a brief moment for all async operations to complete
   await new Promise(resolve => setTimeout(resolve, 200));

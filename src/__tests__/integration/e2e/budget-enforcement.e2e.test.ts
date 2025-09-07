@@ -4,7 +4,7 @@ import { createServer } from 'http';
 import { AddressInfo } from 'net';
 import { io as clientIO, Socket } from 'socket.io-client';
 import app from '../../../app';
-import { initializeWebSocket } from '../../../services/websocket.service';
+import { initializeWebSocket } from '../../../services/websocket';
 import { openAIWhisperService } from '../../../services/openai-whisper.service';
 import { redisService } from '../../../services/redis.service';
 

@@ -138,9 +138,10 @@ export class RetryService {
     operationName: string
   ): Promise<T> {
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      const t = setTimeout(() => {
         reject(new Error(`Operation "${operationName}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+      (t as any).unref?.();
     });
 
     return Promise.race([operation(), timeoutPromise]);

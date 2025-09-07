@@ -3,6 +3,9 @@ import { Request } from 'express';
 import { redisService } from './redis.service';
 import { Teacher, School } from '../types/auth.types';
 import { SecureJWTService } from './secure-jwt.service';
+import { CacheTTLPolicy, ttlWithJitter } from './cache-ttl.policy';
+import { cachePort } from '../utils/cache.port.instance';
+import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
 
 interface SecureSessionData {
   teacherId: string;
@@ -197,14 +200,39 @@ export class SecureSessionService {
       
       // Store encrypted session with sliding expiration
       console.log('🔧 DEBUG: Storing encrypted session in Redis');
-      const sessionTTL = 24 * 60 * 60; // 24 hours
-      await redisService.set(`secure_session:${sessionId}`, encryptedData, sessionTTL);
+      const sessionTTL = ttlWithJitter(CacheTTLPolicy.secureSession);
+      {
+        const legacy = `secure_session:${sessionId}`;
+        const prefixed = makeKey('secure_session', sessionId);
+        if (isPrefixEnabled()) {
+          await cachePort.set(prefixed, encryptedData, sessionTTL);
+          if (isDualWriteEnabled()) {
+            await cachePort.set(legacy, encryptedData, sessionTTL);
+          }
+        } else {
+          await cachePort.set(legacy, encryptedData, sessionTTL);
+        }
+      }
       console.log('🔧 DEBUG: Encrypted session stored in Redis successfully');
       
       // Track active sessions for the teacher
       console.log('🔧 DEBUG: Adding session to teacher active sessions set');
-      await redisService.getClient().sadd(`teacher_sessions:${teacher.id}`, sessionId);
-      await redisService.getClient().expire(`teacher_sessions:${teacher.id}`, 86400); // 24 hours
+      {
+        const legacySet = `teacher_sessions:${teacher.id}`;
+        const prefixedSet = makeKey('teacher_sessions', teacher.id);
+        const client = redisService.getClient();
+        if (isPrefixEnabled()) {
+          await client.sadd(prefixedSet, sessionId);
+          await client.expire(prefixedSet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
+          if (isDualWriteEnabled()) {
+            await client.sadd(legacySet, sessionId);
+            await client.expire(legacySet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
+          }
+        } else {
+          await client.sadd(legacySet, sessionId);
+          await client.expire(legacySet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
+        }
+      }
       console.log('🔧 DEBUG: Session added to teacher active sessions set');
       
       // Store session metadata for monitoring
@@ -267,11 +295,19 @@ export class SecureSessionService {
       
       // Store the updated session with same TTL as original
       const sessionTtl = 86400; // 24 hours in seconds (SESSION_TTL equivalent)
-      await redisService.set(
-        `secure_session:${sessionId}`,
-        JSON.stringify(encryptedSessionData),
-        sessionTtl
-      );
+      {
+        const legacy = `secure_session:${sessionId}`;
+        const prefixed = makeKey('secure_session', sessionId);
+        const payload = JSON.stringify(encryptedSessionData);
+        if (isPrefixEnabled()) {
+          await cachePort.set(prefixed, payload, sessionTtl);
+          if (isDualWriteEnabled()) {
+            await cachePort.set(legacy, payload, sessionTtl);
+          }
+        } else {
+          await cachePort.set(legacy, payload, sessionTtl);
+        }
+      }
       
       console.log(`✅ Session ${sessionId} successfully updated with new device fingerprint`);
       
@@ -286,7 +322,11 @@ export class SecureSessionService {
     const retrieveStart = performance.now();
     
     try {
-      const encryptedData = await redisService.get(`secure_session:${sessionId}`);
+      const legacy = `secure_session:${sessionId}`;
+      const prefixed = makeKey('secure_session', sessionId);
+      const encryptedData = isPrefixEnabled()
+        ? (await cachePort.get(prefixed)) ?? (await cachePort.get(legacy))
+        : await cachePort.get(legacy);
       
       if (!encryptedData) {
         console.log(`ℹ️  Session not found: ${sessionId}`);
@@ -314,7 +354,17 @@ export class SecureSessionService {
       // Update last activity
       sessionData.lastActivity = new Date();
       const updatedEncryptedData = this.encryptSessionData(sessionData);
-      await redisService.set(`secure_session:${sessionId}`, updatedEncryptedData, 24 * 60 * 60);
+      {
+        const legacy = `secure_session:${sessionId}`;
+        const prefixed = makeKey('secure_session', sessionId);
+        const ttl = ttlWithJitter(CacheTTLPolicy.secureSession);
+        if (isPrefixEnabled()) {
+          await cachePort.set(prefixed, updatedEncryptedData, ttl);
+          if (isDualWriteEnabled()) await cachePort.set(legacy, updatedEncryptedData, ttl);
+        } else {
+          await cachePort.set(legacy, updatedEncryptedData, ttl);
+        }
+      }
       
       const retrieveTime = performance.now() - retrieveStart;
       console.log(`🔓 Secure session retrieved: ${sessionId} (${retrieveTime.toFixed(2)}ms)`);
@@ -329,12 +379,23 @@ export class SecureSessionService {
   // SECURITY 9: Enforce concurrent session limits
   private static async enforceSessionLimits(teacherId: string): Promise<void> {
     try {
-      const activeSessions = await redisService.getClient().smembers(`teacher_sessions:${teacherId}`);
+      const client = redisService.getClient();
+      const legacySet = `teacher_sessions:${teacherId}`;
+      const prefixedSet = makeKey('teacher_sessions', teacherId);
+      const activeSessions = isPrefixEnabled()
+        ? (await client.smembers(prefixedSet)).length > 0
+          ? await client.smembers(prefixedSet)
+          : await client.smembers(legacySet)
+        : await client.smembers(legacySet);
       
       // Remove expired sessions from the set
       const validSessions: string[] = [];
       for (const sessionId of activeSessions) {
-        const exists = await redisService.getClient().exists(`secure_session:${sessionId}`);
+        const legacy = `secure_session:${sessionId}`;
+        const prefixed = makeKey('secure_session', sessionId);
+        const exists = isPrefixEnabled()
+          ? (await client.exists(prefixed)) || (await client.exists(legacy))
+          : await client.exists(legacy);
         if (exists) {
           validSessions.push(sessionId);
         }
@@ -342,10 +403,25 @@ export class SecureSessionService {
       
       // Update the set with only valid sessions
       if (validSessions.length !== activeSessions.length) {
-        await redisService.getClient().del(`teacher_sessions:${teacherId}`);
-        if (validSessions.length > 0) {
-          await redisService.getClient().sadd(`teacher_sessions:${teacherId}`, ...validSessions);
-          await redisService.getClient().expire(`teacher_sessions:${teacherId}`, 86400);
+        if (isPrefixEnabled()) {
+          await client.del(prefixedSet);
+          if (validSessions.length > 0) {
+            await client.sadd(prefixedSet, ...validSessions);
+            await client.expire(prefixedSet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
+          }
+          if (isDualWriteEnabled()) {
+            await client.del(legacySet);
+            if (validSessions.length > 0) {
+              await client.sadd(legacySet, ...validSessions);
+              await client.expire(legacySet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
+            }
+          }
+        } else {
+          await client.del(legacySet);
+          if (validSessions.length > 0) {
+            await client.sadd(legacySet, ...validSessions);
+            await client.expire(legacySet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
+          }
         }
       }
       
@@ -631,12 +707,31 @@ export class SecureSessionService {
       // Get session data before deletion for logging
       const sessionData = await this.getSecureSession(sessionId);
       
-      // Remove encrypted session
-      await redisService.getClient().del(`secure_session:${sessionId}`);
+      // Remove encrypted session (both legacy and prefixed when applicable)
+      {
+        const legacy = `secure_session:${sessionId}`;
+        const prefixed = makeKey('secure_session', sessionId);
+        if (isPrefixEnabled()) {
+          await cachePort.del(prefixed);
+          if (isDualWriteEnabled()) {
+            await cachePort.del(legacy);
+          }
+        } else {
+          await cachePort.del(legacy);
+        }
+      }
       
       // Remove from teacher's active sessions
       if (sessionData) {
-        await redisService.getClient().srem(`teacher_sessions:${sessionData.teacherId}`, sessionId);
+        const legacySet = `teacher_sessions:${sessionData.teacherId}`;
+        const prefixedSet = makeKey('teacher_sessions', sessionData.teacherId);
+        const client = redisService.getClient();
+        if (isPrefixEnabled()) {
+          await client.srem(prefixedSet, sessionId);
+          if (isDualWriteEnabled()) await client.srem(legacySet, sessionId);
+        } else {
+          await client.srem(legacySet, sessionId);
+        }
       }
       
       // Remove metadata
@@ -675,10 +770,21 @@ export class SecureSessionService {
     sessionInvalidations: number;
   }> {
     try {
+      const client = redisService.getClient();
+      const scanAll = async (pattern: string): Promise<string[]> => {
+        let cursor = '0'; const acc: string[] = [];
+        do {
+          // @ts-ignore ioredis scan
+          const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+          if (Array.isArray(batch) && batch.length) acc.push(...batch);
+          cursor = nextCursor;
+        } while (cursor !== '0');
+        return acc;
+      };
       const [sessionKeys, alertKeys, invalidationKeys] = await Promise.all([
-        redisService.getClient().keys('secure_session:*'),
-        redisService.getClient().keys('security_alert:*'),
-        redisService.getClient().keys('session_invalidation:*')
+        scanAll('secure_session:*'),
+        scanAll('security_alert:*'),
+        scanAll('session_invalidation:*')
       ]);
       
       // Count suspicious sessions
@@ -718,14 +824,20 @@ export class SecureSessionService {
       
       let cleanupCount = 0;
       for (const pattern of patterns) {
-        const keys = await redisService.getClient().keys(pattern);
-        for (const key of keys) {
-          const ttl = await redisService.getClient().ttl(key);
-          if (ttl <= 0) {
-            await redisService.getClient().del(key);
-            cleanupCount++;
+        let cursor = '0';
+        const client = redisService.getClient();
+        do {
+          // @ts-ignore ioredis scan
+          const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+          for (const key of batch || []) {
+            const ttl = await redisService.getClient().ttl(key);
+            if (ttl <= 0) {
+              await redisService.getClient().del(key);
+              cleanupCount++;
+            }
           }
-        }
+          cursor = nextCursor;
+        } while (cursor !== '0');
       }
       
       if (cleanupCount > 0) {

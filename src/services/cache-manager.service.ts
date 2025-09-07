@@ -1,4 +1,5 @@
 import { redisService } from './redis.service';
+import { CacheTTLPolicy } from './cache-ttl.policy';
 import { EventEmitter } from 'events';
 
 /**
@@ -36,9 +37,9 @@ export interface CacheMetrics {
  */
 export const CacheTTLConfig = {
   // Session data
-  'session-list': 300,        // 5 minutes - frequently changing
-  'session-detail': 900,      // 15 minutes - more stable
-  'session-analytics': 60,    // 1 minute - real-time data
+  'session-list': CacheTTLPolicy.query['session-list'],
+  'session-detail': CacheTTLPolicy.query['session-detail'],
+  'session-analytics': CacheTTLPolicy.query['session-analytics'],
   
   // User data  
   'user-profile': 1800,       // 30 minutes - rarely changes
@@ -49,7 +50,7 @@ export const CacheTTLConfig = {
   'roster-data': 1800,        // 30 minutes - periodic updates
   
   // Default fallback
-  'default': 300,             // 5 minutes
+  'default': CacheTTLPolicy.analyticsSession,
 } as const;
 
 /**
@@ -59,6 +60,7 @@ export class CacheManager extends EventEmitter {
   private static instance: CacheManager;
   private tagRegistry = new Map<string, Set<string>>(); // tag -> keys
   private keyRegistry = new Map<string, Set<string>>(); // key -> tags
+  private inflight = new Map<string, Promise<any>>(); // single-flight per key
   private metrics: CacheMetrics = {
     hits: 0,
     misses: 0,
@@ -169,16 +171,25 @@ export class CacheManager extends EventEmitter {
       return cached;
     }
 
-    // Cache miss - fetch from source
-    try {
-      const data = await factory();
-      await this.set(key, data, options);
-      return data;
-    } catch (error) {
-      this.metrics.errors++;
-      this.emit('cache:factory-error', { key, error });
-      throw error; // Re-throw factory errors
+    // Single-flight: coalesce concurrent cache misses per key
+    if (this.inflight.has(key)) {
+      return this.inflight.get(key)! as Promise<T>;
     }
+    const p = (async () => {
+      try {
+        const data = await factory();
+        await this.set(key, data, options);
+        return data;
+      } catch (error) {
+        this.metrics.errors++;
+        this.emit('cache:factory-error', { key, error });
+        throw error; // Re-throw factory errors
+      } finally {
+        this.inflight.delete(key);
+      }
+    })();
+    this.inflight.set(key, p);
+    return p;
   }
 
   /**
@@ -253,10 +264,33 @@ export class CacheManager extends EventEmitter {
    */
   async invalidateByPattern(pattern: string): Promise<number> {
     try {
-      const keys = await redisService.getClient().keys(pattern);
-      
+      const client = redisService.getClient();
+      const deleted: string[] = [];
+      let cursor = '0';
+      do {
+        // @ts-ignore ioredis scan
+        const [nextCursor, batch]: [string, string[]] = await (client as any).scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+        if (Array.isArray(batch) && batch.length) {
+          await client.del(...batch);
+          deleted.push(...batch);
+          // Clean up registries for deleted keys
+          for (const key of batch) {
+            const keyTags = this.keyRegistry.get(key);
+            if (keyTags) {
+              for (const tag of keyTags) {
+                this.tagRegistry.get(tag)?.delete(key);
+              }
+              this.keyRegistry.delete(key);
+            }
+          }
+        }
+        cursor = nextCursor;
+      } while (cursor !== '0');
+
+      const keys = deleted;
+
       if (keys.length > 0) {
-        await redisService.getClient().del(...keys);
+        // already deleted above
         
         // Clean up registries
         for (const key of keys) {

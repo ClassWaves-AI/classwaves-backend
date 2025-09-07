@@ -1,4 +1,4 @@
-import { WebSocketService } from '../../../services/websocket.service';
+import { WebSocketService } from '../../../services/websocket';
 import { databricksService } from '../../../services/databricks.service';
 import { Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';

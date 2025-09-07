@@ -16,12 +16,18 @@ import { GuidanceNamespaceService } from '../../services/websocket/guidance-name
 import { aiAnalysisBufferService } from '../../services/ai-analysis-buffer.service';
 import { teacherPromptService } from '../../services/teacher-prompt.service';
 import { databricksService } from '../../services/databricks.service';
+import { auditLogPort } from '../../utils/audit.port.instance';
 import type { TeacherPrompt } from '../../types/teacher-guidance.types';
 import type { Tier1Insights, Tier2Insights } from '../../types/ai-analysis.types';
 
 // Mock only databricks for controlled data
 jest.mock('../../services/databricks.service');
 const mockDatabricksService = databricksService as jest.Mocked<typeof databricksService>;
+
+// Mock audit port to validate enqueue calls (port-based design)
+jest.mock('../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
 
 describe('Guidance Namespace Integration Tests', () => {
   let httpServer: HTTPServer;
@@ -64,6 +70,7 @@ describe('Guidance Namespace Integration Tests', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    (auditLogPort.enqueue as unknown as jest.Mock).mockClear();
     
     // Clear service state
     aiAnalysisBufferService['tier1Buffers'].clear();
@@ -350,15 +357,15 @@ describe('Guidance Namespace Integration Tests', () => {
       expect(response.insights.summary.criticalAlerts).toContain('Group group-001: Some minor deviation from core ecosystem concepts');
       expect(response.insights.summary.criticalAlerts).toContain('Session: Consider strategies to increase participation from quieter students');
 
-      // Verify compliance auditing was called
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      // Verify compliance auditing was called (port-based)
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'teacher_prompt_access',
           actorId: 'system'
         })
       );
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'ai_insights_access',
           actorId: 'system'
@@ -502,8 +509,8 @@ describe('Guidance Namespace Integration Tests', () => {
 
       await responsePromise;
 
-      // Verify both services logged audit events
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      // Verify both services logged audit events (port-based)
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'teacher_prompt_access',
           actorId: 'system',
@@ -515,7 +522,7 @@ describe('Guidance Namespace Integration Tests', () => {
         })
       );
 
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'ai_insights_access',
           actorId: 'system',

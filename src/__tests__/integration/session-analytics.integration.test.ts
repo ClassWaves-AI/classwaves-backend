@@ -10,13 +10,14 @@ import { Server } from 'http';
 import { createTestApp } from '../test-utils/app-setup';
 import { createTestSession, createTestTeacher, createTestSchool } from '../test-utils/factories';
 import { databricksService } from '../../services/databricks.service';
-import { websocketService } from '../../services/websocket.service';
+import { auditLogPort } from '../../utils/audit.port.instance';
+import { websocketService } from '../../services/websocket';
 import { analyticsComputationService } from '../../services/analytics-computation.service';
 import { AuthRequest } from '../../types/auth.types';
 import { afterAllWithCleanup } from '../../test/test-cleanup';
 
 // Mock WebSocket service to capture events
-jest.mock('../../services/websocket.service', () => ({
+jest.mock('../../services/websocket', () => ({
   websocketService: {
     endSession: jest.fn(),
     notifySessionUpdate: jest.fn(),
@@ -26,6 +27,11 @@ jest.mock('../../services/websocket.service', () => ({
 }));
 
 const mockWebsocketService = websocketService as jest.Mocked<typeof websocketService>;
+
+// Mock audit port (port-based audit logging)
+jest.mock('../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
 
 describe('Session Analytics Integration', () => {
   let server: Server;
@@ -334,14 +340,13 @@ describe('Session Analytics Integration', () => {
     });
 
     it('should log analytics access for compliance', async () => {
-      const auditSpy = jest.spyOn(databricksService, 'recordAuditLog')
-        .mockResolvedValue();
+      const enqueueSpy = jest.spyOn(auditLogPort, 'enqueue').mockResolvedValue();
 
       await request(app)
         .get(`/api/v1/analytics/session/${testSession.id}/membership-summary`)
         .set('Authorization', `Bearer ${authToken}`);
 
-      expect(auditSpy).toHaveBeenCalledWith(
+      expect(enqueueSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'analytics_access',
           resourceType: 'session_analytics',

@@ -261,39 +261,22 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
       },
     });
 
-    // ASYNC audit logging (don't block response) with resilient retry
-    setImmediate(async () => {
-      console.log(`🔍 ASYNC AUDIT LOG START [${requestId}]`);
-      const auditLogStart = performance.now();
-      try {
-        await RetryService.retryDatabaseOperation(
-          () => databricksService.recordAuditLog({
-            actorId: authResult.teacher.id,
-            actorType: 'teacher',
-            eventType: 'login',
-            eventCategory: 'authentication',
-            resourceType: 'session',
-            resourceId: sessionId,
-            schoolId: authResult.school.id,
-            description: `Teacher ID ${authResult.teacher.id} logged in successfully (resilient flow)`,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent'],
-            complianceBasis: 'legitimate_interest',
-            metadata: {
-              degradedMode: authResult.degradedMode || false,
-              requestId
-            }
-          }),
-          'AuditLog'
-        );
-        console.log(`⏱️ Async audit log took ${(performance.now() - auditLogStart).toFixed(2)}ms [${requestId}]`);
-        
-        const totalTime = performance.now() - startTime;
-        console.log(`🎉 RESILIENT TOTAL TIME (including audit) - ${totalTime.toFixed(2)}ms [${requestId}]`);
-      } catch (error) {
-        console.error(`⚠️ Async audit log failed [${requestId}]:`, error);
-      }
-    });
+    // Fire-and-forget audit enqueue
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
+      actorId: authResult.teacher.id,
+      actorType: 'teacher',
+      eventType: 'login',
+      eventCategory: 'authentication',
+      resourceType: 'session',
+      resourceId: sessionId,
+      schoolId: authResult.school.id,
+      description: `teacher:${authResult.teacher.id} login successful`,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      complianceBasis: 'legitimate_interest',
+      sessionId,
+    }).catch(() => {});
 
     return response;
     

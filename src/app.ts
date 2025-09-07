@@ -29,11 +29,23 @@ import debugRoutes from './routes/debug.routes';
 import { redisService } from './services/redis.service';
 import { databricksService } from './services/databricks.service';
 import { openAIWhisperService } from './services/openai-whisper.service';
+import { inMemoryAudioProcessor } from './services/audio/InMemoryAudioProcessor';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
 import { initializeRateLimiters } from './middleware/rate-limit.middleware';
 import { errorLoggingHandler } from './middleware/error-logging.middleware';
 import client from 'prom-client';
+import { traceIdMiddleware } from './middleware/trace-id.middleware';
+import { httpMetricsMiddleware } from './middleware/metrics.middleware';
+
+// Optional OTEL: initialize and wire tracing when enabled
+try {
+  if (process.env.OTEL_ENABLED === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const otel = require('./observability/otel');
+    try { otel.initOtel(); } catch {}
+  }
+} catch {}
 
 const app = express();
 
@@ -83,6 +95,18 @@ app.use((req, res, next) => {
   next();
 });
 
+// Correlation: assign/propagate X-Trace-Id for every request
+app.use(traceIdMiddleware);
+
+// Attach OTEL HTTP tracing middleware if enabled
+try {
+  if (process.env.OTEL_ENABLED === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { httpTraceMiddleware } = require('./observability/otel');
+    app.use(httpTraceMiddleware());
+  }
+} catch {}
+
 /**
  * SECURITY HARDENING - Phase 2 Implementation
  * 
@@ -93,53 +117,7 @@ app.use((req, res, next) => {
  * - Additional security headers
  */
 
-// SECURITY 1: Global rate limiting to prevent brute-force attacks
-const globalRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per windowMs
-  message: {
-    error: 'RATE_LIMIT_EXCEEDED',
-    message: 'Too many requests from this IP, please try again later.',
-    retryAfter: '15 minutes'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => {
-    console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
-    // Skip rate limiting for health checks and internal monitoring
-    const shouldSkip = req.path === '/api/v1/health' || req.path === '/metrics';
-    console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
-    return shouldSkip;
-  },
-  handler: (req, res) => {
-    console.error('🔧 DEBUG: Global rate limit exceeded for path:', req.path);
-    res.status(429).json({
-      error: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many requests from this IP, please try again later.',
-      retryAfter: '15 minutes'
-    });
-  }
-  // Use default IP-based key generator (handles IPv6 correctly)
-});
-
-// Add debugging wrapper for global rate limit
-app.use((req, res, next) => {
-  console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
-  console.log('🔧 DEBUG: About to apply global rate limit');
-  globalRateLimit(req, res, (err) => {
-    if (err) {
-      console.error('🔧 DEBUG: Global rate limit error:', err);
-      return res.status(500).json({
-        error: 'RATE_LIMIT_ERROR', 
-        message: 'Rate limiting service error'
-      });
-    }
-    console.log('🔧 DEBUG: Global rate limit passed');
-    next();
-  });
-});
-
-// SECURITY 2: Enhanced CORS with strict origin validation
+// SECURITY 2: Enhanced CORS with strict origin validation (must be BEFORE rate limiting)
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     // In dev and test, apply a strict whitelist to avoid echoing malicious origins in headers
@@ -172,6 +150,56 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-E2E-Test-Secret'],
 };
 app.use(cors(corsOptions));
+// Explicitly handle preflight requests globally
+try { app.options('*', cors(corsOptions)); } catch {}
+
+// SECURITY 1: Global rate limiting to prevent brute-force attacks
+const globalRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Limit each IP to 1000 requests per windowMs
+  message: {
+    error: 'RATE_LIMIT_EXCEEDED',
+    message: 'Too many requests from this IP, please try again later.',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
+    // Skip rate limiting for preflight and safe/infra endpoints
+    const isPreflight = req.method === 'OPTIONS' || req.method === 'HEAD';
+    const isInfra = req.path === '/api/v1/health' || req.path === '/metrics';
+    const shouldSkip = isPreflight || isInfra;
+    console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
+    return shouldSkip;
+  },
+  handler: (req, res) => {
+    console.error('🔧 DEBUG: Global rate limit exceeded for path:', req.path);
+    res.status(429).json({
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests from this IP, please try again later.',
+      retryAfter: '15 minutes'
+    });
+  }
+  // Use default IP-based key generator (handles IPv6 correctly)
+});
+
+// Add debugging wrapper for global rate limit (after CORS so preflight succeeds)
+app.use((req, res, next) => {
+  console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
+  console.log('🔧 DEBUG: About to apply global rate limit');
+  globalRateLimit(req, res, (err) => {
+    if (err) {
+      console.error('🔧 DEBUG: Global rate limit error:', err);
+      return res.status(500).json({
+        error: 'RATE_LIMIT_ERROR', 
+        message: 'Rate limiting service error'
+      });
+    }
+    console.log('🔧 DEBUG: Global rate limit passed');
+    next();
+  });
+});
 
 // SECURITY 3: Enhanced Content Security Policy and security headers
 app.use(helmet({
@@ -315,6 +343,9 @@ app.use(requireCSRF({
   ]
 }));
 
+// HTTP request metrics (after security middleware, before routes)
+app.use(httpMetricsMiddleware);
+
 // Lightweight readiness endpoint for orchestration/tests
 // Always returns 200 once the HTTP server is up, regardless of downstream service health
 app.get('/api/v1/ready', (_req, res) => {
@@ -337,6 +368,8 @@ app.get('/api/v1/health', async (_req, res) => {
         redis: 'unknown',
         databricks: 'unknown',
         openai_whisper: 'unknown',
+        audio_processor: 'unknown',
+        whisper_breaker: 'unknown',
       },
       version: process.env.npm_package_version || '1.0.0',
       environment: process.env.NODE_ENV || 'development',
@@ -368,6 +401,17 @@ app.get('/api/v1/health', async (_req, res) => {
       checks.services.openai_whisper = 'unhealthy';
     }
 
+    // Include audio processor / breaker state for resilience visibility
+    try {
+      const audioHealth = await inMemoryAudioProcessor.healthCheck();
+      checks.services.audio_processor = audioHealth?.status || 'unknown';
+      const breaker = audioHealth?.details?.breaker || 'unknown';
+      checks.services.whisper_breaker = breaker; // 'open' | 'closed'
+    } catch {
+      checks.services.audio_processor = 'unhealthy';
+      checks.services.whisper_breaker = 'unknown';
+    }
+
     const unhealthy = Object.values(checks.services).some((s) => s === 'unhealthy');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     if (unhealthy) {
@@ -386,18 +430,32 @@ app.get('/api/v1/health', async (_req, res) => {
   }
 });
 
-// Metrics endpoint
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
+// Metrics endpoint (use default global registry to include metrics from all modules)
+// Avoid starting default metrics collector during tests to prevent Jest open-handle leaks
+if (process.env.NODE_ENV !== 'test' && process.env.METRICS_DEFAULT_DISABLED !== '1') {
+  try { client.collectDefaultMetrics(); } catch {}
+}
 app.get('/metrics', async (_req, res) => {
-  res.set('Content-Type', register.contentType);
-  res.end(await register.metrics());
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
 });
+
+// No explicit stop for default metrics (prom-client types may not expose stopper)
 
 // JWKS routes
 app.use('/', jwksRoutes);
 
 // API routes
+// Add OTEL route-level spans for key controllers
+try {
+  if (process.env.OTEL_ENABLED === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createRouteSpanMiddleware } = require('./observability/otel');
+    app.use('/api/v1/sessions', createRouteSpanMiddleware('sessions'));
+    app.use('/api/v1/analytics', createRouteSpanMiddleware('analytics'));
+  }
+} catch {}
+
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/sessions', sessionRoutes);
 app.use('/api/v1/roster', rosterRoutes);

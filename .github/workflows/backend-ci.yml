@@ -2,19 +2,13 @@ name: Backend CI
 
 on:
   push:
-    branches: [main, develop]
-    paths:
-      - 'classwaves-backend/**'
-      - '.github/workflows/backend-ci.yml'
+    branches: [ main, release/mvp ]
   pull_request:
-    branches: [main, develop]
-    paths:
-      - 'classwaves-backend/**'
-      - '.github/workflows/backend-ci.yml'
+    branches: [ main, release/mvp ]
 
 defaults:
   run:
-    working-directory: classwaves-backend
+    working-directory: .
 
 jobs:
   test:
@@ -45,7 +39,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
-          cache-dependency-path: classwaves-backend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
@@ -86,7 +80,7 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
-          files: ./classwaves-backend/coverage/lcov.info
+          files: ./coverage/lcov.info
           flags: backend
           name: backend-coverage
 
@@ -104,7 +98,7 @@ jobs:
         with:
           node-version: 20.x
           cache: 'npm'
-          cache-dependency-path: classwaves-backend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci --production --legacy-peer-deps
@@ -139,4 +133,4 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --file=classwaves-backend/package.json
+          args: --severity-threshold=high --file=package.json

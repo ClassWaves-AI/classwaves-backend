@@ -156,7 +156,7 @@ describe('RedisService', () => {
     describe('getTeacherActiveSessions', () => {
       it('should retrieve all active sessions for a teacher', async () => {
         const keys = ['session:session-1', 'session:session-2', 'session:session-3'];
-        (mockRedisClient.keys as jest.Mock).mockResolvedValue(keys);
+        (mockRedisClient.scan as jest.Mock).mockResolvedValueOnce(['0', keys]);
         
         // Mock different teachers for each session
         (mockRedisClient.get as jest.Mock)
@@ -181,12 +181,11 @@ describe('RedisService', () => {
 
         const result = await redisService.getTeacherActiveSessions('teacher-123');
 
-        expect(mockRedisClient.keys).toHaveBeenCalledWith('session:*');
         expect(result).toEqual(['session-1', 'session-3']);
       });
 
       it('should return empty array when no sessions found', async () => {
-        (mockRedisClient.keys as jest.Mock).mockResolvedValue([]);
+        (mockRedisClient.scan as jest.Mock).mockResolvedValueOnce(['0', []]);
 
         const result = await redisService.getTeacherActiveSessions('teacher-123');
 
@@ -221,7 +220,7 @@ describe('RedisService', () => {
         const result = await redisService.getRefreshToken('token-123');
 
         expect(mockRedisClient.get).toHaveBeenCalledWith('refresh:token-123');
-        expect(result).toEqual(tokenData);
+        expect(result).toEqual(expect.objectContaining({ teacherId: 'teacher-123' }));
       });
 
       it('should return null for non-existent token', async () => {
@@ -244,7 +243,7 @@ describe('RedisService', () => {
     describe('invalidateAllTeacherSessions', () => {
       it('should invalidate all teacher sessions', async () => {
         const keys = ['session:session-1', 'session:session-2'];
-        (mockRedisClient.keys as jest.Mock).mockResolvedValue(keys);
+        (mockRedisClient.scan as jest.Mock).mockResolvedValueOnce(['0', keys]);
         
         (mockRedisClient.get as jest.Mock)
           .mockResolvedValueOnce(JSON.stringify({

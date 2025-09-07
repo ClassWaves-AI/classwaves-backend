@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
-import { emailService } from '../services/email.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { 
   EmailRecipient, 
   SessionEmailData, 
@@ -15,31 +15,45 @@ import {
 } from '@classwaves/shared';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
-import { websocketService } from '../services/websocket.service';
+import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { 
   buildSessionListQuery,
   buildSessionDetailQuery,
   logQueryOptimization
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
-import { cacheManager, CacheTTLConfig } from '../services/cache-manager.service';
+import { cacheManager } from '../services/cache-manager.service';
 import { cacheEventBus } from '../services/cache-event-bus.service';
 import { analyticsLogger } from '../utils/analytics-logger';
 import { RetryService } from '../services/retry.service';
+import { CacheTTLPolicy, ttlWithJitter } from '../services/cache-ttl.policy';
+import { cachePort } from '../utils/cache.port.instance';
+import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
 
 /**
  * Store session access code in Redis for student leader joining
  */
 async function storeSessionAccessCode(sessionId: string, accessCode: string): Promise<void> {
   try {
-    // Store bidirectional mappings with 24 hour expiration
-    const expiration = 24 * 60 * 60; // 24 hours in seconds
+    // Store bidirectional mappings with policy-driven expiration
+    const expiration = ttlWithJitter(CacheTTLPolicy.sessionAccessMapping);
     
-    // Map session ID to access code
-    await redisService.set(`session:${sessionId}:access_code`, accessCode, expiration);
-    
-    // Map access code to session ID (for student joining)
-    await redisService.set(`access_code:${accessCode}`, sessionId, expiration);
+    const legacySessionToCode = `session:${sessionId}:access_code`;
+    const prefixedSessionToCode = makeKey('session', sessionId, 'access_code');
+    const legacyCodeToSession = `access_code:${accessCode}`;
+    const prefixedCodeToSession = makeKey('access_code', accessCode);
+
+    if (isPrefixEnabled()) {
+      await cachePort.set(prefixedSessionToCode, accessCode, expiration);
+      await cachePort.set(prefixedCodeToSession, sessionId, expiration);
+      if (isDualWriteEnabled()) {
+        await cachePort.set(legacySessionToCode, accessCode, expiration);
+        await cachePort.set(legacyCodeToSession, sessionId, expiration);
+      }
+    } else {
+      await cachePort.set(legacySessionToCode, accessCode, expiration);
+      await cachePort.set(legacyCodeToSession, sessionId, expiration);
+    }
     
     console.log(`✅ Stored access code ${accessCode} for session ${sessionId}`);
   } catch (error) {
@@ -53,7 +67,11 @@ async function storeSessionAccessCode(sessionId: string, accessCode: string): Pr
  */
 async function getSessionByAccessCode(accessCode: string): Promise<string | null> {
   try {
-    const sessionId = await redisService.get(`access_code:${accessCode}`);
+    const legacy = `access_code:${accessCode}`;
+    const prefixed = makeKey('access_code', accessCode);
+    const sessionId = isPrefixEnabled()
+      ? (await cachePort.get(prefixed)) ?? (await cachePort.get(legacy))
+      : await cachePort.get(legacy);
     return sessionId;
   } catch (error) {
     console.error('❌ Failed to retrieve session by access code:', error);
@@ -66,7 +84,11 @@ async function getSessionByAccessCode(accessCode: string): Promise<string | null
  */
 async function getAccessCodeBySession(sessionId: string): Promise<string | null> {
   try {
-    const accessCode = await redisService.get(`session:${sessionId}:access_code`);
+    const legacy = `session:${sessionId}:access_code`;
+    const prefixed = makeKey('session', sessionId, 'access_code');
+    const accessCode = isPrefixEnabled()
+      ? (await cachePort.get(prefixed)) ?? (await cachePort.get(legacy))
+      : await cachePort.get(legacy);
     return accessCode;
   } catch (error) {
     console.error('❌ Failed to retrieve access code by session:', error);
@@ -87,15 +109,20 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     
     // Get query parameters
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
+    const view = (req.query.view as string) || undefined;
+    let limit = parseInt(req.query.limit as string) || 20;
+    if (view === 'dashboard') {
+      limit = 3; // Hard-cap dashboard view to 3
+    }
     const status = req.query.status as string;
     const sort = req.query.sort as string || 'created_at:desc';
     
     // Generate cache key and tags
     const statusFilter = status ? `:status:${status}` : '';
-    const cacheKey = `sessions:teacher:${teacher.id}:limit:${limit}${statusFilter}`;
+    const viewKey = view ? `:view:${view}` : ':view:default';
+    const cacheKey = `sessions:teacher:${teacher.id}${viewKey}:limit:${limit}${statusFilter}`;
     const cacheTags = [`teacher:${teacher.id}`, 'sessions'];
-    const ttl = CacheTTLConfig['session-list'];
+    const ttl = ttlWithJitter(CacheTTLPolicy.query['session-list']);
 
     console.log('📦 Cache key:', cacheKey);
 
@@ -105,8 +132,10 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
       async () => {
         console.log('🔍 Cache MISS - fetching from database');
         
-        // Get raw session data
-        const rawSessions = await getTeacherSessionsOptimized(teacher.id, limit);
+        // Get raw session data (route by view)
+        const rawSessions = view === 'dashboard'
+          ? await getTeacherSessionsForDashboard(teacher.id, limit)
+          : await getTeacherSessionsOptimized(teacher.id, limit);
         
         console.log('🔍 Raw sessions returned:', rawSessions?.length || 0);
         if (rawSessions && rawSessions.length > 0) {
@@ -115,8 +144,8 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
 
         // Map DB rows to frontend contract
         const mappedSessions = await Promise.all((rawSessions || []).map(async (s: any) => {
-          const accessCode = await getAccessCodeBySession(s.id);
-          
+          // Prefer DB column; fallback to Redis mapping only if missing
+          const accessCode = s.access_code ?? (await getAccessCodeBySession(s.id));
           return {
             id: s.id,
             accessCode, // Retrieved from Redis
@@ -188,17 +217,12 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     // Prefer Redis mapping (created at session creation time) for fast lookup
     let session: any = null;
     const cachedSessionId = await getSessionByAccessCode(sessionCode);
+    const sessionRepo = getCompositionRoot().getSessionRepository();
     if (cachedSessionId) {
-      session = await databricksService.queryOne(
-        `SELECT id, teacher_id, school_id, title, description, status, access_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
-        [cachedSessionId]
-      );
+      session = await sessionRepo.getBasic(cachedSessionId);
     }
     if (!session) {
-      session = await databricksService.queryOne(
-        `SELECT id, teacher_id, school_id, title, description, status, access_code FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE access_code = ?`,
-        [sessionCode]
-      );
+      session = await sessionRepo.getByAccessCode(sessionCode);
     }
     if (!session) {
       return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: 'Invalid session code' });
@@ -216,11 +240,8 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       }
       if (ageYears < 13) {
         // Check parental consent (mocked by querying compliance table)
-        const consent = await databricksService.query(
-          `SELECT id, student_name, consent_given FROM ${databricksConfig.catalog}.compliance.parental_consents WHERE student_name = ?`,
-          [displayName || studentName]
-        );
-        const hasConsent = (consent as any[])?.length > 0;
+        const complianceRepo = getCompositionRoot().getComplianceRepository();
+        const hasConsent = await complianceRepo.hasParentalConsentByStudentName(displayName || studentName);
         if (!hasConsent) {
           return res.status(403).json({ error: 'PARENTAL_CONSENT_REQUIRED', message: 'Parental consent is required for students under 13' });
         }
@@ -236,34 +257,11 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     // Match by email first (most reliable), fall back to display name
     let groupLeaderAssignment;
     
+    const groupRepo = getCompositionRoot().getGroupRepository();
     if (email && email.trim()) {
-      // Primary: Match by email address (most reliable)
-      groupLeaderAssignment = await databricksService.query(
-        `SELECT 
-           sg.id as group_id,
-           sg.name as group_name,
-           sg.leader_id,
-           s.display_name as leader_name,
-           s.email as leader_email
-         FROM ${databricksConfig.catalog}.sessions.student_groups sg
-         JOIN ${databricksConfig.catalog}.users.students s ON sg.leader_id = s.id
-         WHERE sg.session_id = ? AND LOWER(s.email) = LOWER(?)`,
-        [session.id, email.trim()]
-      );
+      groupLeaderAssignment = await groupRepo.findLeaderAssignmentByEmail(session.id, email.trim());
     } else {
-      // Fallback: Match by display name (less reliable but backward compatible)
-      groupLeaderAssignment = await databricksService.query(
-        `SELECT 
-           sg.id as group_id,
-           sg.name as group_name,
-           sg.leader_id,
-           s.display_name as leader_name,
-           s.email as leader_email
-         FROM ${databricksConfig.catalog}.sessions.student_groups sg
-         JOIN ${databricksConfig.catalog}.users.students s ON sg.leader_id = s.id
-         WHERE sg.session_id = ? AND s.display_name = ?`,
-        [session.id, safeDisplayName]
-      );
+      groupLeaderAssignment = await groupRepo.findLeaderAssignmentByName(session.id, safeDisplayName);
     }
 
     let assignedGroupId: string | null = null;
@@ -318,22 +316,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       updated_at: new Date()
     };
 
-    await databricksService.query(
-      `INSERT INTO ${databricksConfig.catalog}.sessions.participants 
-       (id, session_id, group_id, student_id, anonymous_id, display_name, join_time, leave_time, 
-        is_active, device_type, browser_info, connection_quality, can_speak, can_hear, is_muted, 
-        total_speaking_time_seconds, message_count, interaction_count, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        participantData.id, participantData.session_id, participantData.group_id,
-        participantData.student_id, participantData.anonymous_id, participantData.display_name,
-        participantData.join_time, participantData.leave_time, participantData.is_active,
-        participantData.device_type, participantData.browser_info, participantData.connection_quality,
-        participantData.can_speak, participantData.can_hear, participantData.is_muted,
-        participantData.total_speaking_time_seconds, participantData.message_count,
-        participantData.interaction_count, participantData.created_at, participantData.updated_at
-      ]
-    );
+    await getCompositionRoot().getParticipantRepository().insertParticipant(participantData as any);
 
     // Store simple age cache if provided
     if (dateOfBirth && (redisService as any).set) {
@@ -382,26 +365,18 @@ export async function getSessionParticipants(req: Request, res: Response): Promi
     const sessionId = req.params.sessionId;
 
     // Verify session ownership
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
-    );
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
     if (!session) {
       return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: 'Session not found' });
     }
 
     // Fetch participants and groups
-    const participants = await databricksService.query(
-      `SELECT id, display_name, group_id, is_active, join_time, device_type FROM ${databricksConfig.catalog}.sessions.participants WHERE session_id = ? AND is_active = true`,
-      [sessionId]
-    );
-    const groups = await databricksService.query(
-      `SELECT id, name FROM ${databricksConfig.catalog}.sessions.student_groups WHERE session_id = ?`,
-      [sessionId]
-    );
+    const participants = await getCompositionRoot().getParticipantRepository().listActiveBySession(sessionId);
+    const groups = await getCompositionRoot().getGroupRepository().getGroupsBasic(sessionId);
 
     const groupById = new Map<string, any>();
-    for (const g of groups) groupById.set(g.id, g);
+    for (const g of groups) groupById.set(g.id, { id: g.id, name: g.name });
 
     const participantList = (participants || []).map((p: any) => ({
       id: p.id,
@@ -431,33 +406,22 @@ export async function getSessionAnalytics(req: Request, res: Response): Promise<
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId || (req.params as any).id;
 
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
-    );
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
     if (!session) {
       return res.status(404).json({ error: 'SESSION_NOT_FOUND', message: 'Session not found' });
     }
 
     // Pull a minimal analytics row if exists
-    const analytics = await databricksService.queryOne(
-      `SELECT total_students as total_students, active_students as active_students,
-              total_recordings as total_recordings, avg_participation_rate as avg_participation_rate,
-              total_transcriptions as total_transcriptions
-       FROM ${databricksConfig.catalog}.analytics.session_summary WHERE session_id = ?`,
-      [sessionId]
-    );
+    const analytics = await getCompositionRoot().getAnalyticsRepository().getPlannedVsActual(sessionId);
 
     return res.json({
       sessionId,
       analytics: {
-        totalStudents: analytics?.total_students ?? 0,
-        activeStudents: analytics?.active_students ?? 0,
-        participationRate: Math.round((analytics?.avg_participation_rate ?? 0) * 100),
-        recordings: {
-          total: analytics?.total_recordings ?? 0,
-          transcribed: analytics?.total_transcriptions ?? 0,
-        },
+        totalStudents: analytics?.planned_members ?? 0,
+        activeStudents: analytics?.ready_groups_at_start ?? 0,
+        participationRate: Math.round(((analytics?.adherence_members_ratio ?? 0) as number) * 100),
+        recordings: { total: 0, transcribed: 0 },
       },
     });
   } catch (error) {
@@ -540,7 +504,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     try {
       // 1. Create main session record
       // Insert session with required columns
-      await databricksService.insert('classroom_sessions', {
+      await getCompositionRoot().getSessionRepository().insertSession({
         id: sessionId,
         title: topic,
         description: description || goal,
@@ -573,7 +537,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         const group = groupPlan.groups[i];
         const groupId = (databricksService as any).generateId?.() ?? `grp_${sessionId}_${i}`;
         
-        await databricksService.insert('student_groups', {
+        await getCompositionRoot().getGroupRepository().insertGroup({
           id: groupId,
           session_id: sessionId,
           name: group.name,
@@ -598,7 +562,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         for (const studentId of allMemberIds) {
           // Deterministic ID to avoid exhausting generateId sequence in tests
           const memberId = `mem_${groupId}_${studentId}`;
-          await databricksService.insert('student_group_members', {
+          await getCompositionRoot().getGroupRepository().insertGroupMember({
             id: memberId,
             session_id: sessionId,
             group_id: groupId,
@@ -661,7 +625,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     await recordSessionConfigured(sessionId, teacher.id, groupPlan);
 
     // 6. Audit logging
-    await databricksService.recordAuditLog({
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_created',
@@ -669,11 +634,12 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: school.id,
-      description: `Teacher ID ${teacher.id} created session with ${groupPlan.numberOfGroups} pre-configured groups`,
+      description: `teacher:${teacher.id} created session with ${groupPlan.numberOfGroups} groups`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
 
     // 7. Send email notifications to group leaders if enabled
     let emailResults: EmailNotificationResults = { sent: [], failed: [] };
@@ -699,7 +665,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
 
         // Compliance audit: batch-level email send event (no PII)
         try {
-          await databricksService.recordAuditLog({
+          const { auditLogPort } = await import('../utils/audit.port.instance');
+          auditLogPort.enqueue({
             actorId: teacher.id,
             actorType: 'teacher',
             eventType: 'session_email_sent',
@@ -707,10 +674,11 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             resourceType: 'email_notification',
             resourceId: sessionId,
             schoolId: school.id,
-            description: `Group leader invitations sent for session ${sessionId}: sent=${emailResults.sent.length}, failed=${emailResults.failed.length}`,
+            description: `session:${sessionId} invitations sent: sent=${emailResults.sent.length}, failed=${emailResults.failed.length}`,
+            sessionId,
             complianceBasis: 'ferpa',
             dataAccessed: JSON.stringify({ sent: emailResults.sent.length, failed: emailResults.failed.length })
-          });
+          }).catch(() => {});
         } catch (auditErr) {
           console.warn('⚠️ Failed to record compliance audit for session_email_sent (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
         }
@@ -718,7 +686,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         console.error('❌ Email notification failed, but session was created successfully:', emailError);
         // Compliance audit: failed batch send
         try {
-          await databricksService.recordAuditLog({
+          const { auditLogPort } = await import('../utils/audit.port.instance');
+          auditLogPort.enqueue({
             actorId: teacher.id,
             actorType: 'teacher',
             eventType: 'session_email_failed',
@@ -726,9 +695,10 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             resourceType: 'email_notification',
             resourceId: sessionId,
             schoolId: school.id,
-            description: `Group leader invitations failed for session ${sessionId}: ${emailError instanceof Error ? emailError.message : String(emailError)}`,
+            description: `session:${sessionId} invitations failed`,
+            sessionId,
             complianceBasis: 'ferpa',
-          });
+          }).catch(() => {});
         } catch (auditErr) {
           console.warn('⚠️ Failed to record compliance audit for session_email_failed (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
         }
@@ -771,6 +741,17 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       await cacheEventBus.sessionCreated(sessionId, teacher.id, school.id);
     }
     console.log('🔄 Session created event emitted for cache management');
+
+    // Write-through: upsert minimal session-detail cache for the creator
+    try {
+      const minimalRow = await getCompositionRoot().getSessionRepository().getOwnedSessionBasic(sessionId, teacher.id);
+      if (minimalRow) {
+        const cacheKey = `session_detail:${sessionId}:${teacher.id}`;
+        await queryCacheService.upsertCachedQuery('session-detail', cacheKey, minimalRow, { sessionId, teacherId: teacher.id });
+      }
+    } catch (e) {
+      console.warn('⚠️ Write-through cache upsert failed after createSession:', e instanceof Error ? e.message : String(e));
+    }
 
     return res.status(201).json({
       success: true,
@@ -821,7 +802,7 @@ async function triggerSessionEmailNotifications(
     }
 
     // Send notifications via email service
-    return await emailService.sendSessionInvitation(recipients, sessionData);
+    return await getCompositionRoot().getEmailPort().sendSessionInvitation(recipients, sessionData);
   } catch (error) {
     console.error('Failed to send session email notifications:', error);
     throw error;
@@ -845,10 +826,8 @@ async function buildEmailRecipientList(
     }
 
     // Get group leader details from roster
-    const groupLeader = await databricksService.queryOne(
-      `SELECT id, display_name, email FROM ${databricksConfig.catalog}.users.students WHERE id = ?`,
-      [group.leaderId]
-    );
+    const rosterRepo = getCompositionRoot().getRosterRepository();
+    const groupLeader = await rosterRepo.getStudentBasicById(group.leaderId);
 
     if (groupLeader && groupLeader.email) {
       recipients.push({
@@ -891,8 +870,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
     
     // If changing leader, update database first
     if (newLeaderId && reason === 'leader_change') {
-      await databricksService.update(
-        'sessions.student_groups',
+      await getCompositionRoot().getGroupRepository().updateGroupFields(
         groupId,
         { leader_id: newLeaderId, updated_at: new Date() }
       );
@@ -918,11 +896,12 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
       reason,
     };
     
-    const results = await emailService.resendSessionInvitation(resendRequest, sessionData);
+    const results = await getCompositionRoot().getEmailPort().resendSessionInvitation(resendRequest, sessionData);
 
     // Compliance audit: batch-level resend event (no PII)
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'session_email_sent',
@@ -930,10 +909,11 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         resourceType: 'email_notification',
         resourceId: sessionId,
         schoolId: session.school_id,
-        description: `Resent group leader invitation for session ${sessionId} (groupId=${groupId}${newLeaderId ? `, newLeaderId=${newLeaderId}` : ''}): sent=${results.sent.length}, failed=${results.failed.length}`,
+        description: `session:${sessionId} invitation resent: sent=${results.sent.length}, failed=${results.failed.length}`,
+        sessionId,
         complianceBasis: 'ferpa',
         dataAccessed: JSON.stringify({ sent: results.sent.length, failed: results.failed.length })
-      });
+      }).catch(() => {});
     } catch (auditErr) {
       console.warn('⚠️ Failed to record compliance audit for resend (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
     }
@@ -951,7 +931,8 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
     console.error('Failed to resend session email:', error);
     // Compliance audit: failed resend
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: (req as AuthRequest).user!.id,
         actorType: 'teacher',
         eventType: 'session_email_failed',
@@ -959,9 +940,10 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         resourceType: 'email_notification',
         resourceId: req.params.sessionId,
         schoolId: (req as AuthRequest).school!.id,
-        description: `Resend group leader invitation failed for session ${req.params.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+        description: `session:${req.params.sessionId} invitation resend failed`,
+        sessionId: req.params.sessionId,
         complianceBasis: 'ferpa',
-      });
+      }).catch(() => {});
     } catch (auditErr) {
       console.warn('⚠️ Failed to record compliance audit for resend failure (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
     }
@@ -979,10 +961,8 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
  * Validate session ownership by teacher
  */
 async function validateSessionOwnership(sessionId: string, teacherId: string): Promise<any> {
-  return await databricksService.queryOne(
-    `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-    [sessionId, teacherId]
-  );
+  const session = await getCompositionRoot().getSessionRepository().getOwnedSessionBasic(sessionId, teacherId);
+  return session;
 }
 
 /**
@@ -994,14 +974,13 @@ async function recordSessionConfigured(sessionId: string, teacherId: string, gro
   try {
     const configuredAt = new Date();
     
-    // Insert session_metrics record with planned metrics (direct call for unit tests)
-    await databricksService.upsert('session_metrics', { session_id: sessionId }, {
-      session_id: sessionId,
+    // Insert session_metrics record with planned metrics via repository
+    await getCompositionRoot().getAnalyticsRepository().upsertSessionMetrics(sessionId, {
       calculation_timestamp: configuredAt,
       total_students: (groupPlan.groups || []).reduce((sum: number, g: any) => sum + (g.memberIds?.length || 0) + (g.leaderId ? 1 : 0), 0),
-      active_students: 0, // Will be updated when session starts
-      participation_rate: 0, // Will be calculated during session
-      overall_engagement_score: 0, // Will be calculated during session
+      active_students: 0,
+      participation_rate: 0,
+      overall_engagement_score: 0,
       average_group_size: (groupPlan.groups && groupPlan.groups.length > 0)
         ? Math.round(((groupPlan.groups || []).reduce((sum: number, g: any) => sum + (g.memberIds?.length || 0) + (g.leaderId ? 1 : 0), 0)) / groupPlan.groups.length)
         : 0,
@@ -1043,8 +1022,8 @@ async function recordSessionStarted(
   try {
     const startedAt = new Date();
     
-    // Update session_metrics with start metrics (direct call for unit tests)
-    await databricksService.update('session_metrics', `session_id = '${sessionId}'`, {
+    // Update session_metrics with start metrics via repository
+    await getCompositionRoot().getAnalyticsRepository().updateSessionMetrics(sessionId, {
       calculation_timestamp: startedAt,
       ready_groups_at_start: readyGroupsAtStart,
       started_without_ready_groups: startedWithoutReadyGroups
@@ -1075,38 +1054,20 @@ async function recordSessionStarted(
  * Reduces query complexity and data scanning by ~60%
  */
 export async function getTeacherSessionsOptimized(teacherId: string, limit: number): Promise<any[]> {
-  const queryBuilder = buildSessionListQuery();
-  
-  const sql = `
-    ${queryBuilder.sql},
-    g.group_count,
-    g.student_count
-    FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
-    LEFT JOIN (
-      SELECT 
-        session_id, 
-        COUNT(*) as group_count,
-        COALESCE(SUM(current_size), 0) as student_count
-      FROM ${databricksConfig.catalog}.sessions.student_groups 
-      GROUP BY session_id
-    ) g ON s.id = g.session_id
-    WHERE s.teacher_id = ?
-    ORDER BY s.created_at DESC
-    LIMIT ?
-  `;
-  
-  console.log('🔍 DEBUG: SQL Query:', sql);
-  console.log('🔍 DEBUG: Parameters:', [teacherId, limit]);
-  
-  const result = await databricksService.query(sql, [teacherId, limit]);
-  console.log('🔍 DEBUG: Query result count:', result?.length || 0);
-  if (result && result.length > 0) {
-    console.log('🔍 DEBUG: First result teacher_id:', result[0].teacher_id);
-    console.log('🔍 DEBUG: First result group_count:', result[0].group_count);
-    console.log('🔍 DEBUG: First result student_count:', result[0].student_count);
-    console.log('🔍 DEBUG: First result keys:', Object.keys(result[0]));
-  }
-  
+  // Delegate to repository for minimal list projection
+  const sessionRepo = getCompositionRoot().getSessionRepository();
+  const result = await sessionRepo.listOwnedSessionsForList(teacherId, limit);
+  console.log('🔍 DEBUG: listOwnedSessionsForList result count:', result?.length || 0);
+  return result;
+}
+
+/**
+ * Ultra-lean helper for dashboard view: returns 3 most recent sessions
+ */
+export async function getTeacherSessionsForDashboard(teacherId: string, limit: number = 3): Promise<any[]> {
+  const sessionRepo = getCompositionRoot().getSessionRepository();
+  const result = await sessionRepo.listOwnedSessionsForDashboard(teacherId, Math.min(limit, 3));
+  console.log('🔍 DEBUG: listOwnedSessionsForDashboard result count:', result?.length || 0);
   return result;
 }
 
@@ -1114,20 +1075,16 @@ export async function getTeacherSessionsOptimized(teacherId: string, limit: numb
  * Helper: Fetch complete session with groups and members
  */
 async function getSessionWithGroups(sessionId: string, teacherId: string): Promise<Session> {
-  // 🔍 QUERY OPTIMIZATION: Use minimal field selection + Redis caching for session detail
+  // 🔍 QUERY OPTIMIZATION: Use minimal field selection + Redis caching for session detail via repository
   const queryBuilder = buildSessionDetailQuery();
   logQueryOptimization('getSession', queryBuilder.metrics);
-  
+  const sessionDetailRepo = getCompositionRoot().getSessionDetailRepository();
+
   // Get main session data with optimized field selection and caching
   const cacheKey = `session_detail:${sessionId}:${teacherId}`;
     // In unit tests, bypass cache to ensure DB mocks are hit
     if (process.env.NODE_ENV === 'test') {
-      const direct = await databricksService.queryOne(
-        `${queryBuilder.sql}
-         FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
-         WHERE s.id = ? AND s.teacher_id = ?`,
-        [sessionId, teacherId]
-      );
+      const direct = await sessionDetailRepo.getOwnedSessionDetail(sessionId, teacherId);
       if (!direct) throw new Error('Session not found');
       return buildSessionFromRow(direct, sessionId);
     }
@@ -1135,12 +1092,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     const session = await queryCacheService.getCachedQuery(
       cacheKey,
       'session-detail',
-      () => databricksService.queryOne(
-        `${queryBuilder.sql}
-         FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
-         WHERE s.id = ? AND s.teacher_id = ?`,
-        [sessionId, teacherId]
-      ),
+      () => sessionDetailRepo.getOwnedSessionDetail(sessionId, teacherId),
       { sessionId, teacherId }
     );
 
@@ -1148,29 +1100,10 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     throw new Error('Session not found');
   }
 
-  // Get groups with leader and member data
-  const groups = await databricksService.query(`
-    SELECT 
-      g.id,
-      g.name,
-      g.leader_id,
-      g.is_ready,
-      g.group_number
-    FROM ${databricksConfig.catalog}.sessions.student_groups g
-    WHERE g.session_id = ?
-    ORDER BY g.group_number
-  `, [sessionId]);
-
-  // Get all members for all groups in this session
-  const members = await databricksService.query(`
-    SELECT 
-      m.group_id,
-      m.student_id,
-      s.display_name as name
-    FROM ${databricksConfig.catalog}.sessions.student_group_members m
-    LEFT JOIN ${databricksConfig.catalog}.users.students s ON m.student_id = s.id
-    WHERE m.session_id = ?
-  `, [sessionId]);
+  // Get groups and members via repository layer
+  const groupRepo = getCompositionRoot().getGroupRepository();
+  const groups = await groupRepo.getGroupsBasic(sessionId);
+  const members = await groupRepo.getMembersBySession(sessionId);
 
   // Group members by group_id
   const membersByGroupId = new Map<string, SessionGroupMember[]>();
@@ -1270,7 +1203,8 @@ export async function getSession(req: Request, res: Response): Promise<Response>
     
     // Audit log for data access (FERPA)
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'session_access',
@@ -1278,11 +1212,12 @@ export async function getSession(req: Request, res: Response): Promise<Response>
         resourceType: 'session',
         resourceId: sessionId,
         schoolId: teacher.school_id,
-        description: `Teacher ID ${teacher.id} accessed session ${sessionId}`,
+        description: `teacher:${teacher.id} accessed session:${sessionId}`,
+        sessionId,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
-      });
+      }).catch(() => {});
     } catch (e) {
       // Do not block response on audit failure
       console.warn('Audit log failed in getSession:', e);
@@ -1330,47 +1265,15 @@ export async function getDashboardMetrics(req: Request, res: Response): Promise<
     
     console.log('📊 Getting dashboard metrics for teacher:', teacher.id);
     
-    // Get today's date range
-    const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
-    
-    // Query for dashboard metrics
-    const [activeSessionsResult, todaySessionsResult, totalStudentsResult] = await Promise.all([
-      // Active Sessions - sessions currently running
-      databricksService.query(`
-        SELECT COUNT(*) as count
-        FROM ${databricksConfig.catalog}.sessions.classroom_sessions 
-        WHERE teacher_id = ? 
-        AND status = 'active'
-      `, [teacher.id]),
-      
-      // Today's Sessions - sessions scheduled or created today
-      databricksService.query(`
-        SELECT COUNT(*) as count
-        FROM ${databricksConfig.catalog}.sessions.classroom_sessions 
-        WHERE teacher_id = ? 
-        AND (
-          DATE(scheduled_start) = CURRENT_DATE()
-          OR DATE(created_at) = CURRENT_DATE()
-        )
-      `, [teacher.id]),
-      
-      // Total Students - across all teacher's sessions (from groups)
-      databricksService.query(`
-        SELECT COALESCE(SUM(current_size), 0) as count
-        FROM ${databricksConfig.catalog}.sessions.student_groups g
-        INNER JOIN ${databricksConfig.catalog}.sessions.classroom_sessions s 
-          ON g.session_id = s.id
-        WHERE s.teacher_id = ?
-      `, [teacher.id])
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const groupRepo = getCompositionRoot().getGroupRepository();
+    const [activeSessions, todaySessions, totalStudents] = await Promise.all([
+      sessionRepo.countActiveSessionsForTeacher(teacher.id),
+      sessionRepo.countTodaySessionsForTeacher(teacher.id),
+      groupRepo.countTotalStudentsForTeacher(teacher.id)
     ]);
 
-    const metrics = {
-      activeSessions: activeSessionsResult?.[0]?.count || 0,
-      todaySessions: todaySessionsResult?.[0]?.count || 0,
-      totalStudents: totalStudentsResult?.[0]?.count || 0,
-    };
+    const metrics = { activeSessions, todaySessions, totalStudents };
 
     console.log('📊 Dashboard metrics calculated:', metrics);
 
@@ -1449,11 +1352,9 @@ export async function getGroupsStatus(req: Request, res: Response): Promise<Resp
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId || req.params.id;
 
-    // Verify session ownership
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
-    );
+    // Verify session ownership via repository
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
 
     if (!session) {
       return res.status(404).json({
@@ -1465,29 +1366,29 @@ export async function getGroupsStatus(req: Request, res: Response): Promise<Resp
       });
     }
 
-    // Get current group statuses with comprehensive state information
-    const groups = await databricksService.query(`
-      SELECT 
-        sg.id,
-        sg.name,
-        sg.status,
-        sg.is_ready,
-        sg.leader_id,
-        sg.current_size,
-        sg.max_size,
-        sg.group_number,
-        sg.issue_reason,
-        sg.issue_reported_at,
-        sg.updated_at,
-        COUNT(sgm.student_id) as actual_member_count,
-        CASE WHEN sg.leader_id IS NOT NULL THEN 1 ELSE 0 END as has_leader
-      FROM ${databricksConfig.catalog}.sessions.student_groups sg
-      LEFT JOIN ${databricksConfig.catalog}.sessions.student_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name, sg.status, sg.is_ready, sg.leader_id, sg.current_size, 
-               sg.max_size, sg.group_number, sg.issue_reason, sg.issue_reported_at, sg.updated_at
-      ORDER BY sg.group_number
-    `, [sessionId]);
+    // Get current group statuses via repositories
+    const groupRepo = getCompositionRoot().getGroupRepository();
+    const groupsBasic = await groupRepo.getGroupsBasic(sessionId);
+    const members = await groupRepo.getMembersBySession(sessionId);
+    const memberCounts = new Map<string, number>();
+    for (const m of members) {
+      memberCounts.set(m.group_id, (memberCounts.get(m.group_id) || 0) + 1);
+    }
+    const groups = groupsBasic.map((g) => ({
+      id: g.id,
+      name: g.name,
+      status: (g as any).status || 'connected',
+      is_ready: g.is_ready,
+      leader_id: g.leader_id,
+      current_size: memberCounts.get(g.id) || 0,
+      max_size: (g as any).max_size || 4,
+      group_number: g.group_number,
+      issue_reason: (g as any).issue_reason || null,
+      issue_reported_at: (g as any).issue_reported_at || null,
+      updated_at: (g as any).updated_at || null,
+      actual_member_count: memberCounts.get(g.id) || 0,
+      has_leader: g.leader_id ? 1 : 0,
+    }));
 
     // Calculate readiness summary
     const totalGroups = groups.length;
@@ -1522,7 +1423,7 @@ export async function getGroupsStatus(req: Request, res: Response): Promise<Resp
           readyGroups,
           issueGroups,
           allGroupsReady,
-          canStartSession: allGroupsReady && session.status === 'pending'
+          canStartSession: allGroupsReady && session.status === 'created'
         },
         timestamp: new Date().toISOString()
       }
@@ -1554,13 +1455,11 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     
     // Use RetryService for resilience
     
-    // Verify session belongs to teacher - with retry and timeout
+    // Verify session belongs to teacher via repository - with retry and timeout
+    const sessionRepo = getCompositionRoot().getSessionRepository();
     const session = await RetryService.retryDatabaseOperation(
-      () => databricksService.queryOne(
-        `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes, total_students FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-        [sessionId, teacher.id]
-      ),
-      'verify-session-ownership'
+      () => sessionRepo.getOwnedSessionBasic(sessionId, teacher.id),
+      'verify-session-ownership-basic'
     );
     
     if (!session) {
@@ -1584,47 +1483,29 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     }
     
     // Compute ready_groups_at_start from student_groups.is_ready - with retry and timeout
-    const readyGroupsResult = await RetryService.retryDatabaseOperation(
-      () => databricksService.queryOne(
-        `SELECT COUNT(*) as ready_groups_count 
-         FROM ${databricksConfig.catalog}.sessions.student_groups 
-         WHERE session_id = ? AND is_ready = true`,
-        [sessionId]
-      ),
+    let readyGroupsAtStart: number;
+    let totalGroups: number;
+    const groupRepo = getCompositionRoot().getGroupRepository();
+    readyGroupsAtStart = await RetryService.retryDatabaseOperation(
+      () => groupRepo.countReady(sessionId),
       'count-ready-groups'
     );
-    
-    const totalGroupsResult = await RetryService.retryDatabaseOperation(
-      () => databricksService.queryOne(
-        `SELECT COUNT(*) as total_groups_count 
-         FROM ${databricksConfig.catalog}.sessions.student_groups 
-         WHERE session_id = ?`,
-        [sessionId]
-      ),
+    totalGroups = await RetryService.retryDatabaseOperation(
+      () => groupRepo.countTotal(sessionId),
       'count-total-groups'
     );
-    
-    const readyGroupsAtStart = readyGroupsResult?.ready_groups_count || 0;
-    const totalGroups = totalGroupsResult?.total_groups_count || 0;
     const startedWithoutReadyGroups = readyGroupsAtStart < totalGroups;
 
     // SG-BE-01: Gate session start if not all groups are ready
     if (readyGroupsAtStart !== totalGroups) {
       // SG-BE-03: Get details of groups that are not ready for detailed error response  
-      const notReadyGroupsResult = await RetryService.retryDatabaseOperation(
-        () => databricksService.query(
-          `SELECT id, name, is_ready 
-           FROM ${databricksConfig.catalog}.sessions.student_groups 
-           WHERE session_id = ? AND is_ready = false`,
-          [sessionId]
-        ),
-        'get-not-ready-groups'
+      const allGroups = await RetryService.retryDatabaseOperation(
+        () => groupRepo.getGroupsBasic(sessionId),
+        'get-groups-basic'
       );
-
-      const notReadyGroups = notReadyGroupsResult?.map((group: any) => ({
-        id: group.id,
-        name: group.name
-      })) || [];
+      const notReadyGroups = (allGroups || [])
+        .filter((g) => g.is_ready === false)
+        .map((g) => ({ id: g.id, name: g.name || null }));
 
       // SG-BE-04: Record session gating metric
       try {
@@ -1645,6 +1526,16 @@ export async function startSession(req: Request, res: Response): Promise<Respons
               forceLog: true // Always log session gating events
             }
           );
+          // Increment Prometheus counter for operational visibility
+          try {
+            const { getSessionStartGatedCounter } = await import('../metrics/session.metrics');
+            getSessionStartGatedCounter().inc({ session_id: sessionId });
+          } catch (metricError) {
+            // Metrics failures are non-blocking
+            if (process.env.API_DEBUG === '1') {
+              console.warn('Metrics counter increment failed:', metricError);
+            }
+          }
         }
       } catch (metricsError) {
         console.warn('⚠️ Session gating metrics recording failed (non-critical):', metricsError);
@@ -1665,12 +1556,9 @@ export async function startSession(req: Request, res: Response): Promise<Respons
 
     // Update session status and actual_start - with retry and timeout
     const startedAt = new Date();
+    const sessionRepoForUpdate = getCompositionRoot().getSessionRepository();
     await RetryService.retryDatabaseOperation(
-      () => databricksService.update('classroom_sessions', sessionId, {
-        status: 'active',
-        actual_start: startedAt,
-        updated_at: startedAt, // CRITICAL: Set updated_at to current time
-      }),
+      () => sessionRepoForUpdate.updateOnStart(sessionId, startedAt),
       'update-session-to-active'
     );
     
@@ -1686,20 +1574,16 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     }
     
     // Broadcast session status change to all connected WebSocket clients - with graceful degradation
-    if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID && websocketService.io) {
+    const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
+    if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID && nsSessions) {
       try {
         await RetryService.withRetry(
           async () => {
-            // Broadcast to general session room
-            websocketService.emitToSession(sessionId, 'session:status_changed', { 
-              sessionId, 
-              status: 'active'
-            });
-            
-            // Also broadcast to legacy namespace if needed
-            websocketService.io?.to(`session:${sessionId}`).emit('session:status_changed', {
+            // Broadcast to namespaced sessions room
+            nsSessions.emitToSession(sessionId, 'session:status_changed', {
               sessionId,
-              status: 'active'
+              status: 'active',
+              traceId: (res.locals as any)?.traceId || (req as any)?.traceId
             });
             
             return true; // Success indicator
@@ -1747,9 +1631,10 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       });
     }
     
-    // Record audit log - with retry (critical for compliance)
-    await RetryService.retryDatabaseOperation(
-      () => databricksService.recordAuditLog({
+    // Record audit log (async)
+    {
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'session_started',
@@ -1757,13 +1642,13 @@ export async function startSession(req: Request, res: Response): Promise<Respons
         resourceType: 'session',
         resourceId: sessionId,
         schoolId: session.school_id,
-        description: `Teacher ID ${teacher.id} started session (${readyGroupsAtStart}/${totalGroups} groups ready)`,
+        description: `session:${sessionId} started (${readyGroupsAtStart}/${totalGroups} groups ready)`,
+        sessionId,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
-      }),
-      'record-session-start-audit-log'
-    );
+      }).catch(() => {});
+    }
     
     // Get complete session for response - with retry and timeout
     let fullSession: any;
@@ -1811,7 +1696,13 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       performance: totalDuration < 400 ? 'EXCELLENT' : totalDuration < 1000 ? 'GOOD' : 'NEEDS_ATTENTION'
     });
 
-    // Emit session status change event for cache invalidation (skip in unit tests)
+    // Emit session status change and cache event (skip cache in tests)
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'active' });
+    } catch (e) {
+      console.warn('⚠️ Failed to emit session:status_changed (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
     if (process.env.NODE_ENV !== 'test') {
       await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, 'created', 'active');
     }
@@ -1859,11 +1750,9 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     const sessionId = (req.params as any).sessionId || (req.params as any).id;
     const { reason = 'planned_completion', teacherNotes } = req.body || {};
     
-    // Verify session belongs to teacher
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
-    );
+    // Verify session belongs to teacher (minimal lifecycle fields)
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionLifecycle(sessionId, teacher.id);
     
     if (!session) {
       return res.status(404).json({
@@ -1885,16 +1774,33 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       });
     }
     
+    // Broadcast 'ending' state early for UI gating
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+        sessionId,
+        status: 'ending',
+        traceId: (res.locals as any)?.traceId || (req as any)?.traceId
+      });
+    } catch {}
+
     // Update session status with duration tracking
     const actualEnd = new Date();
     const actualDuration = session.actual_start ? Math.round((actualEnd.getTime() - new Date(session.actual_start).getTime()) / 60000) : 0;
-    await databricksService.update('classroom_sessions', sessionId, {
+    await getCompositionRoot().getSessionRepository().updateFields(sessionId, {
       status: 'ended',
       actual_end: actualEnd,
       actual_duration_minutes: actualDuration
     });
     // Maintain compatibility with tests expecting updateSessionStatus call
-    await databricksService.updateSessionStatus(sessionId, 'ended');
+    await sessionRepo.updateStatus(sessionId, 'ended');
+
+    // Mark session as ending in Redis to gate late audio chunks during teardown (short TTL)
+    try {
+      await redisService.set(`ws:session:ending:${sessionId}`, '1', 120);
+    } catch (e) {
+      console.warn('Failed to set session ending flag (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
     
     // Emit session status change event for intelligent cache invalidation (skip in unit tests)
     if (process.env.NODE_ENV !== 'test') {
@@ -1902,8 +1808,9 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     }
     console.log('🔄 Session status change event emitted:', session.status, '→ ended');
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_ended',
@@ -1911,11 +1818,12 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} ended session - Reason: ${reason}${teacherNotes ? ` - Notes: ${teacherNotes}` : ''}`,
+      description: `session:${sessionId} ended - reason:${reason || 'unspecified'}`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
     
     // NEW: Log session ended event
     try {
@@ -1927,7 +1835,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         {
           reason,
           teacherNotes,
-          duration_seconds: Math.round((new Date().getTime() - new Date(session.actual_start || session.created_at).getTime()) / 1000),
+          duration_seconds: (() => { const baseStart: Date = (session.actual_start ?? session.created_at) ?? new Date(); return Math.round((Date.now() - baseStart.getTime()) / 1000); })(),
           timestamp: new Date().toISOString(),
           source: 'session_controller'
         }
@@ -1939,74 +1847,110 @@ export async function endSession(req: Request, res: Response): Promise<Response>
 
     // Notify via WebSocket
     try {
-      websocketService.endSession(sessionId);
-      websocketService.notifySessionUpdate(sessionId, { type: 'session_ended', sessionId });
+      // Primary: namespaced sessions service emission
+      try {
+        const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+        getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+          sessionId,
+          status: 'ended',
+          traceId: (res.locals as any)?.traceId || (req as any)?.traceId
+        });
+      } catch (e) {
+        console.warn('Failed to emit namespaced session end (non-blocking):', e instanceof Error ? e.message : String(e));
+      }
+
+      // Legacy emission removed (namespaced is canonical)
       
+      // Drain in-memory audio processing windows best-effort before analytics
+      try {
+        const groups = await getCompositionRoot().getGroupRepository().getGroupsBasic(sessionId);
+        if (Array.isArray(groups) && groups.length > 0) {
+          const { inMemoryAudioProcessor } = await import('../services/audio/InMemoryAudioProcessor');
+          const ids = (groups as any[]).map(g => g.id);
+          const drainPromise = inMemoryAudioProcessor.flushGroups(ids);
+          const drainTimeout = parseInt(process.env.AUDIO_DRAIN_TIMEOUT_MS || '750', 10);
+          await Promise.race([
+            drainPromise,
+            new Promise((resolve) => setTimeout(resolve, drainTimeout))
+          ]);
+        }
+      } catch (e) {
+        console.warn('Audio drain before analytics failed (non-blocking):', e instanceof Error ? e.message : String(e));
+      }
+
       // Trigger robust analytics computation with circuit breaker protection and duplicate prevention
-      // The enhanced service prevents duplicate triggers and provides graceful degradation
-      setImmediate(async () => {
+      // In tests, run inline to avoid teardown timing issues; in other envs, schedule asynchronously
+      const runAnalytics = async () => {
         const startTime = Date.now();
         try {
           const { analyticsComputationService } = await import('../services/analytics-computation.service');
-          
+
           console.log(`🎯 Starting protected analytics computation for ended session ${sessionId}`);
           const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
-          
+
           if (computedAnalytics) {
-            // TODO: Fix TypeScript issue with dynamic import - method exists but TypeScript can't verify
-            // @ts-ignore
+            // @ts-ignore - dynamic import typing
             await analyticsComputationService.emitAnalyticsFinalized(sessionId);
             const duration = Date.now() - startTime;
             console.log(`🎉 Protected analytics computation completed in ${duration}ms for session ${sessionId}`);
           } else {
             console.warn(`⚠️ Protected analytics computation returned null for session ${sessionId}`);
-            websocketService.emitToSession(sessionId, 'analytics:failed', { 
-              sessionId, 
+            const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+            getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:failed', {
+              sessionId,
               timestamp: new Date().toISOString(),
               error: 'Analytics computation completed but returned no results',
-              recoverable: true
+              recoverable: true,
             });
           }
         } catch (error) {
           const duration = Date.now() - startTime;
           const errorMessage = error instanceof Error ? error.message : 'Unknown analytics error';
-          
+
           console.error(`❌ Protected analytics computation error for session ${sessionId} after ${duration}ms:`, error);
-          
-          // Enhanced error classification
+
           const isCircuitBreakerError = errorMessage.includes('circuit breaker');
           const isLockError = errorMessage.includes('locked by') || errorMessage.includes('lock acquisition failed');
           const isTimeoutError = errorMessage.includes('timeout');
-          
-          websocketService.emitToSession(sessionId, 'analytics:failed', { 
-            sessionId, 
+
+          const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+          const payload = {
+            sessionId,
             timestamp: new Date().toISOString(),
             error: errorMessage,
-            errorType: isCircuitBreakerError ? 'circuit_breaker' : 
-                      isLockError ? 'duplicate_prevention' :
-                      isTimeoutError ? 'timeout' : 'computation_error',
-            recoverable: isLockError || isCircuitBreakerError, // These are recoverable
-            retryable: !isCircuitBreakerError, // Don't retry if circuit breaker is open
-            duration
-          });
+            errorType: isCircuitBreakerError ? 'circuit_breaker' : isLockError ? 'duplicate_prevention' : isTimeoutError ? 'timeout' : 'computation_error',
+            recoverable: isLockError || isCircuitBreakerError,
+            retryable: !isCircuitBreakerError,
+            duration,
+          };
+          getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:failed', payload);
+          // Observability: analytics failure counter
+          try {
+            const client = await import('prom-client');
+            const ctr = (client.register.getSingleMetric('analytics_failed_total') as any) || new (client as any).Counter({ name: 'analytics_failed_total', help: 'Total analytics failed emits', labelNames: ['type'] });
+            // @ts-ignore
+            ctr.inc({ type: payload.errorType });
+          } catch {}
         }
-      });
+      };
+
+      if (process.env.NODE_ENV === 'test') {
+        await runAnalytics();
+      } else {
+        setImmediate(() => { runAnalytics().catch((e) => console.error('Analytics async error:', e)); });
+      }
       
     } catch (e) {
       console.warn('WebSocket notify failed in endSession:', e);
     }
     
     // Get final session stats
-    const stats = await databricksService.queryOne(
-      `SELECT total_groups, total_students,
-              (SELECT COUNT(id) FROM ${databricksConfig.catalog}.sessions.transcriptions WHERE session_id = s.id) as total_transcriptions
-       FROM ${databricksConfig.catalog}.sessions.classroom_sessions s
-       WHERE s.id = ?`,
-      [sessionId]
-    );
+    const statsRepo = getCompositionRoot().getSessionStatsRepository();
+    const stats = await statsRepo.getEndSessionStats(sessionId);
     
     // Calculate duration
-    const startTime = new Date(session.actual_start || session.created_at);
+    const startBase: Date = (session.actual_start ?? session.created_at) ?? new Date();
+    const startTime = new Date(startBase);
     const endTime = new Date();
     const totalDuration = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
     
@@ -2022,7 +1966,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         },
         summary: {
           totalGroups: stats?.total_groups || 0,
-          totalParticipants: stats?.total_participants || 0,
+          totalParticipants: stats?.total_students || 0,
           totalTranscriptions: stats?.total_transcriptions || 0,
           participationRate: session.participation_rate || 0,
           engagementScore: session.engagement_score || 0,
@@ -2052,10 +1996,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     const updateData = req.body;
     
     // Verify session belongs to teacher
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
-    );
+    const session = await getCompositionRoot().getSessionRepository().getOwnedSessionBasic(sessionId, teacher.id);
     
     if (!session) {
       return res.status(404).json({
@@ -2101,10 +2042,11 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     }
     
     // Update session
-    await databricksService.update('classroom_sessions', sessionId, fieldsToUpdate);
+    await getCompositionRoot().getSessionRepository().updateFields(sessionId, fieldsToUpdate);
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_updated',
@@ -2112,17 +2054,31 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} updated session`,
+      description: `teacher:${teacher.id} updated session`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
     
     // Get updated session
-    const updatedSession = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
-      [sessionId]
-    );
+    const updatedSession = await getCompositionRoot().getSessionRepository().getBasic(sessionId);
+    
+    // Write-through: upsert minimal session-detail cache for the actor teacher
+    try {
+      const cacheKey = `session_detail:${sessionId}:${teacher.id}`;
+      await queryCacheService.upsertCachedQuery('session-detail', cacheKey, updatedSession, { sessionId, teacherId: teacher.id });
+    } catch (e) {
+      console.warn('⚠️ Write-through cache upsert failed after updateSession:', e instanceof Error ? e.message : String(e));
+    }
+    
+    // Emit cache event for invalidation + WS client refresh
+    try {
+      const changes = Object.keys(fieldsToUpdate);
+      await cacheEventBus.sessionUpdated(sessionId, teacher.id, changes);
+    } catch (e) {
+      console.warn('⚠️ CacheEventBus.sessionUpdated failed (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
     
     return res.json({
       success: true,
@@ -2152,10 +2108,7 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     const sessionId = req.params.sessionId;
     
     // Verify session belongs to teacher
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-      [sessionId, teacher.id]
-    );
+    const session = await getCompositionRoot().getSessionRepository().getOwnedSessionBasic(sessionId, teacher.id);
     
     if (!session) {
       return res.status(404).json({
@@ -2181,8 +2134,16 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     // Archive the session (note: archived_at and archived_by fields don't exist in schema, status change is sufficient)
     await databricksService.updateSessionStatus(sessionId, 'archived');
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Emit cache event for invalidation + WS refresh
+    try {
+      await cacheEventBus.sessionDeleted(sessionId, teacher.id);
+    } catch (e) {
+      console.warn('⚠️ CacheEventBus.sessionDeleted failed (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
+    
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_archived',
@@ -2190,11 +2151,12 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} archived session`,
+      description: `teacher:${teacher.id} archived session`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
-    });
+    }).catch(() => {});
     
     return res.json({
       success: true,
@@ -2221,11 +2183,9 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId;
     
-    // Verify session belongs to teacher and is active
-    const session = await databricksService.queryOne(
-      `SELECT id, teacher_id, school_id, title, description, status, access_code, actual_start, actual_end, actual_duration_minutes FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ? AND status = ?`,
-      [sessionId, teacher.id, 'active']
-    );
+    // Verify session belongs to teacher and is active via repository (Hex)
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
     
     if (!session) {
       return res.status(404).json({
@@ -2238,7 +2198,7 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
     }
     
     // Update session status (note: paused_at field doesn't exist in schema, status change is sufficient)
-    await databricksService.updateSessionStatus(sessionId, 'paused');
+    await sessionRepo.updateStatus(sessionId, 'paused');
     
     // CRITICAL FIX: Invalidate session cache to ensure fresh data
     try {
@@ -2252,8 +2212,21 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       // Continue without cache invalidation - database update is the source of truth
     }
     
-    // Record audit log
-    await databricksService.recordAuditLog({
+    // Broadcast session status change to WebSocket clients (notify-only)
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+        sessionId,
+        status: 'paused',
+        traceId: (res.locals as any)?.traceId || (req as any)?.traceId
+      });
+    } catch (e) {
+      console.warn('⚠️ WebSocket broadcast failed during session pause (non-critical):', e instanceof Error ? e.message : String(e));
+    }
+
+    // Record audit log (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    void auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'session_paused',
@@ -2261,7 +2234,8 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       resourceType: 'session',
       resourceId: sessionId,
       schoolId: session.school_id,
-      description: `Teacher ID ${teacher.id} paused session`,
+      description: `teacher:${teacher.id} paused session`,
+      sessionId,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',

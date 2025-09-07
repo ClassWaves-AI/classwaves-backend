@@ -10,3 +10,40 @@ export { initializeNamespacedWebSocket as initializeWebSocket } from './namespac
 
 // Types
 export type { NamespaceSocketData } from './namespace-base.service';
+
+// Compatibility proxy for legacy `websocket.service` consumers in tests and transitional code
+export const websocketService = {
+  get io() {
+    try { return (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getIO() || null; } catch { return null; }
+  },
+  emitToSession(sessionId: string, event: string, data: any) {
+    try {
+      const svc = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getSessionsService();
+      svc?.emitToSession(sessionId, event, data);
+    } catch {}
+  },
+  emitToGroup(groupId: string, event: string, data: any) {
+    try {
+      const svc = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getSessionsService();
+      svc?.emitToGroup(groupId, event, data);
+    } catch {}
+  },
+  notifySessionUpdate(sessionId: string, payload: any) {
+    this.emitToSession(sessionId, 'session:status_changed', payload);
+  },
+  endSession(sessionId: string) {
+    this.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
+  },
+  on(event: string, callback: (...args: any[]) => void) {
+    try {
+      const io = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getIO();
+      (io as any)?.on?.(event as any, callback as any);
+    } catch {}
+  },
+  emit(event: string, data: any) {
+    try {
+      const io = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getIO();
+      (io as any)?.emit?.(event as any, data);
+    } catch {}
+  },
+};

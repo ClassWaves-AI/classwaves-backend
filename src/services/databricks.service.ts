@@ -126,6 +126,7 @@ interface TranscriptionData {
 export class DatabricksService {
   private client: DBSQLClient;
   private connection: any = null;
+  private columnCache: Map<string, Set<string>> = new Map();
   private currentSession: any = null;
   private sessionPromise: Promise<any> | null = null;
   private connectionParams: {
@@ -164,6 +165,55 @@ export class DatabricksService {
     this.client = new DBSQLClient();
 
     // STT via Databricks has been removed. Other Databricks services remain intact.
+  }
+
+  /**
+   * Build a raw SQL expression for MAP<STRING, STRING>
+   * Example output: map('k1','v1','k2',CAST(NULL AS STRING))
+   */
+  toMapStringString(obj: Record<string, string | null | undefined>): { __rawSql: string } {
+    const esc = (s: string) => s.replace(/'/g, "''");
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(obj || {})) {
+      if (k == null) continue;
+      const keySql = `'${esc(String(k))}'`;
+      const valSql = v == null ? 'CAST(NULL AS STRING)' : `'${esc(String(v))}'`;
+      parts.push(keySql, valSql);
+    }
+    const mapExpr = parts.length > 0 ? `map(${parts.join(', ')})` : 'map()';
+    return { __rawSql: mapExpr };
+  }
+
+  /**
+   * Get column names for a table (cached, lowercase)
+   */
+  private async getTableColumns(schema: string, table: string): Promise<Set<string>> {
+    const key = `${databricksConfig.catalog}.${schema}.${table}`.toLowerCase();
+    const cached = this.columnCache.get(key);
+    if (cached) return cached;
+    try {
+      const rows = await this.query<{ column_name: string }>(
+        `SELECT lower(column_name) AS column_name
+         FROM ${databricksConfig.catalog}.information_schema.columns
+         WHERE table_schema = ? AND table_name = ?`,
+        [schema, table]
+      );
+      const cols = new Set<string>(rows.map(r => r.column_name));
+      this.columnCache.set(key, cols);
+      return cols;
+    } catch (e) {
+      // If information_schema is unavailable, return empty (caller decides)
+      return new Set();
+    }
+  }
+
+  /**
+   * Check if a table has all required columns
+   */
+  async tableHasColumns(schema: string, table: string, columns: string[]): Promise<boolean> {
+    const cols = await this.getTableColumns(schema, table);
+    if (cols.size === 0) return false;
+    return columns.every(c => cols.has(c.toLowerCase()));
   }
 
   /**
@@ -462,48 +512,104 @@ export class DatabricksService {
   }
 
   /**
+   * Parse an incoming table reference which may optionally include a schema prefix.
+   * - Accepts: 'table' or 'schema.table'.
+   * - Returns resolved { schema, table } using map defaults when schema not provided.
+   */
+  private parseTable(tableRef: string): { schema: string; table: string } {
+    if (tableRef.includes('.')) {
+      const parts = tableRef.split('.');
+      if (parts.length >= 2) {
+        const schema = parts[0].trim();
+        const table = parts[1].trim();
+        if (schema && table) return { schema, table };
+      }
+    }
+    return { schema: this.getSchemaForTable(tableRef), table: tableRef };
+  }
+
+  /**
    * Insert a record
    */
   async insert(table: string, data: Record<string, any>): Promise<string> {
     const columns = Object.keys(data);
-    const values = Object.values(data);
-    const placeholders = values.map(() => '?').join(', ');
+    // Support raw SQL values for advanced types (e.g., MAP<STRING, STRING>)
+    const isRawSql = (v: any): v is { __rawSql: string } => !!v && typeof v === 'object' && typeof v.__rawSql === 'string';
+    const placeholdersArr: string[] = [];
+    const params: any[] = [];
+    for (const col of columns) {
+      const val = (data as any)[col];
+      if (isRawSql(val)) {
+        placeholdersArr.push(val.__rawSql);
+      } else {
+        placeholdersArr.push('?');
+        params.push(val);
+      }
+    }
+    const placeholders = placeholdersArr.join(', ');
     
     // Determine the schema based on the table name
-    const schema = this.getSchemaForTable(table);
+    const { schema, table: tbl } = this.parseTable(table);
     const sql = `
-      INSERT INTO ${databricksConfig.catalog}.${schema}.${table} (${columns.join(', ')})
+      INSERT INTO ${databricksConfig.catalog}.${schema}.${tbl} (${columns.join(', ')})
       VALUES (${placeholders})
     `;
     
     // DEBUG: Log the exact SQL and table info for session creation issues
     if (table === 'classroom_sessions' || table === 'student_groups' || table === 'student_group_members') {
       console.log(`🔍 DEBUG ${table.toUpperCase()} INSERT:`);
-      console.log(`  Table: ${table}`);
+      console.log(`  Table: ${tbl}`);
       console.log(`  Schema: ${schema}`);
-      console.log(`  Full table path: ${databricksConfig.catalog}.${schema}.${table}`);
+      console.log(`  Full table path: ${databricksConfig.catalog}.${schema}.${tbl}`);
       console.log(`  Columns (${columns.length}): ${columns.join(', ')}`);
       console.log(`  SQL: ${sql.trim()}`);
       console.log(`  Data types:`, Object.entries(data).map(([k,v]) => `${k}:${typeof v}`).join(', '));
     }
     
     try {
-      await this.query(sql, values);
+      await this.query(sql, params);
       if (table === 'classroom_sessions' || table === 'student_groups' || table === 'student_group_members') {
         console.log(`✅ ${table.toUpperCase()} INSERT SUCCESS`);
       }
       return data.id || this.generateId();
     } catch (insertError) {
       console.error(`❌ ${table.toUpperCase()} INSERT FAILED:`, {
-        table,
+        table: tbl,
         schema,
-        fullPath: `${databricksConfig.catalog}.${schema}.${table}`,
+        fullPath: `${databricksConfig.catalog}.${schema}.${tbl}`,
         error: insertError,
         columns: columns.join(', '),
         errorMessage: insertError instanceof Error ? insertError.message : String(insertError)
       });
       throw insertError;
     }
+  }
+
+  /**
+   * Batch insert rows into a table using single INSERT ... VALUES (...), (...)
+   */
+  async batchInsert(table: string, rows: Record<string, any>[]): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    const { schema, table: tbl } = this.parseTable(table);
+    const columns = Object.keys(rows[0]);
+    // Ensure all rows have same columns
+    for (const r of rows) {
+      const keys = Object.keys(r);
+      if (keys.length !== columns.length || !columns.every((c) => keys.includes(c))) {
+        throw new Error('Inconsistent row columns for batchInsert');
+      }
+    }
+    const placeholdersRow = `(${columns.map(() => '?').join(', ')})`;
+    const valuesPlaceholders = new Array(rows.length).fill(placeholdersRow).join(', ');
+    const sql = `
+      INSERT INTO ${databricksConfig.catalog}.${schema}.${tbl} (${columns.join(', ')})
+      VALUES ${valuesPlaceholders}
+    `;
+    const params: any[] = [];
+    for (const r of rows) {
+      for (const c of columns) params.push(r[c]);
+    }
+    await this.query(sql, params);
   }
 
   /**
@@ -514,9 +620,9 @@ export class DatabricksService {
     const values = Object.values(data);
     const setClause = columns.map(col => `${col} = ?`).join(', ');
     
-    const schema = this.getSchemaForTable(table);
+    const { schema, table: tbl } = this.parseTable(table);
     const sql = `
-      UPDATE ${databricksConfig.catalog}.${schema}.${table}
+      UPDATE ${databricksConfig.catalog}.${schema}.${tbl}
       SET ${setClause}
       WHERE id = ?
     `;
@@ -525,52 +631,76 @@ export class DatabricksService {
   }
 
   /**
+   * Update records by simple equality WHERE clause
+   */
+  async updateWhere(table: string, where: Record<string, any>, data: Record<string, any>): Promise<void> {
+    const { schema, table: tbl } = this.parseTable(table);
+    const dataCols = Object.keys(data);
+    const dataVals = Object.values(data);
+    const whereCols = Object.keys(where);
+    const whereVals = Object.values(where);
+
+    const hasUpdatedAt = await this.tableHasColumns(schema, table, ['updated_at']);
+    const assignments: string[] = dataCols.map(c => `${c} = ?`);
+    if (hasUpdatedAt && !('updated_at' in data)) assignments.push('updated_at = CURRENT_TIMESTAMP');
+    const setClause = assignments.join(', ');
+    const whereClause = whereCols.map(c => `${c} = ?`).join(' AND ');
+
+    const sql = `
+      UPDATE ${databricksConfig.catalog}.${schema}.${tbl}
+      SET ${setClause}
+      WHERE ${whereClause}
+    `;
+    await this.query(sql, [...dataVals, ...whereVals]);
+  }
+
+  /**
    * Upsert a record (insert or update based on condition)
    */
   async upsert(table: string, whereCondition: Record<string, any>, data: Record<string, any>): Promise<void> {
-    const schema = this.getSchemaForTable(table);
-    
+    const { schema, table: tbl } = this.parseTable(table);
+
     // Build WHERE clause for existence check
     const whereKeys = Object.keys(whereCondition);
     const whereValues = Object.values(whereCondition);
     const whereClause = whereKeys.map(key => `${key} = ?`).join(' AND ');
-    
+
+    // Determine schema columns once
+    const hasUpdatedAt = await this.tableHasColumns(schema, table, ['updated_at']);
+    const hasCreatedAt = await this.tableHasColumns(schema, table, ['created_at']);
+
     // Check if record exists
     const existingSql = `
-      SELECT id FROM ${databricksConfig.catalog}.${schema}.${table}
+      SELECT id FROM ${databricksConfig.catalog}.${schema}.${tbl}
       WHERE ${whereClause}
       LIMIT 1
     `;
-    
+
     const existing = await this.queryOne(existingSql, whereValues);
-    
+
     if (existing) {
       // Update existing record
       const updateColumns = Object.keys(data);
       const updateValues = Object.values(data);
-      const setClause = updateColumns.map(col => `${col} = ?`).join(', ');
-      
+      const assignments: string[] = updateColumns.map(col => `${col} = ?`);
+      if (hasUpdatedAt) assignments.push('updated_at = CURRENT_TIMESTAMP');
+      const setClause = assignments.join(', ');
+
       const updateSql = `
-        UPDATE ${databricksConfig.catalog}.${schema}.${table}
-        SET ${setClause}, updated_at = CURRENT_TIMESTAMP
+        UPDATE ${databricksConfig.catalog}.${schema}.${tbl}
+        SET ${setClause}
         WHERE ${whereClause}
       `;
-      
+
       await this.query(updateSql, [...updateValues, ...whereValues]);
     } else {
       // Insert new record
-      const insertData = { ...whereCondition, ...data };
-      if (!insertData.id) {
-        insertData.id = this.generateId();
-      }
-      if (!insertData.created_at) {
-        insertData.created_at = new Date();
-      }
-      if (!insertData.updated_at) {
-        insertData.updated_at = new Date();
-      }
-      
-      await this.insert(table, insertData);
+      const insertData: Record<string, any> = { ...whereCondition, ...data };
+      if (!insertData.id) insertData.id = this.generateId();
+      if (hasCreatedAt && !('created_at' in insertData)) insertData.created_at = new Date();
+      if (hasUpdatedAt && !('updated_at' in insertData)) insertData.updated_at = new Date();
+
+      await this.insert(`${schema}.${tbl}`, insertData);
     }
   }
 
@@ -578,8 +708,8 @@ export class DatabricksService {
    * Delete a record
    */
   async delete(table: string, id: string): Promise<void> {
-    const schema = this.getSchemaForTable(table);
-    const sql = `DELETE FROM ${databricksConfig.catalog}.${schema}.${table} WHERE id = ?`;
+    const { schema, table: tbl } = this.parseTable(table);
+    const sql = `DELETE FROM ${databricksConfig.catalog}.${schema}.${tbl} WHERE id = ?`;
     await this.query(sql, [id]);
   }
 
@@ -589,7 +719,22 @@ export class DatabricksService {
   async getSchoolByDomain(domain: string): Promise<School | null> {
     const sql = `
       SELECT 
-        *,
+        id,
+        name,
+        domain,
+        admin_email,
+        subscription_tier,
+        subscription_status,
+        max_teachers,
+        current_teachers,
+        subscription_start_date,
+        subscription_end_date,
+        trial_ends_at,
+        ferpa_agreement,
+        coppa_compliant,
+        data_retention_days,
+        created_at,
+        updated_at,
         current_teachers as teacher_count,
         0 as student_count
       FROM ${databricksConfig.catalog}.users.schools 
@@ -603,7 +748,21 @@ export class DatabricksService {
    */
   async getTeacherByGoogleId(googleId: string): Promise<Teacher | null> {
     const sql = `
-      SELECT t.*, s.name as school_name, s.domain as school_domain
+      SELECT 
+        t.id,
+        t.google_id,
+        t.email,
+        t.name,
+        t.picture,
+        t.school_id,
+        t.role,
+        t.status,
+        t.access_level,
+        t.login_count,
+        t.created_at,
+        t.updated_at,
+        s.name as school_name,
+        s.domain as school_domain
       FROM ${databricksConfig.catalog}.users.teachers t
       JOIN ${databricksConfig.catalog}.users.schools s ON t.school_id = s.id
       WHERE t.google_id = ? AND t.status = 'active'
@@ -616,7 +775,21 @@ export class DatabricksService {
    */
   async getTeacherByEmail(email: string): Promise<Teacher | null> {
     const sql = `
-      SELECT t.*, s.name as school_name, s.domain as school_domain
+      SELECT 
+        t.id,
+        t.google_id,
+        t.email,
+        t.name,
+        t.picture,
+        t.school_id,
+        t.role,
+        t.status,
+        t.access_level,
+        t.login_count,
+        t.created_at,
+        t.updated_at,
+        s.name as school_name,
+        s.domain as school_domain
       FROM ${databricksConfig.catalog}.users.teachers t
       JOIN ${databricksConfig.catalog}.users.schools s ON t.school_id = s.id
       WHERE t.email = ? AND t.status = 'active'
@@ -878,6 +1051,53 @@ export class DatabricksService {
   }
 
   /**
+   * Record multiple audit log entries in a single batch (canonical batch API)
+   */
+  async recordAuditLogBatch(rows: Array<{
+    id?: string;
+    actor_id: string;
+    actor_type: 'teacher' | 'student' | 'system' | 'admin';
+    event_type: string;
+    event_category: string;
+    event_timestamp?: Date;
+    resource_type: string;
+    resource_id?: string | null;
+    school_id: string;
+    session_id?: string | null;
+    description?: string;
+    ip_address?: string | null;
+    user_agent?: string | null;
+    compliance_basis?: string | null;
+    data_accessed?: string | null;
+    affected_student_ids?: string[] | string | null;
+    created_at?: Date;
+  }>): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    const norm = rows.map((r) => ({
+      id: r.id || this.generateId(),
+      actor_id: r.actor_id,
+      actor_type: r.actor_type,
+      event_type: r.event_type,
+      event_category: r.event_category,
+      event_timestamp: r.event_timestamp || new Date(),
+      resource_type: r.resource_type,
+      resource_id: r.resource_id ?? null,
+      school_id: r.school_id,
+      session_id: r.session_id ?? null,
+      description: r.description || '',
+      ip_address: r.ip_address ?? null,
+      user_agent: r.user_agent ?? null,
+      compliance_basis: r.compliance_basis ?? null,
+      data_accessed: r.data_accessed ?? null,
+      affected_student_ids: Array.isArray(r.affected_student_ids)
+        ? JSON.stringify(r.affected_student_ids)
+        : (r.affected_student_ids ?? null),
+      created_at: r.created_at || new Date(),
+    }));
+    await this.batchInsert('audit_log', norm);
+  }
+
+  /**
    * OPTIMIZED: Batch auth operations to reduce database round trips
    */
   async batchAuthOperations(googleUser: any, domain: string): Promise<{
@@ -891,14 +1111,27 @@ export class DatabricksService {
     const sql = `
       WITH school_lookup AS (
         SELECT 
-          s.*,
+          s.id,
+          s.name,
+          s.domain,
+          s.subscription_tier,
+          s.subscription_status,
           s.current_teachers as teacher_count,
           0 as student_count
         FROM ${databricksConfig.catalog}.users.schools s
         WHERE s.domain = ? AND s.subscription_status IN ('active', 'trial')
       ),
       teacher_lookup AS (
-        SELECT t.*, s.name as school_name, s.domain as school_domain
+        SELECT 
+          t.school_id,
+          t.id,
+          t.email,
+          t.name,
+          t.role,
+          t.access_level,
+          t.login_count,
+          s.name as school_name, 
+          s.domain as school_domain
         FROM ${databricksConfig.catalog}.users.teachers t
         JOIN ${databricksConfig.catalog}.users.schools s ON t.school_id = s.id
         WHERE t.google_id = ? AND t.status = 'active'
@@ -1035,9 +1268,13 @@ export const databricksService = {
   queryOne: <T = any>(sql: string, params: any[] = []) => getDatabricksService().queryOne<T>(sql, params),
   generateId: () => getDatabricksService().generateId(),
   insert: (table: string, data: Record<string, any>) => getDatabricksService().insert(table, data),
+  batchInsert: (table: string, rows: Record<string, any>[]) => getDatabricksService().batchInsert(table, rows),
   update: (table: string, id: string, data: Record<string, any>) => getDatabricksService().update(table, id, data),
+  updateWhere: (table: string, where: Record<string, any>, data: Record<string, any>) => getDatabricksService().updateWhere(table, where, data),
   upsert: (table: string, whereCondition: Record<string, any>, data: Record<string, any>) => getDatabricksService().upsert(table, whereCondition, data),
   delete: (table: string, id: string) => getDatabricksService().delete(table, id),
+  mapStringString: (obj: Record<string, string | null | undefined>) => getDatabricksService().toMapStringString(obj),
+  tableHasColumns: (schema: string, table: string, columns: string[]) => getDatabricksService().tableHasColumns(schema, table, columns),
   getSchoolByDomain: (domain: string) => getDatabricksService().getSchoolByDomain(domain),
   getTeacherByGoogleId: (googleId: string) => getDatabricksService().getTeacherByGoogleId(googleId),
   getTeacherByEmail: (email: string) => getDatabricksService().getTeacherByEmail(email),
@@ -1046,6 +1283,7 @@ export const databricksService = {
   createSession: (sessionData: CreateSessionData) => getDatabricksService().createSession(sessionData),
   updateSessionStatus: (sessionId: string, status: SessionStatus, additionalData?: any) => getDatabricksService().updateSessionStatus(sessionId, status, additionalData),
   recordAuditLog: (auditData: any) => getDatabricksService().recordAuditLog(auditData),
+  recordAuditLogBatch: (rows: any[]) => getDatabricksService().recordAuditLogBatch(rows),
   batchAuthOperations: (googleUser: any, domain: string) => getDatabricksService().batchAuthOperations(googleUser, domain),
   // STT removed
 };

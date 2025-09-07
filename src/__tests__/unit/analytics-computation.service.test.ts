@@ -5,12 +5,21 @@
  * the implementation plan for zero-polling, event-driven architecture.
  */
 
+// Use real redis service; rely on suite-level disconnect and auto-reconnect
+
 import { AnalyticsComputationService } from '../../services/analytics-computation.service';
 import { databricksService } from '../../services/databricks.service';
 
 // Mock dependencies
 jest.mock('../../services/databricks.service');
-jest.mock('../../services/websocket.service');
+jest.mock('../../services/websocket/namespaced-websocket.service', () => ({
+  getNamespacedWebSocketService: () => ({
+    getSessionsService: () => ({
+      emitToSession: jest.fn(),
+      emitToGroup: jest.fn(),
+    })
+  })
+}));
 
 describe('AnalyticsComputationService', () => {
   let service: AnalyticsComputationService;
@@ -101,6 +110,11 @@ describe('AnalyticsComputationService', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    const { redisService } = require('../../services/redis.service');
+    await redisService.disconnect();
   });
 
   describe('computeSessionAnalytics', () => {

@@ -4,7 +4,8 @@ import {
   createSchool,
   updateSchool,
   listTeachers,
-  updateTeacher
+  updateTeacher,
+  getPromptDeliverySLI
 } from '../controllers/admin.controller';
 import { authenticate, requireRole } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
@@ -30,5 +31,8 @@ router.put('/schools/:id', validate(updateSchoolSchema), updateSchool);
 // Teacher management endpoints (school-specific)
 router.get('/teachers', listTeachers);
 router.put('/teachers/:id', validate(updateTeacherSchema), updateTeacher);
+
+// Observability SLIs (prompt delivery) — super_admin only
+router.get('/slis/prompt-delivery', getPromptDeliverySLI);
 
 export default router;

@@ -10,7 +10,7 @@ import {
   getSessionAnalytics
 } from '../../../controllers/session.controller';
 import { databricksService } from '../../../services/databricks.service';
-import { websocketService } from '../../../services/websocket.service';
+import { websocketService } from '../../../services/websocket';
 import { redisService } from '../../../services/redis.service';
 import { RetryService } from '../../../services/retry.service';
 import { queryCacheService } from '../../../services/query-cache.service';
@@ -25,7 +25,19 @@ import { AuthRequest } from '../../../types/auth.types';
 
 // Mock all services
 jest.mock('../../../services/databricks.service');
-jest.mock('../../../services/websocket.service');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
+jest.mock('../../../services/websocket');
+// Mock namespaced WebSocket service to capture emits from controller
+const emitToSessionMock = jest.fn();
+jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
+  getNamespacedWebSocketService: () => ({
+    getSessionsService: () => ({
+      emitToSession: emitToSessionMock,
+    })
+  })
+}));
 jest.mock('../../../services/redis.service');
 jest.mock('../../../utils/analytics-logger');
 jest.mock('../../../services/retry.service');
@@ -528,8 +540,7 @@ describe('Session Controller', () => {
         .mockResolvedValueOnce({ ready_groups_count: 2 })  // 2. Ready groups count 
         .mockResolvedValueOnce({ total_groups_count: 2 })  // 3. Total groups count - all ready!
         .mockResolvedValueOnce(true)  // 4. Update session to active
-        .mockResolvedValueOnce(true)  // 5. Record audit log 
-        .mockResolvedValueOnce(mockFullSession);  // 6. Get session with groups
+        .mockResolvedValueOnce(mockFullSession);  // 5. Get session with groups
 
       // Mock other retry methods
       (RetryService.retryRedisOperation as jest.Mock).mockResolvedValue(true);
@@ -702,11 +713,13 @@ describe('Session Controller', () => {
       (websocketService.endSession as jest.Mock).mockImplementation(() => {});
       (websocketService.notifySessionUpdate as jest.Mock).mockImplementation(() => {});
 
+      // Populate traceId to verify WS payload includes it
+      (mockRes as any).locals = { traceId: 'trace-end-123' };
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
       expect(databricksService.updateSessionStatus).toHaveBeenCalledWith(sessionId, 'ended');
-      expect(websocketService.endSession).toHaveBeenCalledWith(sessionId);
-      expect(websocketService.notifySessionUpdate).toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'session_ended' }));
+      // Namespaced sessions emitter should be called with status change to 'ended'
+      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ sessionId, status: 'ended', traceId: 'trace-end-123' }));
 
       expect(mockRes.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -736,6 +749,23 @@ describe('Session Controller', () => {
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
       assertErrorResponse(mockRes, 'SESSION_ALREADY_ENDED', 400);
+    });
+  });
+
+  describe('traceId propagation', () => {
+    it('includes traceId in session:status_changed for pauseSession', async () => {
+      const sessionId = 'session-trace-2';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+      (mockRes as any) = createMockResponse();
+      (mockRes as any).locals = { traceId: 'trace-pause-xyz' };
+
+      (databricksService.queryOne as jest.Mock)
+        .mockResolvedValueOnce({ id: sessionId, teacher_id: mockTeacher.id, school_id: mockTeacher.school_id, status: 'active' });
+
+      const { pauseSession } = await import('../../../controllers/session.controller');
+      await pauseSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ status: 'paused', traceId: 'trace-pause-xyz' }));
     });
   });
 

@@ -15,6 +15,7 @@
 
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { getCompositionRoot } from '../app/composition-root';
 import { databricksService } from '../services/databricks.service';
 import { teacherPromptService } from '../services/teacher-prompt.service';
 import { recommendationEngineService } from '../services/recommendation-engine.service';
@@ -89,8 +90,9 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       });
     }
     
-    // ✅ COMPLIANCE: Audit logging for analytics access
-    await databricksService.recordAuditLog({
+    // ✅ COMPLIANCE: Audit logging for analytics access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'teacher_analytics_access',
@@ -98,10 +100,10 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       resourceType: 'teacher_analytics',
       resourceId: targetTeacherId,
       schoolId: school.id,
-      description: `Teacher accessed guidance analytics for educational improvement`,
+      description: 'teacher accessed guidance analytics',
       complianceBasis: 'legitimate_interest',
       dataAccessed: 'teacher_guidance_metrics'
-    });
+    }).catch(() => {});
 
     // 🔍 QUERY OPTIMIZATION: Use minimal field selection + Redis caching for teacher analytics
     const queryBuilder = buildTeacherAnalyticsQuery();
@@ -270,18 +272,20 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     await logAnalyticsOperation(
       'audit_log_analytics_access',
       'audit_logs',
-      () => databricksService.recordAuditLog({
-        actorId: teacher.id,
-        actorType: 'teacher',
-        eventType: 'session_analytics_access',
-        eventCategory: 'data_access',
-        resourceType: 'session_metrics', // ✅ Updated to use correct table name
-        resourceId: sessionId,
-        schoolId: school.id,
-        description: `Teacher accessed session analytics for educational review`,
-        complianceBasis: 'legitimate_interest',
-        dataAccessed: 'session_guidance_analytics'
-      }),
+      () => {
+        const { auditLogPort } = require('../utils/audit.port.instance');
+        return auditLogPort.enqueue({
+          actorId: teacher.id,
+          actorType: 'teacher',
+          eventType: 'session_analytics_access',
+          eventCategory: 'data_access',
+          resourceType: 'session_metrics',
+          resourceId: sessionId,
+          schoolId: school.id,
+          description: 'teacher accessed session analytics for educational review',
+          dataAccessed: 'session_guidance_analytics'
+        });
+      },
       {
         sessionId,
         teacherId: teacher.id,
@@ -465,8 +469,9 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
       });
     }
 
-    // ✅ COMPLIANCE: Audit logging for system analytics access
-    await databricksService.recordAuditLog({
+    // ✅ COMPLIANCE: Audit logging for system analytics access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'admin',
       eventType: 'system_analytics_access',
@@ -474,10 +479,9 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
       resourceType: 'system_analytics',
       resourceId: 'guidance_system',
       schoolId: school.id,
-      description: `Admin accessed system analytics for performance monitoring`,
-      complianceBasis: 'legitimate_interest',
+      description: 'admin accessed system analytics',
       dataAccessed: 'system_performance_metrics'
-    });
+    }).catch(() => {});
 
     // Get system-wide metrics
     const [
@@ -600,8 +604,9 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
     const school = req.school!;
     const query = req.query as any;
     
-    // ✅ COMPLIANCE: Audit logging for effectiveness report access
-    await databricksService.recordAuditLog({
+    // ✅ COMPLIANCE: Audit logging for effectiveness report access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'effectiveness_report_access',
@@ -609,10 +614,9 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
       resourceType: 'effectiveness_report',
       resourceId: 'guidance_effectiveness',
       schoolId: school.id,
-      description: `Teacher accessed effectiveness report for educational improvement`,
-      complianceBasis: 'legitimate_interest',
+      description: 'teacher accessed effectiveness report',
       dataAccessed: 'effectiveness_analytics'
-    });
+    }).catch(() => {});
 
     // Generate comprehensive effectiveness report
     const report = await generateEffectivenessReport({
@@ -743,23 +747,8 @@ export const getRealtimeDashboardData = async (req: AuthRequest, res: Response):
 // ============================================================================
 
 async function getTeacherPromptMetrics(teacherId: string, timeframe: string): Promise<any> {
-  // Query teacher guidance metrics from database
-  const query = `
-    SELECT 
-      COUNT(*) as total_generated,
-      COUNT(acknowledged_at) as total_acknowledged,
-      COUNT(used_at) as total_used,
-      COUNT(dismissed_at) as total_dismissed,
-      AVG(response_time_seconds) as average_response_time,
-      prompt_category,
-      COUNT(*) as category_count
-    FROM classwaves.ai_insights.teacher_guidance_metrics
-    WHERE teacher_id = ? 
-      AND generated_at >= DATE_SUB(CURRENT_DATE(), INTERVAL ${getTimeframeInterval(timeframe)})
-    GROUP BY prompt_category
-  `;
-  
-  const results = await databricksService.query(query, [teacherId]);
+  const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
+  const results = await analyticsRepo.getTeacherPromptMetrics(teacherId, timeframe);
   
   return {
     totalGenerated: results.reduce((sum, row) => sum + row.category_count, 0),
@@ -768,10 +757,10 @@ async function getTeacherPromptMetrics(teacherId: string, timeframe: string): Pr
     totalDismissed: results.reduce((sum, row) => sum + (row.total_dismissed || 0), 0),
     averageResponseTime: results.length > 0 ? 
       results.reduce((sum, row) => sum + (row.average_response_time || 0), 0) / results.length : 0,
-    categoryBreakdown: results.reduce((acc, row) => {
+    categoryBreakdown: results.reduce((acc: Record<string, number>, row) => {
       acc[row.prompt_category] = row.category_count;
       return acc;
-    }, {})
+    }, {} as Record<string, number>)
   };
 }
 
@@ -813,28 +802,8 @@ async function getTeacherComparisons(teacherId: string, schoolId: string, timefr
 }
 
 async function verifySessionOwnership(sessionId: string, teacherId: string, schoolId: string): Promise<any> {
-  // ✅ FIXED: Use correct table name - classroom_sessions is in sessions schema, not users
-  const query = `
-    SELECT teacher_id, title as topic, scheduled_start, actual_end, status
-    FROM classwaves.sessions.classroom_sessions
-    WHERE id = ? AND school_id = ?
-  `;
-  
-  const result = await databricksService.query(query, [sessionId, schoolId]);
-  
-  if (result.length === 0) {
-    return { isOwner: false };
-  }
-  
-  return {
-    isOwner: result[0].teacher_id === teacherId,
-    sessionInfo: {
-      topic: result[0].topic,
-      startTime: result[0].scheduled_start,
-      endTime: result[0].actual_end,
-      status: result[0].status
-    }
-  };
+  const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
+  return await analyticsRepo.verifySessionOwnership(sessionId, teacherId, schoolId);
 }
 
 async function getSessionGuidanceMetrics(sessionId: string): Promise<any> {
@@ -1070,15 +1039,14 @@ export async function getSessionOverview(req: Request, res: Response): Promise<R
   try {
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
+    const school = (authReq as any).school || { id: undefined };
     const sessionId = req.params.sessionId;
 
     // Verify session belongs to teacher
-    const session = await databricksService.queryOne(`
-      SELECT id, teacher_id FROM classwaves.sessions.classroom_sessions 
-      WHERE id = ? AND teacher_id = ?
-    `, [sessionId, teacher.id]);
+    const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
+    const ownership = await analyticsRepo.verifySessionOwnership(sessionId, teacher.id, school.id);
 
-    if (!session) {
+    if (!ownership?.isOwner && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
       return res.status(404).json({
         success: false,
         error: {
@@ -1089,64 +1057,16 @@ export async function getSessionOverview(req: Request, res: Response): Promise<R
     }
 
     // Get planned vs actual metrics
-    const analytics = await databricksService.queryOne(`
-      SELECT 
-        planned_groups,
-        planned_group_size,
-        planned_duration_minutes,
-        planned_members,
-        planned_leaders,
-        planned_scheduled_start,
-        configured_at,
-        started_at,
-        started_without_ready_groups,
-        ready_groups_at_start,
-        ready_groups_at_5m,
-        ready_groups_at_10m,
-        adherence_members_ratio
-      FROM classwaves.analytics.session_metrics
-      WHERE session_id = ?
-    `, [sessionId]);
+    const analytics = await analyticsRepo.getPlannedVsActual(sessionId);
 
     // Get readiness timeline from events
-    const readinessEvents = await databricksService.query(`
-      SELECT event_time, payload
-      FROM classwaves.analytics.session_events
-      WHERE session_id = ? AND event_type = 'leader_ready'
-      ORDER BY event_time
-    `, [sessionId]);
+    const readinessEvents = await analyticsRepo.getReadinessEvents(sessionId);
 
     // Get actual group counts with detailed membership data
-    const actualCounts = await databricksService.queryOne(`
-      SELECT 
-        COUNT(DISTINCT sg.id) as actual_groups,
-        AVG(sg.current_size) as actual_avg_group_size,
-        SUM(sg.current_size) as actual_members,
-        COUNT(DISTINCT sgm.student_id) as actual_unique_students,
-        COUNT(DISTINCT CASE WHEN sg.leader_id = sgm.student_id THEN sgm.student_id END) as actual_leaders
-      FROM classwaves.sessions.student_groups sg
-      LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-    `, [sessionId]);
+    const actualCounts = await analyticsRepo.getActualGroupCounts(sessionId);
 
     // Get detailed group membership analytics
-    const membershipAnalytics = await databricksService.query(`
-      SELECT 
-        sg.id as group_id,
-        sg.name as group_name,
-        sg.leader_id,
-        sg.current_size as configured_size,
-        COUNT(sgm.student_id) as actual_member_count,
-        COUNT(CASE WHEN sg.leader_id = sgm.student_id THEN 1 END) as leader_present,
-        COUNT(CASE WHEN sg.leader_id != sgm.student_id THEN 1 END) as regular_members_present,
-        MIN(sgm.created_at) as first_member_joined,
-        MAX(sgm.created_at) as last_member_joined
-      FROM classwaves.sessions.student_groups sg
-      LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name, sg.leader_id, sg.current_size, sg.group_number
-      ORDER BY sg.group_number
-    `, [sessionId]);
+    const membershipAnalytics = await analyticsRepo.getMembershipAnalytics(sessionId);
 
     const overview = {
       sessionId,
@@ -1248,15 +1168,14 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
   try {
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
+    const school = (authReq as any).school || { id: undefined };
     const sessionId = req.params.sessionId;
 
     // Verify session belongs to teacher
-    const session = await databricksService.queryOne(`
-      SELECT id, teacher_id FROM classwaves.sessions.classroom_sessions 
-      WHERE id = ? AND teacher_id = ?
-    `, [sessionId, teacher.id]);
+    const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
+    const ownership = await analyticsRepo.verifySessionOwnership(sessionId, teacher.id, school.id);
 
-    if (!session) {
+    if (!ownership?.isOwner && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
       return res.status(404).json({
         success: false,
         error: {
@@ -1267,30 +1186,7 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
     }
 
     // Get group configuration and adherence data with detailed membership
-    const groups = await databricksService.query(`
-      SELECT 
-        sg.id,
-        sg.name,
-        sg.leader_id,
-        sg.is_ready,
-        sg.max_size as configured_size,
-        sg.current_size as members_present,
-        MAX(ga.leader_ready_at) as leader_ready_at,
-        MAX(ga.members_configured) as members_configured,
-        MAX(ga.configured_name) as configured_name,
-        COUNT(sgm.student_id) as actual_member_count,
-        COUNT(CASE WHEN sg.leader_id = sgm.student_id THEN 1 END) as leader_present,
-        COUNT(CASE WHEN sg.leader_id != sgm.student_id THEN 1 END) as regular_members_count,
-        MIN(sgm.created_at) as first_member_joined,
-        MAX(sgm.created_at) as last_member_joined
-      FROM classwaves.sessions.student_groups sg
-      LEFT JOIN classwaves.analytics.group_metrics ga ON sg.id = ga.group_id
-      LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name, sg.leader_id, sg.is_ready, sg.max_size, sg.current_size, 
-               sg.group_number
-      ORDER BY sg.group_number
-    `, [sessionId]);
+    const groups = await analyticsRepo.getSessionGroupsAnalytics(sessionId);
 
     const groupsEnriched = groups.map((group: any) => ({
       groupId: group.id,
@@ -1378,15 +1274,14 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
   try {
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
+    const school = (authReq as any).school || { id: undefined };
     const sessionId = req.params.sessionId;
 
     // Verify session belongs to teacher
-    const session = await databricksService.queryOne(`
-      SELECT id, teacher_id FROM classwaves.sessions.classroom_sessions 
-      WHERE id = ? AND teacher_id = ?
-    `, [sessionId, teacher.id]);
+    const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
+    const ownership = await analyticsRepo.verifySessionOwnership(sessionId, teacher.id, school.id);
 
-    if (!session) {
+    if (!ownership?.isOwner && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
       return res.status(404).json({
         success: false,
         error: {
@@ -1401,13 +1296,7 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
     
     try {
       // Try to get computed analytics first (preferred path)
-      const analyticsData = await databricksService.queryOne(`
-        SELECT analytics_data, computed_at, status
-        FROM classwaves.analytics.session_analytics 
-        WHERE session_id = ? AND analysis_type = 'final_summary'
-        ORDER BY computed_at DESC 
-        LIMIT 1
-      `, [sessionId]);
+      const analyticsData = await analyticsRepo.getSessionFinalSummary(sessionId);
 
       let membershipSummary;
 
@@ -1489,21 +1378,8 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
 // Legacy calculation as fallback (extracted from original implementation)
 async function getLegacyMembershipSummary(sessionId: string, res: Response): Promise<Response> {
   try {
-    const groups = await databricksService.query(`
-      SELECT 
-        sg.id,
-        sg.name,
-        sg.max_size as configured_size,
-        COUNT(sgm.student_id) as actual_member_count,
-        COUNT(CASE WHEN sg.leader_id = sgm.student_id THEN 1 END) as leader_present,
-        MIN(sgm.created_at) as first_member_joined,
-        MAX(sgm.created_at) as last_member_joined
-      FROM classwaves.sessions.student_groups sg
-      LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
-      WHERE sg.session_id = ?
-      GROUP BY sg.id, sg.name, sg.max_size
-      ORDER BY sg.name
-    `, [sessionId]);
+    const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
+    const groups = await analyticsRepo.getLegacyMembershipRows(sessionId);
 
     const groupsAtFullCapacity = groups.filter((g: any) => (g.actual_member_count || 0) >= (g.configured_size || 0)).length;
     const groupsWithLeadersPresent = groups.filter((g: any) => (g.leader_present || 0) > 0).length;

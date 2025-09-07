@@ -14,6 +14,10 @@ import type { Tier1Insights, Tier2Insights } from '../../../types/ai-analysis.ty
 
 // Mock databricks service
 jest.mock('../../../services/databricks.service');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
+import { auditLogPort } from '../../../utils/audit.port.instance';
 const mockDatabricksService = databricksService as jest.Mocked<typeof databricksService>;
 
 describe('AIAnalysisBufferService.getCurrentInsights()', () => {
@@ -30,7 +34,7 @@ describe('AIAnalysisBufferService.getCurrentInsights()', () => {
     service['insightsCache'].clear();
     
     // Mock audit logging
-    mockDatabricksService.recordAuditLog.mockResolvedValue(undefined);
+    (auditLogPort.enqueue as jest.Mock).mockResolvedValue(undefined);
   });
 
   describe('Real Data Integration', () => {
@@ -152,8 +156,8 @@ describe('AIAnalysisBufferService.getCurrentInsights()', () => {
       expect(result.summary.keyMetrics.activeGroups).toBe(2);
       expect(result.summary.keyMetrics.totalTranscripts).toBe(5);
 
-      // Verify compliance audit logging
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith({
+      // Verify compliance audit logging (enqueued)
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(expect.objectContaining({
         actorId: 'system',
         actorType: 'system',
         eventType: 'ai_insights_access',
@@ -164,7 +168,7 @@ describe('AIAnalysisBufferService.getCurrentInsights()', () => {
         description: expect.stringContaining('Retrieve current AI insights'),
         complianceBasis: 'legitimate_interest',
         dataAccessed: 'buffer_metadata'
-      });
+      }));
     });
 
     it('should combine Tier 1 and Tier 2 insights with realistic deep analysis data', async () => {
@@ -444,7 +448,7 @@ describe('AIAnalysisBufferService.getCurrentInsights()', () => {
     });
 
     it('should handle audit logging failures gracefully', async () => {
-      mockDatabricksService.recordAuditLog.mockRejectedValue(new Error('Audit system down'));
+      (auditLogPort.enqueue as jest.Mock).mockRejectedValue(new Error('Audit system down'));
       mockDatabricksService.queryOne.mockResolvedValue(null);
 
       // Should still complete successfully
@@ -457,8 +461,8 @@ describe('AIAnalysisBufferService.getCurrentInsights()', () => {
 
       await expect(service.getCurrentInsights(mockSessionId)).rejects.toThrow('Complete system failure');
 
-      // Verify error audit logging
-      expect(mockDatabricksService.recordAuditLog).toHaveBeenCalledWith(
+      // Verify error audit logging (enqueue)
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: 'ai_insights_access_error',
           description: expect.stringContaining('Log insights access error')

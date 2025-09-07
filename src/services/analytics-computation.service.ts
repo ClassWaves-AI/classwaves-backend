@@ -1,3 +1,4 @@
+/* eslint-disable no-useless-catch */
 /**
  * Analytics Computation Service
  * 
@@ -6,7 +7,7 @@
  */
 
 import { databricksService } from './databricks.service';
-import { websocketService } from './websocket.service';
+import { redisService } from './redis.service';
 import { realTimeAnalyticsCacheService } from './real-time-analytics-cache.service';
 import { databricksConfig } from '../config/databricks.config';
 import { analyticsLogger } from '../utils/analytics-logger';
@@ -54,6 +55,9 @@ export class AnalyticsComputationService {
     const computationId = `analytics_${sessionId}_${startTime}`;
     let globalTimeoutId: NodeJS.Timeout | null = null;
     let persisting = false;
+    let acquiredLock = false;
+    const lockKey = `analytics:compute:lock:${sessionId}`;
+    const lockTtlMs = parseInt(process.env.ANALYTICS_COMPUTE_LOCK_TTL_MS || '60000', 10); // >= compute timeout
 
     // Circuit breaker: short-circuit when OPEN (unless reset window elapsed)
     if (this.circuitBreaker.state === 'OPEN') {
@@ -69,6 +73,26 @@ export class AnalyticsComputationService {
     }
     
     try {
+      // Acquire Redis lock (deduplication across concurrent triggers)
+      try {
+        const client: any = redisService.getClient();
+        let setResp: any = null;
+        try {
+          setResp = await client.set(lockKey, String(Date.now()), 'NX', 'PX', lockTtlMs);
+        } catch {
+          // Some clients support options object
+          setResp = await client.set(lockKey, String(Date.now()), { NX: true, PX: lockTtlMs });
+        }
+        acquiredLock = !!setResp;
+        if (!acquiredLock) {
+          const err: Error & { type?: string } = new Error('lock acquisition failed');
+          err.type = 'LOCKED_BY_OTHER';
+          throw err;
+        }
+      } catch (lockErr) {
+        // Bubble up lock error to allow controller to emit duplicate_prevention
+        throw lockErr;
+      }
       // Wrap the entire computation in a global timeout
       const timeoutMs = this.COMPUTATION_TIMEOUT;
       const globalTimeoutPromise = new Promise<never>((_, reject) => {
@@ -374,6 +398,10 @@ export class AnalyticsComputationService {
         clearTimeout(globalTimeoutId);
         globalTimeoutId = null;
       }
+      // Release Redis lock if held
+      if (acquiredLock) {
+        try { await (redisService.getClient() as any).del(lockKey); } catch {}
+      }
     }
   }
 
@@ -627,22 +655,24 @@ export class AnalyticsComputationService {
       try {
         const gaRows = (await databricksService.query(`
           SELECT 
-            group_id as id,
-            group_name as name,
-            COUNT(*) as member_count,
-            AVG(engagement_rate) as engagement_rate,
-            MIN(first_member_joined) as first_member_joined
-          FROM ${databricksConfig.catalog}.analytics.group_analytics
-          WHERE session_id = ?
-          GROUP BY group_id, group_name
+            ga.group_id as id,
+            sg.name as name,
+            COUNT(sgm.student_id) as member_count,
+            AVG(COALESCE(ga.engagement_score, 0)) as engagement_score,
+            MIN(sgm.created_at) as first_member_joined
+          FROM ${databricksConfig.catalog}.analytics.group_analytics ga
+          JOIN ${databricksConfig.catalog}.sessions.student_groups sg ON ga.group_id = sg.id
+          LEFT JOIN ${databricksConfig.catalog}.sessions.student_group_members sgm ON sgm.group_id = ga.group_id
+          WHERE ga.session_id = ?
+          GROUP BY ga.group_id, sg.name
         `, [sessionId])) || [];
         if (Array.isArray(gaRows) && gaRows.length > 0) {
           return gaRows.map((group: any) => ({
             groupId: group.id,
             groupName: group.name,
             memberCount: group.member_count || 0,
-            engagementScore: group.engagement_rate != null ? Math.round(group.engagement_rate * 100) : 0,
-            participationRate: group.engagement_rate != null ? Math.round(group.engagement_rate * 100) : 0,
+            engagementScore: group.engagement_score != null ? Math.round(group.engagement_score * 100) : 0,
+            participationRate: group.engagement_score != null ? Math.round(group.engagement_score * 100) : 0,
             readyTime: group.first_member_joined
           }));
         }
@@ -681,17 +711,31 @@ export class AnalyticsComputationService {
       }
 
       const derived: GroupPerformanceSummary[] = [];
-      for (const [groupId, { members, actives }] of counts.entries()) {
-        if (members === 0) continue;
-        const rate = Math.round((actives / members) * 100);
-        derived.push({
-          groupId,
-          groupName: nameMap.get(groupId) || groupId,
-          memberCount: members,
-          engagementScore: rate,
-          participationRate: rate,
-          readyTime: undefined as any,
-        });
+      // If there are no participants rows, still return default rows for groups to avoid empty analytics
+      if (!participants || participants.length === 0) {
+        for (const [groupId, groupName] of nameMap.entries()) {
+          derived.push({
+            groupId,
+            groupName,
+            memberCount: 0,
+            engagementScore: 0,
+            participationRate: 0,
+            readyTime: undefined as any,
+          });
+        }
+      } else {
+        for (const [groupId, { members, actives }] of counts.entries()) {
+          if (members === 0) continue;
+          const rate = Math.round((actives / members) * 100);
+          derived.push({
+            groupId,
+            groupName: nameMap.get(groupId) || groupId,
+            memberCount: members,
+            engagementScore: rate,
+            participationRate: rate,
+            readyTime: undefined as any,
+          });
+        }
       }
       return derived;
     } catch (_) {
@@ -724,6 +768,7 @@ export class AnalyticsComputationService {
 
     await databricksService.upsert('session_metrics', { session_id: sessionId }, {
       session_id: sessionId,
+      calculation_timestamp: new Date(),
       total_students: sessionAnalyticsOverview.engagementMetrics.totalParticipants || 0,
       active_students: Math.round(rateDecimal * (sessionAnalyticsOverview.engagementMetrics.totalParticipants || 0)),
       participation_rate: rateDecimal,
@@ -762,11 +807,9 @@ export class AnalyticsComputationService {
    */
   async emitAnalyticsFinalized(sessionId: string): Promise<void> {
     try {
-      await websocketService.emitToSession(sessionId, 'analytics:finalized', {
-        sessionId,
-        timestamp: new Date().toISOString()
-      });
-      
+      const payload = { sessionId, timestamp: new Date().toISOString() };
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:finalized', payload);
       console.log(`📡 Emitted analytics:finalized event for session ${sessionId}`);
     } catch (error) {
       console.error(`Failed to emit analytics:finalized for session ${sessionId}:`, error);
@@ -888,6 +931,7 @@ export class AnalyticsComputationService {
     try {
       await databricksService.upsert('session_metrics', { session_id: sessionId }, {
         session_id: sessionId,
+        calculation_timestamp: new Date(),
         technical_issues_count: 1
       });
     } catch (e) {

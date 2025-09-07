@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { AddressInfo } from 'net';
 import { io as clientIO, Socket } from 'socket.io-client';
 import { performance } from 'perf_hooks';
-import { initializeWebSocket } from '../../../services/websocket.service';
+import { initializeWebSocket } from '../../../services/websocket';
 import { inMemoryAudioProcessor } from '../../../services/audio/InMemoryAudioProcessor';
 import { openAIWhisperService } from '../../../services/openai-whisper.service';
 import { redisService } from '../../../services/redis.service';

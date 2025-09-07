@@ -34,6 +34,7 @@ describe('EmailService', () => {
       query: jest.fn(),
       insert: jest.fn(),
       generateId: jest.fn(() => 'test-id-123'),
+      mapStringString: (obj: Record<string, string>) => ({ __rawSql: `map(${Object.entries(obj).map(([k,v]) => `'${k}','${v}'`).join(', ')})` })
     };
 
     emailService = new EmailService();
@@ -171,6 +172,27 @@ describe('EmailService', () => {
 
       await expect(emailService.sendSessionInvitation(mockRecipients, mockSessionData))
         .rejects.toThrow('Daily email limit reached');
+    });
+
+    it('records audit with MAP<STRING, STRING> template_data', async () => {
+      // Compliance pass for both
+      mockDatabricksService.databricksService.queryOne
+        .mockResolvedValueOnce({ email_consent: true, coppa_compliant: true })
+        .mockResolvedValueOnce({ email_consent: true, coppa_compliant: true })
+        // Daily rate ok
+        .mockResolvedValueOnce({ count: 0 });
+
+      mockTransporter.sendMail.mockResolvedValue({ messageId: 'ok' });
+
+      await emailService.sendSessionInvitation(mockRecipients, mockSessionData);
+
+      const calls = mockDatabricksService.databricksService.insert.mock.calls
+        .filter((c: any[]) => c[0] === 'notification_queue');
+      expect(calls.length).toBeGreaterThan(0);
+      const one = calls[0][1];
+      expect(one.template_data).toBeDefined();
+      expect(typeof one.template_data.__rawSql).toBe('string');
+      expect(one.template_data.__rawSql.startsWith('map(')).toBe(true);
     });
   });
 

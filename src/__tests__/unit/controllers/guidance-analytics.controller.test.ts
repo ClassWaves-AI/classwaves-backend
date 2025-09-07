@@ -7,6 +7,9 @@ import { Request, Response } from 'express';
 
 // Mock external services used by the controller
 jest.mock('../../../services/databricks.service');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
 jest.mock('../../../services/analytics-query-router.service', () => ({
   analyticsQueryRouterService: {
     routeTeacherAnalyticsQuery: jest.fn().mockResolvedValue(undefined),
@@ -42,6 +45,7 @@ jest.mock('../../../services/alert-prioritization.service', () => ({
 }));
 
 import { databricksService } from '../../../services/databricks.service';
+import { auditLogPort } from '../../../utils/audit.port.instance';
 import { getTeacherAnalytics, getSessionAnalytics, getEffectivenessReport } from '../../../controllers/guidance-analytics.controller';
 
 const mockDb = databricksService as jest.Mocked<typeof databricksService>;
@@ -68,7 +72,7 @@ describe('Guidance Analytics Controller', () => {
       } as unknown as Request;
 
       const res = createRes();
-      mockDb.recordAuditLog.mockResolvedValue();
+      (auditLogPort.enqueue as jest.Mock).mockClear();
 
       await getTeacherAnalytics(req as any, res as Response);
 
@@ -89,8 +93,8 @@ describe('Guidance Analytics Controller', () => {
         })
       }));
 
-      // Audit log recorded via canonical API
-      expect(mockDb.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      // Audit enqueue recorded
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(expect.objectContaining({
         actorId: 'teacher-1',
         eventType: 'teacher_analytics_access',
         eventCategory: 'data_access',
@@ -132,7 +136,7 @@ describe('Guidance Analytics Controller', () => {
       } as unknown as Request;
       const res = createRes();
 
-      mockDb.recordAuditLog.mockResolvedValue();
+      (auditLogPort.enqueue as jest.Mock).mockClear();
 
       await getSessionAnalytics(req as any, res as Response);
 
@@ -149,8 +153,8 @@ describe('Guidance Analytics Controller', () => {
         })
       }));
 
-      // Ensure audit logging is invoked within the analytics operation wrapper
-      expect(mockDb.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      // Ensure audit enqueue is invoked within the analytics operation wrapper
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(expect.objectContaining({
         actorId: 'teacher-1',
         eventType: 'session_analytics_access',
         resourceType: 'session_metrics',
@@ -168,7 +172,7 @@ describe('Guidance Analytics Controller', () => {
       } as unknown as Request;
       const res = createRes();
 
-      mockDb.recordAuditLog.mockResolvedValue();
+      (auditLogPort.enqueue as jest.Mock).mockResolvedValue(undefined);
 
       await getEffectivenessReport(req as any, res as Response);
 
@@ -179,7 +183,7 @@ describe('Guidance Analytics Controller', () => {
         processingTime: expect.any(Number)
       }));
 
-      expect(mockDb.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      expect(auditLogPort.enqueue).toHaveBeenCalledWith(expect.objectContaining({
         actorId: 'teacher-1',
         eventType: 'effectiveness_report_access',
         eventCategory: 'data_access',

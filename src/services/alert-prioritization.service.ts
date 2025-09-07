@@ -12,30 +12,18 @@
  * ✅ RELIABILITY: Error handling and graceful degradation
  */
 
-import { z } from 'zod';
 import { databricksService } from './databricks.service';
 import { TeacherPrompt } from '../types/teacher-guidance.types';
 
-// ============================================================================
-// Input Validation Schemas
-// ============================================================================
-
-const alertConfigSchema = z.object({
-  maxAlertsPerMinute: z.number().min(1).max(20).default(5),
-  batchIntervalMs: z.number().min(1000).max(60000).default(30000),
-  highPriorityImmediateDelivery: z.boolean().default(true),
-  adaptiveLearningEnabled: z.boolean().default(true),
-  teacherResponseTimeoutMs: z.number().min(30000).max(300000).default(120000)
-});
-
-const alertContextSchema = z.object({
-  sessionId: z.string().uuid(),
-  teacherId: z.string().uuid(),
-  sessionPhase: z.enum(['opening', 'development', 'synthesis', 'closure']),
-  currentAlertCount: z.number().min(0).default(0),
-  lastAlertTimestamp: z.date().optional(),
-  teacherEngagementScore: z.number().min(0).max(1).optional()
-});
+// Validation moved to edges. Define types for clarity.
+type AlertContext = {
+  sessionId: string;
+  teacherId: string;
+  sessionPhase: 'opening' | 'development' | 'synthesis' | 'closure';
+  currentAlertCount?: number;
+  lastAlertTimestamp?: Date;
+  teacherEngagementScore?: number;
+};
 
 // ============================================================================
 // Alert Priority Types
@@ -91,6 +79,7 @@ export class AlertPrioritizationService {
   private batchScheduler = new Map<string, NodeJS.Timeout>(); // sessionId -> timeout
   private teacherProfiles = new Map<string, TeacherAlertProfile>();
   private deliveryHistory = new Map<string, Date[]>(); // sessionId -> delivery timestamps
+  private cleanupTimer?: NodeJS.Timeout;
   
   private readonly config = {
     maxAlertsPerMinute: parseInt(process.env.TEACHER_ALERT_MAX_PER_MINUTE || '5'),
@@ -127,13 +116,20 @@ export class AlertPrioritizationService {
    */
   async prioritizeAlert(
     prompt: TeacherPrompt,
-    context: z.infer<typeof alertContextSchema>
+    context: AlertContext
   ): Promise<{ alertId: string; scheduledDelivery: Date; batchGroup: string }> {
     const startTime = Date.now();
     
     try {
-      // ✅ SECURITY: Input validation
-      const validatedContext = alertContextSchema.parse(context);
+      // Assume edge validation; normalize lightweight defaults
+      const validatedContext: AlertContext = {
+        ...context,
+        currentAlertCount: Math.max(0, context.currentAlertCount ?? 0),
+        teacherEngagementScore:
+          context.teacherEngagementScore === undefined
+            ? undefined
+            : Math.max(0, Math.min(1, context.teacherEngagementScore)),
+      };
 
       // Calculate priority score using multiple factors
       const priorityScore = await this.calculatePriorityScore(prompt, validatedContext);
@@ -310,7 +306,7 @@ export class AlertPrioritizationService {
 
   private async calculatePriorityScore(
     prompt: TeacherPrompt,
-    context: z.infer<typeof alertContextSchema>
+    context: AlertContext
   ): Promise<number> {
     const factors = {
       urgency: this.calculateUrgencyScore(prompt),
@@ -361,7 +357,7 @@ export class AlertPrioritizationService {
 
   private calculateRelevanceScore(
     prompt: TeacherPrompt, 
-    context: z.infer<typeof alertContextSchema>
+    context: AlertContext
   ): number {
     let score = 0.5; // Base relevance
     
@@ -373,7 +369,7 @@ export class AlertPrioritizationService {
       closure: ['assessment', 'clarity']
     };
     
-    if (phaseRelevance[context.sessionPhase].includes(prompt.category)) {
+    if (phaseRelevance[context.sessionPhase as keyof typeof phaseRelevance].includes(prompt.category)) {
       score += 0.3;
     }
     
@@ -385,11 +381,11 @@ export class AlertPrioritizationService {
     return Math.min(1, score);
   }
 
-  private calculateTimingScore(context: z.infer<typeof alertContextSchema>): number {
+  private calculateTimingScore(context: AlertContext): number {
     let score = 0.5;
     
     // Avoid alert fatigue - reduce score if too many recent alerts
-    if (context.currentAlertCount > this.config.maxAlertsPerMinute) {
+    if ((context.currentAlertCount ?? 0) > this.config.maxAlertsPerMinute) {
       score -= 0.3;
     }
     
@@ -429,7 +425,7 @@ export class AlertPrioritizationService {
     return Math.max(0, Math.min(1, score));
   }
 
-  private calculateSessionContextScore(context: z.infer<typeof alertContextSchema>): number {
+  private calculateSessionContextScore(context: AlertContext): number {
     let score = 0.5;
     
     // Teacher engagement affects alert value
@@ -451,7 +447,7 @@ export class AlertPrioritizationService {
   private async createPrioritizedAlert(
     prompt: TeacherPrompt,
     priorityScore: number,
-    context: z.infer<typeof alertContextSchema>
+    context: AlertContext
   ): Promise<PrioritizedAlert> {
     const now = new Date();
     const batchGroup = this.determineBatchGroup(priorityScore, prompt);
@@ -490,7 +486,7 @@ export class AlertPrioritizationService {
 
   private calculateScheduledDelivery(
     batchGroup: 'immediate' | 'next_batch' | 'low_priority',
-    context: z.infer<typeof alertContextSchema>
+    context: AlertContext
   ): Date {
     const now = new Date();
     
@@ -508,7 +504,7 @@ export class AlertPrioritizationService {
 
   private determineDeliveryStrategy(
     alert: PrioritizedAlert,
-    context: z.infer<typeof alertContextSchema>
+    context: AlertContext
   ): 'immediate' | 'batch' | 'delayed' {
     if (alert.batchGroup === 'immediate') {
       return 'immediate';
@@ -553,14 +549,14 @@ export class AlertPrioritizationService {
 
   private async deliverAlertImmediately(alert: PrioritizedAlert): Promise<void> {
     try {
-      // Import WebSocket service dynamically to avoid circular dependencies
-      const { getWebSocketService } = await import('./websocket.service');
-      const wsService = getWebSocketService();
+      // Emit via namespaced sessions service
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
       
-      if (wsService) {
+      if (nsSessions) {
         const deliveryId = `delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
-        wsService.emitToSession(alert.prompt.sessionId, 'teacher:alert:immediate', {
+        nsSessions.emitToSession(alert.prompt.sessionId, 'teacher:alert:immediate', {
           alert: {
             id: alert.id,
             prompt: alert.prompt,
@@ -655,14 +651,14 @@ export class AlertPrioritizationService {
 
   private async deliverAlertBatch(batch: AlertBatch): Promise<void> {
     try {
-      // Import WebSocket service dynamically
-      const { getWebSocketService } = await import('./websocket.service');
-      const wsService = getWebSocketService();
+      // Emit via namespaced sessions service
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
       
-      if (wsService) {
+      if (nsSessions) {
         const deliveryId = `batch_delivery_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
-        wsService.emitToSession(batch.sessionId, 'teacher:alert:batch', {
+        nsSessions.emitToSession(batch.sessionId, 'teacher:alert:batch', {
           batchId: batch.id,
           batchType: batch.batchType,
           alerts: batch.alerts.map(a => ({
@@ -923,11 +919,13 @@ export class AlertPrioritizationService {
   }
 
   private startCleanupProcess(): void {
-    setInterval(() => {
+    if (process.env.NODE_ENV === 'test') return; // avoid timers in tests
+    this.cleanupTimer = setInterval(() => {
       this.cleanupExpiredAlerts().catch(error => {
         console.error('❌ Alert cleanup failed:', error);
       });
     }, 60000); // Every minute
+    (this.cleanupTimer as any).unref?.();
   }
 
   private async cleanupExpiredAlerts(): Promise<void> {
@@ -969,7 +967,8 @@ export class AlertPrioritizationService {
     batchSize?: number;
   }): Promise<void> {
     try {
-      await databricksService.recordAuditLog({
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: data.actorId,
         actorType: data.actorId === 'system' ? 'system' : 'teacher',
         eventType: data.eventType,
@@ -978,9 +977,10 @@ export class AlertPrioritizationService {
         resourceId: data.targetId,
         schoolId: 'system',
         description: data.educationalPurpose,
+        sessionId: data.sessionId,
         complianceBasis: 'legitimate_interest',
         dataAccessed: data.error ? `error: ${data.error}` : 'alert_metadata'
-      });
+      }).catch(() => {});
     } catch (error) {
       console.warn('⚠️ Audit logging failed in alert prioritization service:', error);
     }

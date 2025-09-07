@@ -11,12 +11,25 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
 import { performance } from 'perf_hooks';
 import supertest from 'supertest';
-import app from '../../app';
-import { redisService } from '../../services/redis.service';
-// resilientAuthService removed with credential flow deprecation
-import { AuthHealthMonitor } from '../../services/auth-health-monitor.service';
+// Use in-memory Redis mock for this suite
+let app: any;
+let redisService: any;
+let AuthHealthMonitor: any;
+let request: any;
 
-const request = supertest(app);
+beforeAll(() => {
+  process.env.REDIS_USE_MOCK = '1';
+  jest.resetModules();
+  jest.isolateModules(() => {
+    const appMod = require('../../app');
+    app = appMod.default || appMod;
+    redisService = require('../../services/redis.service').redisService;
+    AuthHealthMonitor = require('../../services/auth-health-monitor.service').AuthHealthMonitor;
+  });
+  request = supertest(app);
+});
+
+// request is initialized in beforeAll
 
 // Test credentials and setup
 const TEST_GOOGLE_CREDENTIAL = process.env.E2E_TEST_GOOGLE_CREDENTIAL || 'test_credential_for_performance';
@@ -24,7 +37,7 @@ const CONCURRENT_USERS = 10; // Reduced for test environment to avoid overwhelmi
 const PERFORMANCE_TARGET_MS = 5000; // 5 second target for test environment
 
 describe('Phase 4: Authentication Performance Testing', () => {
-  let healthMonitor: AuthHealthMonitor;
+  let healthMonitor: any;
   let baselineMetrics: any;
 
   beforeAll(async () => {
@@ -46,6 +59,7 @@ describe('Phase 4: Authentication Performance Testing', () => {
   afterAll(async () => {
     // Clean up test data - note: using simple cleanup for test environment
     console.log('🧹 Test data cleaned up');
+    await redisService.disconnect();
   });
 
   beforeEach(async () => {

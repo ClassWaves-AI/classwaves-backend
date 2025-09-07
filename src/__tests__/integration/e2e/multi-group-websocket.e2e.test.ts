@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, jest } from '@je
 import { createServer } from 'http';
 import { AddressInfo } from 'net';
 import { io as clientIO, Socket } from 'socket.io-client';
-import { initializeWebSocket } from '../../../services/websocket.service';
+import { initializeWebSocket } from '../../../services/websocket';
 import { inMemoryAudioProcessor } from '../../../services/audio/InMemoryAudioProcessor';
 import { redisService } from '../../../services/redis.service';
 

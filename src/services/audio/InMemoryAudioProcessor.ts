@@ -55,6 +55,10 @@ export class InMemoryAudioProcessor {
   // Back-compat map to satisfy legacy tests that introspect buffer usage directly
   private activeBuffers = new Map<string, AudioBufferCompat>();
   private processingStats = new Map<string, { count: number; totalLatency: number }>();
+  // Per-group mutex to ensure atomic window operations
+  private groupLocks = new Map<string, Promise<any>>();
+  private readonly MAX_TOTAL_MEMORY_MB = parseInt(process.env.AI_BUFFER_MAX_MEMORY_MB || '256', 10);
+  private readonly MAX_HEAP_SIZE_MB = parseInt(process.env.MAX_HEAP_SIZE_MB || '1024', 10);
   private readonly maxBufferSize = 10_000_000; // 10MB threshold per group
   private readonly supportedFormats = ['audio/webm', 'audio/webm;codecs=opus', 'audio/ogg', 'audio/wav'];
   private readonly baseWindowSeconds = Number(process.env.STT_WINDOW_SECONDS || 15);
@@ -66,10 +70,10 @@ export class InMemoryAudioProcessor {
   private readonly breakerCooldownMs = 60_000; // 60s
 
   constructor() {
-    // Start memory monitoring
-    this.startMemoryMonitoring();
-    
-    console.log('✅ InMemoryAudioProcessor initialized with zero-disk guarantee');
+    // Start memory monitoring (skip timers in tests and Jest workers)
+    const isJest = !!process.env.JEST_WORKER_ID;
+    if (process.env.NODE_ENV !== 'test' && !isJest) this.startMemoryMonitoring();
+    if (process.env.API_DEBUG === '1') console.log('✅ InMemoryAudioProcessor initialized with zero-disk guarantee');
   }
 
   // Metrics
@@ -104,6 +108,17 @@ export class InMemoryAudioProcessor {
       return client.register.getSingleMetric('stt_disabled_windows_total') as client.Counter<string>;
     }
   })();
+  private readonly sttSubmitTotal = (() => {
+    try {
+      return new client.Counter({
+        name: 'stt_submit_total',
+        help: 'Total STT window submissions by status and school',
+        labelNames: ['school', 'status']
+      });
+    } catch {
+      return client.register.getSingleMetric('stt_submit_total') as client.Counter<string>;
+    }
+  })();
 
   /**
    * Ingest audio chunk into per-group window aggregator. Returns a transcription
@@ -116,70 +131,45 @@ export class InMemoryAudioProcessor {
     sessionId: string,
     schoolId?: string
   ): Promise<GroupTranscriptionResult | null> {
-    const processingStart = performance.now();
-    const bufferKey = `${groupId}-${Date.now()}`;
-
-    try {
-      // 1. Validate audio format
-      this.validateAudioFormat(mimeType);
-      
-      // 2. Check for back-pressure before processing
-      await this.handleBackPressure(groupId);
-
-      // 3. Verify no disk writes are happening
-      this.verifyNoDiskWrites();
-      
-      // 4. Append chunk to group window
-      const state = this.getOrCreateGroupWindow(groupId, mimeType);
-      state.chunks.push(audioChunk);
-      state.bytes += audioChunk.length;
-
-      // Track in back-compat map for monitoring tests
-      this.activeBuffers.set(bufferKey, {
-        data: audioChunk,
-        mimeType,
-        timestamp: new Date(),
-        size: audioChunk.length,
-      });
-      
-      // 5. Check window boundary
-      const now = Date.now();
-      const windowElapsed = (now - state.windowStartedAt) / 1000;
-      const atBoundary = windowElapsed >= state.windowSeconds;
-
-      if (!atBoundary) {
-        // Not at boundary; return null to indicate no transcript yet
-        return null;
+    const run = async () => {
+      const processingStart = performance.now();
+      const bufferKey = `${groupId}-${Date.now()}`;
+      try {
+        this.validateAudioFormat(mimeType);
+        await this.handleBackPressure(groupId);
+        this.verifyNoDiskWrites();
+        const state = this.getOrCreateGroupWindow(groupId, mimeType);
+        state.chunks.push(audioChunk);
+        state.bytes += audioChunk.length;
+        this.activeBuffers.set(bufferKey, { data: audioChunk, mimeType, timestamp: new Date(), size: audioChunk.length });
+        const now = Date.now();
+        const atBoundary = (now - state.windowStartedAt) / 1000 >= state.windowSeconds;
+        if (!atBoundary) return null;
+        const transcription = await this.flushGroupWindow(groupId, state, mimeType, schoolId);
+        const processingTime = performance.now() - processingStart;
+        this.recordPerformanceMetrics(groupId, processingTime);
+        return {
+          groupId,
+          sessionId,
+          text: transcription.text,
+          confidence: transcription.confidence,
+          timestamp: new Date().toISOString(),
+          language: transcription.language,
+          duration: transcription.duration,
+        } as GroupTranscriptionResult;
+      } catch (error) {
+        this.logError(groupId, sessionId, error instanceof Error ? error.message : 'Unknown error');
+        throw new AudioProcessingError('TRANSCRIPTION_FAILED', error instanceof Error ? error.message : 'Audio processing failed');
+      } finally {
+        this.activeBuffers.delete(bufferKey);
       }
-
-      // 6. Submit window to Whisper
-      const transcription = await this.flushGroupWindow(groupId, state, mimeType, schoolId);
-
-      // 7. Record performance metrics (includes aggregation time)
-      const processingTime = performance.now() - processingStart;
-      this.recordPerformanceMetrics(groupId, processingTime);
-      
-      // Near-realtime; no 500ms hard requirement for batched mode.
-
-      return {
-        groupId,
-        sessionId,
-        text: transcription.text,
-        confidence: transcription.confidence,
-        timestamp: new Date().toISOString(),
-        language: transcription.language,
-        duration: transcription.duration
-      };
-      
-    } catch (error) {
-      // Handle errors without disk writes
-      this.logError(groupId, sessionId, error instanceof Error ? error.message : 'Unknown error');
-      throw new AudioProcessingError('TRANSCRIPTION_FAILED', 
-        error instanceof Error ? error.message : 'Audio processing failed');
-    } finally {
-      // Always cleanup back-compat entry for this chunk
-      this.activeBuffers.delete(bufferKey);
-    }
+    };
+    const prev = this.groupLocks.get(groupId) || Promise.resolve();
+    const next = prev.catch(() => undefined).then(run);
+    this.groupLocks.set(groupId, next as unknown as Promise<any>);
+    return next.finally(() => {
+      if (this.groupLocks.get(groupId) === next) this.groupLocks.delete(groupId);
+    });
   }
 
   /**
@@ -266,7 +256,19 @@ export class InMemoryAudioProcessor {
       console.warn(`⛔ Whisper circuit breaker open; skipping submit for group ${groupId}`);
       // Increase window to reduce submit rate during outage
       state.windowSeconds = this.clampWindowSeconds(state.windowSeconds + 2);
-      return this.getMockWhisperResponse();
+
+      // Zero and reset window without emitting fabricated transcripts
+      this.windowSecondsMetric.observe(state.windowSeconds);
+      const mimeType = state.mimeType || fallbackMimeType;
+      const windowBuffer = Buffer.concat(state.chunks, state.bytes);
+      for (const chunk of state.chunks) this.secureZeroBuffer(chunk);
+      state.chunks = [];
+      state.bytes = 0;
+      this.secureZeroBuffer(windowBuffer);
+      state.windowStartedAt = Date.now();
+
+      // Return empty transcript to indicate skip; upstream must gate on non-empty text
+      return { text: '', confidence: 0, language: undefined, duration: undefined } as WhisperResponse;
     }
 
     // STT provider switch: if disabled, skip external submit but zero/drop buffers and advance window
@@ -297,7 +299,7 @@ export class InMemoryAudioProcessor {
       // Pass the window duration as a hint for budgeting when Whisper does not return duration
       const result = await openAIWhisperService.transcribeBuffer(windowBuffer, mimeType, { durationSeconds: state.windowSeconds }, schoolId);
       const latency = performance.now() - submitStart;
-      console.log(JSON.stringify({
+      if (process.env.API_DEBUG === '1') console.log(JSON.stringify({
         event: 'whisper_submit',
         groupId,
         whisper_latency_ms: Math.round(latency),
@@ -305,6 +307,9 @@ export class InMemoryAudioProcessor {
         window_seconds: state.windowSeconds,
         window_bytes: windowBuffer.length,
       }));
+
+      // Metrics: STT submit success labeled by school
+      try { this.sttSubmitTotal.inc({ school: schoolId || 'unknown', status: 'ok' }); } catch {}
 
       state.consecutiveFailureCount = 0;
       // Gradually reduce window toward base on success
@@ -320,6 +325,9 @@ export class InMemoryAudioProcessor {
         error_message: err?.message || 'unknown',
         window_seconds: state.windowSeconds,
       }));
+
+      // Metrics: STT submit failure labeled by school
+      try { this.sttSubmitTotal.inc({ school: schoolId || 'unknown', status: 'error' }); } catch {}
 
       state.consecutiveFailureCount += 1;
       // Increase window to reduce rate
@@ -402,8 +410,24 @@ export class InMemoryAudioProcessor {
     const totalCompatBytes = Array.from(this.activeBuffers.values()).reduce((acc, b) => acc + (b.size || b.data.length), 0);
     const totalBytes = totalWindowBytes + totalCompatBytes;
     if (totalBytes > this.maxBufferSize * 2) {
-      console.warn(`⚠️  High total buffer usage: ${Math.round(totalBytes / 1024 / 1024)}MB`);
+      if (process.env.API_DEBUG === '1') console.warn(`⚠️  High total buffer usage: ${Math.round(totalBytes / 1024 / 1024)}MB`);
       await this.cleanupOldBuffers();
+      const maxBytes = this.MAX_TOTAL_MEMORY_MB * 1024 * 1024;
+      if (totalBytes > maxBytes) {
+        // Evict oldest group windows to reduce memory footprint
+        const entries = Array.from(this.groupWindows.entries()).sort((a, b) => a[1].windowStartedAt - b[1].windowStartedAt);
+        for (const [gid, st] of entries) {
+          if (st.bytes > 0) {
+            for (const c of st.chunks) this.secureZeroBuffer(c);
+            st.chunks = [];
+            st.bytes = 0;
+            if (process.env.API_DEBUG === '1') console.warn(`🧹 Evicted window buffers for group ${gid}`);
+          }
+          const newTotalWindowBytes = Array.from(this.groupWindows.values()).reduce((acc, s) => acc + (s.bytes || 0), 0);
+          const newTotalCompatBytes = Array.from(this.activeBuffers.values()).reduce((acc, b) => acc + (b.size || b.data.length), 0);
+          if (newTotalWindowBytes + newTotalCompatBytes <= maxBytes) break;
+        }
+      }
     }
   }
 
@@ -489,21 +513,27 @@ export class InMemoryAudioProcessor {
     stats.totalLatency += latency;
     this.processingStats.set(groupId, stats);
     
-    console.log(`📊 Audio processing: ${latency.toFixed(2)}ms (avg: ${(stats.totalLatency / stats.count).toFixed(2)}ms) for group ${groupId}`);
+    if (process.env.API_DEBUG === '1') {
+      console.log(`📊 Audio processing: ${latency.toFixed(2)}ms (avg: ${(stats.totalLatency / stats.count).toFixed(2)}ms) for group ${groupId}`);
+    }
   }
 
   /**
    * Start memory monitoring for leak detection
    */
   private startMemoryMonitoring(): void {
-    setInterval(() => {
+    const t = setInterval(() => {
       const memoryUsage = process.memoryUsage();
       const groups = this.groupWindows.size;
       const totalBytes = Array.from(this.groupWindows.values()).reduce((acc, s) => acc + s.bytes, 0);
-      if (groups > 0) {
+      if (groups > 0 && process.env.API_DEBUG === '1') {
         console.log(`📈 Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB, Groups: ${groups}, Window bytes: ${Math.round(totalBytes/1024)}KB`);
       }
+      if (memoryUsage.heapUsed / 1024 / 1024 > this.MAX_HEAP_SIZE_MB) {
+        this.cleanupOldBuffers();
+      }
     }, 30000); // Every 30 seconds
+    (t as any).unref?.();
   }
 
   /**
@@ -575,6 +605,41 @@ export class InMemoryAudioProcessor {
         databricksConnectivity: 'mock',
       }
     };
+  }
+
+  // Best-effort flush for a set of groups (used during session drain)
+  public async flushGroups(groupIds: string[], fallbackMimeType: string = 'audio/webm'): Promise<void> {
+    const useQueue = process.env.AUDIO_QUEUE_ENABLED === '1' && process.env.NODE_ENV !== 'test';
+    for (const gid of groupIds) {
+      const state = this.groupWindows.get(gid);
+      if (state && state.bytes > 0 && state.chunks.length > 0) {
+        const task = async () => {
+          await this.withGroupLock(gid, async () => {
+            try { await this.flushGroupWindow(gid, state, state.mimeType || fallbackMimeType); } catch {}
+          });
+        };
+        if (useQueue) {
+          try {
+            const q = await import('../queue/audio-task-queue.port');
+            await (await q.getAudioTaskQueue()).enqueue(task);
+          } catch {
+            await task();
+          }
+        } else {
+          await task();
+        }
+      }
+    }
+  }
+
+  // Minimal promise-chain mutex per group
+  private withGroupLock<T>(groupId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.groupLocks.get(groupId) || Promise.resolve();
+    const next = prev.catch(() => undefined).then(fn);
+    this.groupLocks.set(groupId, next as unknown as Promise<any>);
+    return next.finally(() => {
+      if (this.groupLocks.get(groupId) === next) this.groupLocks.delete(groupId);
+    });
   }
 }
 

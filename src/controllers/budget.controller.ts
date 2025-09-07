@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { openAIWhisperService } from '../services/openai-whisper.service';
-import { databricksService } from '../services/databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 
 export interface BudgetUsageResponse {
   schoolId: string;
@@ -43,8 +43,9 @@ export const getBudgetUsage = async (req: Request, res: Response): Promise<void>
     const usage = await openAIWhisperService.getBudgetUsage(schoolId, queryDate);
     
     // Get school budget limit from database
-    const schoolConfig = await getSchoolBudgetConfig(schoolId);
-    const minutesLimit = schoolConfig?.dailyMinutesLimit || 120; // Default 2 hours per day
+    const budgetRepo = getCompositionRoot().getBudgetRepository();
+    const schoolConfig = await budgetRepo.getBudgetConfig(schoolId);
+    const minutesLimit = schoolConfig?.daily_minutes_limit || 120; // Default 2 hours per day
     
     const percentUsed = Math.round((usage.minutes / minutesLimit) * 100);
     
@@ -126,10 +127,8 @@ export const updateBudgetConfig = async (req: Request, res: Response): Promise<v
     const validThresholds = alertThresholds?.filter((t: number) => t > 0 && t <= 100) || [75, 90];
     
     // Update school budget configuration
-    await updateSchoolBudgetConfig(schoolId, {
-      dailyMinutesLimit,
-      alertThresholds: validThresholds
-    });
+    const budgetRepo = getCompositionRoot().getBudgetRepository();
+    await budgetRepo.upsertBudgetConfig(schoolId, dailyMinutesLimit, validThresholds);
     
     res.json({ 
       success: true, 
@@ -166,41 +165,3 @@ export const acknowledgeBudgetAlert = async (req: Request, res: Response): Promi
     res.status(500).json({ error: 'Internal server error' });
   }
 };
-
-// Helper functions for database operations
-async function getSchoolBudgetConfig(schoolId: string) {
-  try {
-    const query = `
-      SELECT daily_minutes_limit, alert_thresholds
-      FROM schools.budget_config 
-      WHERE school_id = ?
-    `;
-    const result = await databricksService.query(query, [schoolId]);
-    return result?.[0] || null;
-  } catch (error) {
-    console.warn('Error fetching school budget config:', error);
-    return null;
-  }
-}
-
-async function updateSchoolBudgetConfig(schoolId: string, config: { dailyMinutesLimit: number; alertThresholds: number[] }) {
-  const query = `
-    MERGE INTO schools.budget_config AS target
-    USING (SELECT ? as school_id, ? as daily_minutes_limit, ? as alert_thresholds) AS source
-    ON target.school_id = source.school_id
-    WHEN MATCHED THEN
-      UPDATE SET 
-        daily_minutes_limit = source.daily_minutes_limit,
-        alert_thresholds = source.alert_thresholds,
-        updated_at = current_timestamp()
-    WHEN NOT MATCHED THEN
-      INSERT (school_id, daily_minutes_limit, alert_thresholds, created_at, updated_at)
-      VALUES (source.school_id, source.daily_minutes_limit, source.alert_thresholds, current_timestamp(), current_timestamp())
-  `;
-  
-  await databricksService.query(query, [
-    schoolId, 
-    config.dailyMinutesLimit, 
-    JSON.stringify(config.alertThresholds)
-  ]);
-}

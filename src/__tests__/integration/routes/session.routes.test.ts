@@ -4,6 +4,8 @@ import sessionRoutes from '../../../routes/session.routes';
 import { authenticate } from '../../../middleware/auth.middleware';
 import { errorHandler } from '../../../middleware/error.middleware';
 import { databricksService } from '../../../services/databricks.service';
+import { markAllGroupsReady } from '../utils/group-readiness';
+import { startSessionWithSupertest } from '../utils/session-factory';
 import { redisService } from '../../../services/redis.service';
 import { queryCacheService } from '../../../services/query-cache.service';
 import { testData } from '../../fixtures/test-data';
@@ -389,6 +391,10 @@ describe('Session Routes Integration Tests', () => {
         .expect(201);
 
       const sessionId = createResponse.body.data.session.id;
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
 
       // Now test getting the session details
       const response = await request(app)
@@ -432,6 +438,10 @@ describe('Session Routes Integration Tests', () => {
         .expect(201);
 
       const sessionId = createResponse.body.data.session.id;
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
 
       // This should work since we're using the same teacher
       await request(app)
@@ -465,6 +475,10 @@ describe('Session Routes Integration Tests', () => {
         .expect(201);
 
       const sessionId = createResponse.body.data.session.id;
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
+      await markAllGroupsReady(sessionId);
 
       // Now test updating the session
       const updateData = {
@@ -507,10 +521,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session to make it active
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
 
       // Now test that we can't update an active session
       const updateData = {
@@ -636,10 +647,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session to make it active
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
 
       // Now test that we can't delete an active session
       await request(app)
@@ -708,10 +716,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Now test starting the session
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
     });
 
     it('should prevent starting already active session', async () => {
@@ -739,10 +744,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session first time
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
 
       // Try to start it again (should fail)
       await request(app)
@@ -776,10 +778,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
 
       // End the session
       await request(app)
@@ -819,10 +818,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session
-      const startResponse = await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      const startResponse = await startSessionWithSupertest(app, authToken, sessionId);
 
       expect(startResponse.body.success).toBe(true);
       // Start time tracking would be implemented in controller
@@ -855,10 +851,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session to make it active
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
 
       // Now test pausing the active session
       await request(app)
@@ -923,10 +916,7 @@ describe('Session Routes Integration Tests', () => {
       const sessionId = createResponse.body.data.session.id;
 
       // Start the session to make it active
-      await request(app)
-        .post(`/api/v1/sessions/${sessionId}/start`)
-        .set('Authorization', `Bearer ${authToken}`)
-        .expect(200);
+      await startSessionWithSupertest(app, authToken, sessionId);
 
       // Pause the session
       const pauseResponse = await request(app)
