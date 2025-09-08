@@ -26,6 +26,8 @@ import type { AIAnalysisPort } from '../services/ai-analysis.port';
 import { databricksAIAnalysisAdapter } from '../adapters/ai-analysis.databricks';
 import type { EmailPort } from '../services/ports/email.port';
 import { emailServiceAdapter } from '../adapters/email/email.adapter';
+import type { SummariesRepositoryPort } from '../services/ports/summaries.repository.port';
+import { summariesRepository as databricksSummariesRepository } from '../adapters/repositories/databricks-summaries.repository';
 
 class CompositionRoot {
   private _sessionRepository: SessionRepositoryPort;
@@ -42,6 +44,7 @@ class CompositionRoot {
   private _monitoringRepository: MonitoringRepositoryPort;
   private _aiAnalysisPort: AIAnalysisPort;
   private _emailPort: EmailPort;
+  private _summariesRepository: SummariesRepositoryPort;
 
   constructor() {
     // Wire default adapters
@@ -59,6 +62,7 @@ class CompositionRoot {
     this._monitoringRepository = databricksMonitoringRepository;
     this._aiAnalysisPort = databricksAIAnalysisAdapter;
     this._emailPort = emailServiceAdapter;
+    this._summariesRepository = databricksSummariesRepository;
   }
 
   getSessionRepository(): SessionRepositoryPort {
@@ -115,6 +119,10 @@ class CompositionRoot {
 
   getEmailPort(): EmailPort {
     return this._emailPort;
+  }
+
+  getSummariesRepository(): SummariesRepositoryPort {
+    return this._summariesRepository;
   }
 }
 

@@ -187,6 +187,16 @@ class CatalogAuditor {
       },
       {
         schema: 'ai_insights',
+        table: 'group_summaries',
+        requiredColumns: ['id', 'session_id', 'group_id', 'summary_json', 'analysis_timestamp', 'created_at']
+      },
+      {
+        schema: 'ai_insights',
+        table: 'session_summaries',
+        requiredColumns: ['id', 'session_id', 'summary_json', 'analysis_timestamp', 'created_at']
+      },
+      {
+        schema: 'ai_insights',
         table: 'intervention_suggestions',
         requiredColumns: ['id', 'session_id', 'teacher_id', 'intervention_type', 
                          'suggested_action']

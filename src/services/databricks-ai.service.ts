@@ -33,6 +33,7 @@ import {
   AIAnalysisError,
   AnalysisTier
 } from '../types/ai-analysis.types';
+import type { GroupSummary, SessionSummary } from '../types/ai-summaries.types';
 
 export class DatabricksAIService {
   private baseConfig: Omit<AIAnalysisConfig, 'tier1' | 'tier2' | 'databricks'> & {
@@ -193,6 +194,34 @@ Return only valid JSON with no additional text.`;
       // Preserve original error message for unit tests determinism
       throw error as Error;
     }
+  }
+
+  /**
+   * Summarize a single group's discussion for teacher-facing review.
+   * Uses Tier 2 endpoint configuration for higher token allowance.
+   */
+  async summarizeGroup(groupTranscripts: string[], options: { sessionId: string; groupId: string }): Promise<GroupSummary> {
+    if (!Array.isArray(groupTranscripts) || groupTranscripts.length === 0) {
+      throw new Error('No transcripts provided');
+    }
+    const combined = groupTranscripts.join('\n');
+    const prompt = `You are an expert classroom observer. Summarize the group discussion for teachers.\n\nInput: all transcripts for one group in a session.\nSession ID: ${options.sessionId}\nGroup ID: ${options.groupId}\n\nProvide a strict JSON object with fields: \n{\n  "overview": string,\n  "participation": { "notableContributors": string[], "dynamics": string },\n  "misconceptions": string[],\n  "highlights": [{ "quote": string, "context": string }],\n  "teacher_actions": [{ "action": string, "priority": "low"|"medium"|"high" }],\n  "metadata": { "inputTranscriptLength": number }\n}\n\nKeep it concise, specific, and actionable.\n\nTRANSCRIPTS:\n${combined}`;
+    const raw = await this.callSummarizerEndpoint(prompt);
+    const parsed = this.toGroupSummary(this.extractSummaryObject(raw));
+    parsed.analysisTimestamp = new Date().toISOString();
+    return parsed;
+  }
+
+  /**
+   * Summarize the entire session by aggregating multiple group summaries.
+   * Uses Tier 2 endpoint configuration for higher token allowance.
+   */
+  async summarizeSession(groupSummaries: any[], options: { sessionId: string }): Promise<SessionSummary> {
+    const prompt = `You are an expert instructional coach. Aggregate multiple group summaries into a session-level summary.\n\nInput: array of group summaries.\nSession ID: ${options.sessionId}\n\nProvide a strict JSON object with fields:\n{\n  "themes": string[],\n  "strengths": string[],\n  "needs": string[],\n  "teacher_actions": [{ "action": string, "priority": "low"|"medium"|"high" }],\n  "group_breakdown": [{ "groupId": string, "name": string, "summarySnippet": string }],\n  "metadata": { "groupCount": number }\n}\n\nBe specific and highlight cross-group patterns.\n\nGROUP SUMMARIES (JSON array):\n${JSON.stringify(groupSummaries)}`;
+    const raw = await this.callSummarizerEndpoint(prompt);
+    const parsed = this.toSessionSummary(this.extractSummaryObject(raw));
+    parsed.analysisTimestamp = new Date().toISOString();
+    return parsed;
   }
 
   /**
@@ -573,6 +602,147 @@ Return only valid JSON with no additional text.`;
       },
       retries: this.baseConfig.retries
     };
+  }
+
+  /**
+   * Calls the Databricks summarizer endpoint if configured, otherwise falls back to tier2 endpoint.
+   * Supports two payload modes via AI_SUMMARIZER_PAYLOAD_MODE:
+   *  - 'messages' (default): { messages: [{ role:'user', content: prompt }], max_tokens, temperature }
+   *  - 'input': { input: prompt }
+   */
+  private async callSummarizerEndpoint(prompt: string): Promise<any> {
+    const runtime = this.readRuntimeConfig();
+    const endpoint = process.env.AI_SUMMARIZER_ENDPOINT || runtime.tier2.endpoint;
+    if (!endpoint) {
+      throw new Error('Summarizer endpoint not configured');
+    }
+    const fullUrl = `${runtime.databricks.workspaceUrl}${endpoint}`;
+
+    const payloadMode = (process.env.AI_SUMMARIZER_PAYLOAD_MODE || 'messages').toLowerCase();
+    const timeoutMs = parseInt(process.env.AI_SUMMARIZER_TIMEOUT_MS || String(runtime.tier2.timeout), 10);
+
+    const payload = payloadMode === 'input'
+      ? { input: prompt }
+      : {
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: runtime.tier2.maxTokens,
+          temperature: runtime.tier2.temperature,
+        };
+
+    // Reuse postWithTimeout + retries like callDatabricksEndpoint
+    let lastError: Error = new Error('No attempts made');
+    let firstApiErrorMessage: string | null = null;
+    for (let attempt = 1; attempt <= runtime.retries.maxAttempts; attempt++) {
+      try {
+        const response = await this.postWithTimeout(fullUrl, payload as any, timeoutMs, runtime.databricks.token);
+        if (!response.ok) {
+          const apiErrorMsg = `Databricks Summarizer error: ${response.status} ${response.statusText}`;
+          if (response.status >= 500 && attempt < runtime.retries.maxAttempts) {
+            if (!firstApiErrorMessage) firstApiErrorMessage = apiErrorMsg;
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+          const bodyText = await response.text?.().catch(() => '') ?? '';
+          throw this.createAIError('ANALYSIS_FAILED', apiErrorMsg, 'tier2', undefined, undefined, { bodyText });
+        }
+        return await response.json();
+      } catch (error) {
+        lastError = error as Error;
+        const msg = (error as Error)?.message || '';
+        if (/^Databricks Summarizer error:\s*4\d\d\b/.test(msg)) throw error;
+        if (/401/.test(msg)) throw this.createAIError('DATABRICKS_AUTH', 'Invalid Databricks token', 'tier2');
+        if (/429/.test(msg) || /quota/i.test(msg)) throw this.createAIError('DATABRICKS_QUOTA', 'Databricks quota exceeded', 'tier2');
+        if (/timeout|timed out|AbortError/i.test(msg)) {
+          if (firstApiErrorMessage) throw new Error(firstApiErrorMessage);
+          throw new Error('Request timeout');
+        }
+        if (attempt < runtime.retries.maxAttempts) {
+          const backoff = runtime.retries.backoffMs * Math.pow(2, attempt - 1);
+          const jitter = runtime.retries.jitter ? Math.floor(Math.random() * 200) : 0;
+          await this.delay(backoff + jitter);
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  /**
+   * Extracts a JSON summary object from a variety of serving response shapes.
+   * Supports:
+   *  - Chat: { choices: [{ message: { content: "{...json...}" } }] }
+   *  - Output string: { output: "{...json...}" }
+   *  - Output object: { output: { ...json... } }
+   *  - Direct object: { themes/overview/... }
+   */
+  private extractSummaryObject(raw: any): Record<string, unknown> {
+    try {
+      // Chat format
+      const content = raw?.choices?.[0]?.message?.content;
+      if (typeof content === 'string') {
+        try { return JSON.parse(content); } catch {}
+        // Handle markdown code fences and extract JSON substring
+        const stripped = content
+          .replace(/^```json\s*/i, '')
+          .replace(/^```\s*/i, '')
+          .replace(/```\s*$/i, '')
+          .trim();
+        try { return JSON.parse(stripped); } catch {}
+        const first = stripped.indexOf('{');
+        const last = stripped.lastIndexOf('}');
+        if (first !== -1 && last !== -1 && last > first) {
+          const slice = stripped.slice(first, last + 1);
+          try { return JSON.parse(slice); } catch {}
+        }
+      }
+      // Output string
+      if (typeof raw?.output === 'string') {
+        return JSON.parse(raw.output);
+      }
+      // Output object
+      if (raw && typeof raw.output === 'object') {
+        return raw.output;
+      }
+      // If raw looks like the actual summary (themes/overview keys), return as-is
+      if (raw && typeof raw === 'object' && (raw.overview || raw.themes)) {
+        return raw;
+      }
+    } catch (e) {
+      // fallthrough
+    }
+    // Last resort: return empty summary
+    return {} as Record<string, unknown>;
+  }
+
+  private toGroupSummary(obj: any): GroupSummary {
+    const overview = typeof obj?.overview === 'string' ? obj.overview : '';
+    const participation = obj?.participation && typeof obj.participation === 'object'
+      ? {
+          notableContributors: Array.isArray(obj.participation.notableContributors) ? obj.participation.notableContributors.map(String) : undefined,
+          dynamics: typeof obj.participation.dynamics === 'string' ? obj.participation.dynamics : undefined,
+        }
+      : undefined;
+    const misconceptions = Array.isArray(obj?.misconceptions) ? obj.misconceptions.map(String) : undefined;
+    const highlights = Array.isArray(obj?.highlights)
+      ? obj.highlights.map((h: any) => ({ quote: String(h?.quote ?? ''), context: h?.context ? String(h.context) : undefined }))
+      : undefined;
+    const teacher_actions = Array.isArray(obj?.teacher_actions)
+      ? obj.teacher_actions.map((a: any) => ({ action: String(a?.action ?? ''), priority: (a?.priority as any) }))
+      : [];
+    const metadata = obj?.metadata && typeof obj.metadata === 'object' ? obj.metadata : undefined;
+    return { overview, participation, misconceptions, highlights, teacher_actions, metadata, analysisTimestamp: obj?.analysisTimestamp };
+  }
+
+  private toSessionSummary(obj: any): SessionSummary {
+    const themes = Array.isArray(obj?.themes) ? obj.themes.map(String) : [];
+    const strengths = Array.isArray(obj?.strengths) ? obj.strengths.map(String) : undefined;
+    const needs = Array.isArray(obj?.needs) ? obj.needs.map(String) : undefined;
+    const teacher_actions = Array.isArray(obj?.teacher_actions)
+      ? obj.teacher_actions.map((a: any) => ({ action: String(a?.action ?? ''), priority: (a?.priority as any) }))
+      : [];
+    const group_breakdown = Array.isArray(obj?.group_breakdown)
+      ? obj.group_breakdown.map((g: any) => ({ groupId: String(g?.groupId ?? ''), name: g?.name ? String(g.name) : undefined, summarySnippet: g?.summarySnippet ? String(g.summarySnippet) : undefined }))
+      : undefined;
+    const metadata = obj?.metadata && typeof obj.metadata === 'object' ? obj.metadata : undefined;
+    return { themes, strengths, needs, teacher_actions, group_breakdown, metadata, analysisTimestamp: obj?.analysisTimestamp };
   }
 
   /**

@@ -1,13 +1,13 @@
 # ClassWaves Database Schema Documentation
 
-**Generated:** 2025-09-01T06:20:02.245Z
+**Generated:** 2025-09-07T14:20:23.400Z
 **Purpose:** Complete documentation of all database schemas, tables, and columns
 
 ## Overview
 
 This document provides a comprehensive view of the ClassWaves database structure across all schemas.
 
-**Total Tables:** 71
+**Total Tables:** 73
 **Schemas:** admin, ai_insights, analytics, audio, communication, compliance, information_schema, notifications, operational, sessions, users
 
 ### Data Volume Summary
@@ -15,16 +15,16 @@ This document provides a comprehensive view of the ClassWaves database structure
 | Schema | Tables | Total Rows | Tables with Data | Last Activity |
 |--------|--------|------------|------------------|---------------|
 | `admin` | 2 | 1 | 1 | 2025-08-03 |
-| `ai_insights` | 8 | 0 | 0 | Unknown |
-| `analytics` | 10 | 199 | 6 | 2025-09-01 |
+| `ai_insights` | 10 | 110 | 1 | 2025-09-02 |
+| `analytics` | 10 | 341 | 6 | 2025-09-07 |
 | `audio` | 1 | 0 | 0 | Unknown |
 | `communication` | 1 | 0 | 0 | Unknown |
-| `compliance` | 4 | 2,861 | 1 | 2025-09-01 |
+| `compliance` | 4 | 10,515 | 1 | 2025-09-03 |
 | `information_schema` | 28 | 0 | 0 | Unknown |
 | `notifications` | 2 | 0 | 0 | Unknown |
 | `operational` | 3 | 0 | 0 | Unknown |
-| `sessions` | 5 | 1,777 | 5 | 2025-09-01 |
-| `users` | 7 | 229 | 4 | 2025-08-23 |
+| `sessions` | 5 | 2,476 | 5 | 2025-09-07 |
+| `users` | 7 | 464 | 4 | 2025-09-04 |
 
 
 ---
@@ -81,7 +81,7 @@ This document provides a comprehensive view of the ClassWaves database structure
 
 ## Schema: `ai_insights`
 
-**Tables:** 8
+**Tables:** 10
 
 ### Table: `analysis_results`
 
@@ -119,6 +119,21 @@ This document provides a comprehensive view of the ClassWaves database structure
 | `confidence_level` | `decimal(5,2)` | ✅ |  |
 | `applies_to_type` | `string` | ✅ |  |
 | `applies_to_id` | `string` | ✅ |  |
+| `created_at` | `timestamp` | ✅ |  |
+
+### Table: `group_summaries`
+
+**Full Name:** `classwaves.ai_insights.group_summaries`
+**Columns:** 6
+**Row Count:** 0
+
+| Column | Type | Nullable | Comment |
+|--------|------|----------|----------|
+| `id` | `string` | ✅ |  |
+| `session_id` | `string` | ✅ |  |
+| `group_id` | `string` | ✅ |  |
+| `summary_json` | `string` | ✅ |  |
+| `analysis_timestamp` | `timestamp` | ✅ |  |
 | `created_at` | `timestamp` | ✅ |  |
 
 ### Table: `intervention_suggestions`
@@ -194,11 +209,26 @@ This document provides a comprehensive view of the ClassWaves database structure
 | `updated_at` | `timestamp` | ✅ |  |
 | `session_date` | `date` | ✅ |  |
 
+### Table: `session_summaries`
+
+**Full Name:** `classwaves.ai_insights.session_summaries`
+**Columns:** 5
+**Row Count:** 0
+
+| Column | Type | Nullable | Comment |
+|--------|------|----------|----------|
+| `id` | `string` | ✅ |  |
+| `session_id` | `string` | ✅ |  |
+| `summary_json` | `string` | ✅ |  |
+| `analysis_timestamp` | `timestamp` | ✅ |  |
+| `created_at` | `timestamp` | ✅ |  |
+
 ### Table: `teacher_guidance_metrics`
 
 **Full Name:** `classwaves.ai_insights.teacher_guidance_metrics`
 **Columns:** 29
-**Row Count:** 0
+**Row Count:** 110
+**Last Updated:** 2025-09-02
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -425,8 +455,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.analytics.session_analytics`
 **Columns:** 15
-**Row Count:** 83
-**Last Updated:** 2025-08-23
+**Row Count:** 131
+**Last Updated:** 2025-09-04
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -450,8 +480,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.analytics.session_analytics_cache`
 **Columns:** 25
-**Row Count:** 15
-**Last Updated:** 2025-08-23
+**Row Count:** 22
+**Last Updated:** 2025-09-04
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -485,8 +515,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.analytics.session_events`
 **Columns:** 7
-**Row Count:** 76
-**Last Updated:** 2025-09-01
+**Row Count:** 163
+**Last Updated:** 2025-09-07
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -679,8 +709,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.compliance.audit_log`
 **Columns:** 17
-**Row Count:** 2,861
-**Last Updated:** 2025-09-01
+**Row Count:** 10,515
+**Last Updated:** 2025-09-03
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1414,8 +1444,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.sessions.classroom_sessions`
 **Columns:** 30
-**Row Count:** 210
-**Last Updated:** 2025-09-01
+**Row Count:** 389
+**Last Updated:** 2025-09-07
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1454,8 +1484,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.sessions.participants`
 **Columns:** 20
-**Row Count:** 67
-**Last Updated:** 2025-09-01
+**Row Count:** 85
+**Last Updated:** 2025-09-07
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1484,8 +1514,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.sessions.student_group_members`
 **Columns:** 5
-**Row Count:** 818
-**Last Updated:** 2025-09-01
+**Row Count:** 1,037
+**Last Updated:** 2025-09-07
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1499,8 +1529,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.sessions.student_groups`
 **Columns:** 21
-**Row Count:** 483
-**Last Updated:** 2025-09-01
+**Row Count:** 689
+**Last Updated:** 2025-09-07
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1530,8 +1560,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.sessions.transcriptions`
 **Columns:** 17
-**Row Count:** 199
-**Last Updated:** 2025-08-23
+**Row Count:** 276
+**Last Updated:** 2025-09-04
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1618,8 +1648,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.users.schools`
 **Columns:** 19
-**Row Count:** 92
-**Last Updated:** 2025-08-23
+**Row Count:** 203
+**Last Updated:** 2025-09-04
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1694,9 +1724,9 @@ assessment, energy, clarity |
 ### Table: `students`
 
 **Full Name:** `classwaves.users.students`
-**Columns:** 14
+**Columns:** 17
 **Row Count:** 35
-**Last Updated:** 2025-08-23
+**Last Updated:** 2025-09-02
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|
@@ -1714,6 +1744,9 @@ assessment, energy, clarity |
 | `audio_recording_consent` | `boolean` | ✅ |  |
 | `created_at` | `timestamp` | ✅ |  |
 | `updated_at` | `timestamp` | ✅ |  |
+| `given_name` | `string` | ✅ | Student given/first name |
+| `family_name` | `string` | ✅ | Student family/last name |
+| `preferred_name` | `string` | ✅ | Student preferred name |
 
 ### Table: `teacher_analytics_summary`
 
@@ -1760,8 +1793,8 @@ assessment, energy, clarity |
 
 **Full Name:** `classwaves.users.teachers`
 **Columns:** 21
-**Row Count:** 98
-**Last Updated:** 2025-08-23
+**Row Count:** 222
+**Last Updated:** 2025-09-04
 
 | Column | Type | Nullable | Comment |
 |--------|------|----------|----------|

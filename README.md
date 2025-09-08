@@ -375,6 +375,16 @@ npm test
 | `POST` | `/api/v1/sessions/:id/end` | End session | Teacher |
 | `GET` | `/api/v1/sessions/:id/analytics` | Session analytics | Teacher |
 
+#### Session Summaries (Feature-flagged)
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/api/v1/sessions/:id/summaries` | Session summary and group metadata (202 if pending) | Teacher |
+| `GET` | `/api/v1/sessions/:id/groups/:groupId/summary` | Specific group summary (202 if pending) | Teacher |
+
+Notes:
+- Controlled by `FEATURE_GROUP_SESSION_SUMMARIES=1`.
+- Emits WebSocket event `summaries:ready` on the sessions namespace when summaries are persisted.
+
 ### AI Analysis System
 | Method | Endpoint | Description | Auth Required |
 |--------|----------|-------------|---------------|

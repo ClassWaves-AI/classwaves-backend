@@ -1,11 +1,11 @@
 # Session Metrics Data Flow Analysis
 
-**Generated:** 2025-09-01T06:20:02.255Z
+**Generated:** 2025-09-07T14:20:23.406Z
 **Purpose:** Analyze how session metrics should flow across different tables
 
 ## Key Tables for Session Data
 
-**Session-Related Tables Found:** 18
+**Session-Related Tables Found:** 19
 
 ### `ai_insights.session_guidance_analytics`
 
@@ -73,6 +73,17 @@
 - `created_at` (timestamp)
 - `updated_at` (timestamp)
 - `session_date` (date)
+
+---
+
+### `ai_insights.session_summaries`
+
+**All Columns:**
+- `id` (string)
+- `session_id` (string)
+- `summary_json` (string)
+- `analysis_timestamp` (timestamp)
+- `created_at` (timestamp)
 
 ---
 

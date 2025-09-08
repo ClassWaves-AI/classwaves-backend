@@ -1865,14 +1865,22 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       try {
         const groups = await getCompositionRoot().getGroupRepository().getGroupsBasic(sessionId);
         if (Array.isArray(groups) && groups.length > 0) {
-          const { inMemoryAudioProcessor } = await import('../services/audio/InMemoryAudioProcessor');
           const ids = (groups as any[]).map(g => g.id);
-          const drainPromise = inMemoryAudioProcessor.flushGroups(ids);
-          const drainTimeout = parseInt(process.env.AUDIO_DRAIN_TIMEOUT_MS || '750', 10);
-          await Promise.race([
-            drainPromise,
-            new Promise((resolve) => setTimeout(resolve, drainTimeout))
-          ]);
+          // Best-effort drain of pending audio windows
+          try {
+            const { inMemoryAudioProcessor } = await import('../services/audio/InMemoryAudioProcessor');
+            const drainPromise = inMemoryAudioProcessor.flushGroups(ids);
+            const drainTimeout = parseInt(process.env.AUDIO_DRAIN_TIMEOUT_MS || '750', 10);
+            await Promise.race([
+              drainPromise,
+              new Promise((resolve) => setTimeout(resolve, drainTimeout))
+            ]);
+          } catch {}
+          // Reset transcript overlap merge state for all groups in this session
+          try {
+            const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+            getNamespacedWebSocketService()?.getSessionsService().resetTranscriptMergeStateForGroups(ids);
+          } catch {}
         }
       } catch (e) {
         console.warn('Audio drain before analytics failed (non-blocking):', e instanceof Error ? e.message : String(e));
@@ -1939,6 +1947,30 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       } else {
         setImmediate(() => { runAnalytics().catch((e) => console.error('Analytics async error:', e)); });
       }
+
+      // Trigger group + session summaries if feature flag enabled
+      const summariesEnabled = String(process.env.FEATURE_GROUP_SESSION_SUMMARIES || '0') === '1';
+      const runSummaries = async () => {
+        try {
+          const { summarySynthesisService } = await import('../services/summary-synthesis.service');
+          await summarySynthesisService.runSummariesForSession(sessionId);
+          // Emit summaries:ready
+          const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+          getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'summaries:ready', {
+            sessionId,
+            timestamp: new Date().toISOString()
+          });
+        } catch (e) {
+          console.warn('⚠️ Summary synthesis failed:', e instanceof Error ? e.message : String(e));
+        }
+      };
+      if (summariesEnabled) {
+        if (process.env.NODE_ENV === 'test') {
+          await runSummaries();
+        } else {
+          setImmediate(() => { runSummaries().catch((e) => console.error('Summaries async error:', e)); });
+        }
+      }
       
     } catch (e) {
       console.warn('WebSocket notify failed in endSession:', e);
@@ -1982,6 +2014,72 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         message: 'Failed to end session',
       },
     });
+  }
+}
+
+/**
+ * Get session summaries (session-level + list metadata of group summaries)
+ * - 202 when pending (no session summary yet)
+ */
+export async function getSessionSummaries(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    const sessionId = req.params.sessionId;
+
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
+    if (!session) return res.status(404).json({ error: 'SESSION_NOT_FOUND' });
+
+    const summariesRepo = getCompositionRoot().getSummariesRepository();
+    const sessionSummary = await summariesRepo.getSessionSummary(sessionId);
+    const groupSummaries = await summariesRepo.listGroupSummaries(sessionId);
+
+    if (!sessionSummary) {
+      return res.status(202).json({ status: 'pending' });
+    }
+
+    let sessionSummaryJson: any = null;
+    try { sessionSummaryJson = JSON.parse(sessionSummary.summary_json); } catch {}
+    const groupsMeta = groupSummaries.map(g => ({
+      groupId: g.group_id,
+      analysisTimestamp: g.analysis_timestamp,
+      createdAt: g.created_at
+    }));
+
+    return res.json({
+      sessionId,
+      sessionSummary: sessionSummaryJson,
+      groups: groupsMeta
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'SUMMARY_FETCH_FAILED' });
+  }
+}
+
+/**
+ * Get a specific group summary
+ * - 202 when pending (no group summary yet)
+ */
+export async function getGroupSummary(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const teacher = authReq.user!;
+    const sessionId = req.params.sessionId;
+    const groupId = req.params.groupId;
+
+    const sessionRepo = getCompositionRoot().getSessionRepository();
+    const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
+    if (!session) return res.status(404).json({ error: 'SESSION_NOT_FOUND' });
+
+    const summariesRepo = getCompositionRoot().getSummariesRepository();
+    const record = await summariesRepo.getGroupSummary(sessionId, groupId);
+    if (!record) return res.status(202).json({ status: 'pending' });
+    let json: any = null;
+    try { json = JSON.parse(record.summary_json); } catch {}
+    return res.json({ groupId, summary: json });
+  } catch (error) {
+    return res.status(500).json({ error: 'SUMMARY_FETCH_FAILED' });
   }
 }
 

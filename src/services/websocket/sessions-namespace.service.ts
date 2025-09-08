@@ -115,6 +115,76 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       return client.register.getSingleMetric('ai_triggers_suppressed_total') as client.Counter<string>;
     }
   })();
+  // Track per-group transcript tails to merge overlapping windows
+  private lastTranscriptTailTokens: Map<string, string[]> = new Map();
+  private lastTranscriptText: Map<string, string> = new Map();
+
+  // Merge helper: compute tokens from text (lowercased alnum words, keep positions for slicing)
+  private tokenizeWithPositions(text: string): Array<{ token: string; start: number; end: number }> {
+    const out: Array<{ token: string; start: number; end: number }> = [];
+    const re = /[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      out.push({ token: m[0].toLowerCase(), start: m.index, end: m.index + m[0].length });
+    }
+    return out;
+  }
+
+  // Collapse immediate repeated words and duplicate consecutive clauses
+  private normalizeTranscript(text: string): string {
+    try {
+      let t = String(text || '');
+      t = t.replace(/\u2026/g, '…').replace(/\.{3,}/g, '…');
+      t = t.replace(/\s+/g, ' ').trim();
+      // Collapse immediate repeated words (case-insensitive)
+      t = t.replace(/\b(\w+)(?:\s+\1\b)+/gi, '$1');
+      // Collapse immediate duplicate clauses
+      const parts = t.split(/(?<=[\.!?…])\s+/);
+      const out: string[] = [];
+      for (const p of parts) {
+        const norm = p.trim();
+        if (!norm) continue;
+        if (out.length === 0 || out[out.length - 1].trim().toLowerCase() !== norm.toLowerCase()) {
+          out.push(norm);
+        }
+      }
+      return out.join(' ');
+    } catch {
+      return text;
+    }
+  }
+
+  // Merge overlapping window output against the previous tail for this group
+  private mergeOverlappingTranscript(groupId: string, newText: string, tailSizeTokens: number = 30): string {
+    const prevTail = this.lastTranscriptTailTokens.get(groupId) || [];
+    const tokensWithPos = this.tokenizeWithPositions(newText);
+    const newTokens = tokensWithPos.map(t => t.token);
+    // Find maximum m where last m prev tokens == first m new tokens
+    let overlap = 0;
+    const maxCheck = Math.min(prevTail.length, newTokens.length, tailSizeTokens);
+    for (let m = maxCheck; m > 0; m--) {
+      let match = true;
+      for (let i = 0; i < m; i++) {
+        if (prevTail[prevTail.length - m + i] !== newTokens[i]) { match = false; break; }
+      }
+      if (match) { overlap = m; break; }
+    }
+    // Compute slice start in original text using positions of overlapped tokens
+    let sliced = newText;
+    if (overlap > 0) {
+      // Cut starting at the next token after the overlapped region to also skip punctuation (e.g., ". ")
+      const cutIdx = tokensWithPos[overlap]?.start ?? tokensWithPos[overlap - 1]?.end ?? 0;
+      sliced = newText.slice(cutIdx).trimStart();
+    }
+    // Normalize inside the new slice to drop obvious repeats (stutter, duplicate clauses)
+    const cleaned = this.normalizeTranscript(sliced);
+    // Update tail tokens for next time
+    const cleanedTokens = this.tokenizeWithPositions(cleaned).map(t => t.token);
+    const combined = [...prevTail, ...cleanedTokens];
+    const nextTail = combined.slice(Math.max(0, combined.length - tailSizeTokens));
+    this.lastTranscriptTailTokens.set(groupId, nextTail);
+    return cleaned;
+  }
   protected getNamespaceName(): string {
     return '/sessions';
   }
@@ -612,6 +682,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         sessionId: parsed.data.sessionId,
         traceId: (socket.data as any)?.traceId || undefined,
       });
+      // Reset transcript merge state for this group
+      try {
+        this.lastTranscriptTailTokens.delete(parsed.data.groupId);
+        this.lastTranscriptText.delete(parsed.data.groupId);
+      } catch {}
     } catch (error) {
       console.error('Group leave error:', error);
       socket.emit('error', { 
@@ -921,6 +996,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       });
 
       socket.emit('audio:stream_ready', { groupId: data.groupId });
+      // Reset transcript merge state on fresh stream start
+      try {
+        this.lastTranscriptTailTokens.delete(data.groupId);
+        this.lastTranscriptText.delete(data.groupId);
+      } catch {}
 
       // Emit canonical session-level event for teacher dashboards and clients
       const sData = socket.data as SessionSocketData;
@@ -1138,6 +1218,17 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       console.log(JSON.stringify({ event: 'audio_chunk_accepted', groupId: data.groupId, approx_chunk_bytes: approxBytes, window_seconds: windowInfo.windowSeconds }));
 
       if (result && result.text && String(result.text).trim().length > 0) {
+        // Merge overlapping content across windows to avoid repeated clauses
+        const mergedText = this.mergeOverlappingTranscript(data.groupId, result.text);
+        if (!mergedText || mergedText.trim().length === 0) {
+          // Entirely overlapped content; skip emission
+          return;
+        }
+        // Skip if identical to the last emitted text for this group (case-insensitive)
+        const lastText = this.lastTranscriptText.get(data.groupId);
+        if (lastText && lastText.trim().toLowerCase() === mergedText.trim().toLowerCase()) {
+          return;
+        }
         // Reset soft backpressure streak on success
         this.dropStreak.delete(`${socket.id}:${data.groupId}`);
         const sessionId = (socket.data as any).sessionId;
@@ -1145,7 +1236,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
         // Idempotent transcript persistence: compute deterministic id
         const { createHash } = await import('crypto');
-        const dedupeBase = `${sessionId}|${data.groupId}|${result.timestamp}|${result.text}`;
+        const dedupeBase = `${sessionId}|${data.groupId}|${result.timestamp}|${mergedText}`;
         const id = createHash('sha1').update(dedupeBase).digest('hex');
 
         // Emit to session room so teacher UI receives it (attach traceId if available)
@@ -1153,12 +1244,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           id,
           groupId: data.groupId,
           groupName,
-          text: result.text,
+          text: mergedText,
           timestamp: result.timestamp,
           confidence: result.confidence,
           language: result.language,
           traceId: (socket.data as any)?.traceId || undefined,
         });
+        // Remember last emitted text for duplicate suppression
+        this.lastTranscriptText.set(data.groupId, mergedText);
 
         // Persist transcription row (idempotent)
         try {
@@ -1340,6 +1433,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           groupId: data.groupId
         });
       }
+      // Reset transcript merge state when stream ends
+      try {
+        this.lastTranscriptTailTokens.delete(data.groupId);
+        this.lastTranscriptText.delete(data.groupId);
+      } catch {}
     } catch (error) {
       console.error('Audio stream end error:', error);
       socket.emit('error', { 
@@ -1382,6 +1480,16 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
   public emitToGroup(groupId: string, event: string, data: any): void {
     this.emitToRoom(`group:${groupId}`, event, data);
+  }
+
+  // Public utility: reset transcript merge state for a set of groups (e.g., on session end)
+  public resetTranscriptMergeStateForGroups(groupIds: string[]): void {
+    for (const gid of groupIds) {
+      try {
+        this.lastTranscriptTailTokens.delete(gid);
+        this.lastTranscriptText.delete(gid);
+      } catch {}
+    }
   }
 
   public getSessionParticipants(sessionId: string): string[] {

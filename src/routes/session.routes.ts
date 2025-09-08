@@ -14,7 +14,9 @@ import {
   resendSessionEmail,
   getGroupsStatus,
   getCacheHealth,
-  getDashboardMetrics
+  getDashboardMetrics,
+  getSessionSummaries,
+  getGroupSummary
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { databricksService } from '../services/databricks.service';
@@ -36,6 +38,9 @@ router.post('/:sessionId/start', authenticate, startSession);
 router.post('/:sessionId/pause', authenticate, pauseSession);
 router.post('/:sessionId/end', authenticate, endSession);
 router.get('/:sessionId/analytics', authenticate, getSessionAnalytics);
+// Summaries
+router.get('/:sessionId/summaries', authenticate, getSessionSummaries);
+router.get('/:sessionId/groups/:groupId/summary', authenticate, getGroupSummary);
 
 // Public student join endpoint (no auth)
 router.post('/join', joinSession);
