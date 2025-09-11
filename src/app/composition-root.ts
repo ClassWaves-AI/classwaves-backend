@@ -28,6 +28,10 @@ import type { EmailPort } from '../services/ports/email.port';
 import { emailServiceAdapter } from '../adapters/email/email.adapter';
 import type { SummariesRepositoryPort } from '../services/ports/summaries.repository.port';
 import { summariesRepository as databricksSummariesRepository } from '../adapters/repositories/databricks-summaries.repository';
+import type { GuidanceInsightsRepositoryPort } from '../services/ports/guidance-insights.repository.port';
+import { guidanceInsightsRepository as databricksGuidanceInsightsRepository } from '../adapters/repositories/databricks-guidance-insights.repository';
+import type { GuidanceEventsRepositoryPort } from '../services/ports/guidance-events.repository.port';
+import { guidanceEventsRepository as databricksGuidanceEventsRepository } from '../adapters/repositories/databricks-guidance-events.repository';
 
 class CompositionRoot {
   private _sessionRepository: SessionRepositoryPort;
@@ -45,6 +49,8 @@ class CompositionRoot {
   private _aiAnalysisPort: AIAnalysisPort;
   private _emailPort: EmailPort;
   private _summariesRepository: SummariesRepositoryPort;
+  private _guidanceInsightsRepository: GuidanceInsightsRepositoryPort;
+  private _guidanceEventsRepository: GuidanceEventsRepositoryPort;
 
   constructor() {
     // Wire default adapters
@@ -63,6 +69,8 @@ class CompositionRoot {
     this._aiAnalysisPort = databricksAIAnalysisAdapter;
     this._emailPort = emailServiceAdapter;
     this._summariesRepository = databricksSummariesRepository;
+    this._guidanceInsightsRepository = databricksGuidanceInsightsRepository;
+    this._guidanceEventsRepository = databricksGuidanceEventsRepository;
   }
 
   getSessionRepository(): SessionRepositoryPort {
@@ -123,6 +131,14 @@ class CompositionRoot {
 
   getSummariesRepository(): SummariesRepositoryPort {
     return this._summariesRepository;
+  }
+
+  getGuidanceInsightsRepository(): GuidanceInsightsRepositoryPort {
+    return this._guidanceInsightsRepository;
+  }
+
+  getGuidanceEventsRepository(): GuidanceEventsRepositoryPort {
+    return this._guidanceEventsRepository;
   }
 }
 

@@ -79,7 +79,7 @@ interface ServerToClientEvents {
   'group:left': (data: { groupId: string }) => void;
   'group:status_changed': (data: { groupId: string; status: string; isReady?: boolean }) => void;
   'session:status_changed': (data: { sessionId: string; status: string }) => void;
-  'student:session:joined': (data: { sessionId: string; groupId: string; groupName: string }) => void;
+  'student:session:joined': (data: { sessionId: string; groupId: string | null; groupName: string | null }) => void;
   
   // Group-centric real-time events
   'transcription:group:new': (data: { 

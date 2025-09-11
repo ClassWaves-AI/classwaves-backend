@@ -1,0 +1,237 @@
+import { Worker } from 'bullmq';
+import * as client from 'prom-client';
+import { redisService } from '../services/redis.service';
+import { openAIWhisperService } from '../services/openai-whisper.service';
+import { maybeTranscodeToWav } from '../services/audio/transcode.util';
+import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
+
+type AudioJob = {
+  chunkId: string;
+  sessionId: string;
+  groupId: string;
+  startTs: number;
+  endTs: number;
+  mime: string;
+  bytes: number;
+  schoolId?: string;
+  traceId?: string;
+  receivedAt?: number;
+  audioB64: string;
+};
+
+function getCounter(name: string, help: string, labelNames?: string[]) {
+  const existing = client.register.getSingleMetric(name) as client.Counter<string> | undefined;
+  if (existing) return existing;
+  return new client.Counter({ name, help, ...(labelNames ? { labelNames } : {}) });
+}
+function getHistogram(name: string, help: string, buckets: number[], labelNames?: string[]) {
+  const existing = client.register.getSingleMetric(name) as client.Histogram<string> | undefined;
+  if (existing) return existing;
+  return new client.Histogram({ name, help, buckets, ...(labelNames ? { labelNames } : {}) });
+}
+
+const sttJobsSuccessTotal = getCounter('stt_jobs_success_total', 'Total STT jobs processed successfully');
+const sttJobsFailedTotal = getCounter('stt_jobs_failed_total', 'Total STT jobs failed');
+const transcriptEmitLatencyMs = getHistogram('transcript_emit_latency_ms', 'Latency from upload to WS emit', [50,100,200,500,1000,2000,5000,10000]);
+
+export async function processAudioJob(data: AudioJob): Promise<void> {
+  const start = Date.now();
+  const buf = Buffer.from(data.audioB64, 'base64');
+  let mime = data.mime;
+
+  const tryTranscribe = async (b: Buffer, m: string) => {
+    return openAIWhisperService.transcribeBuffer(b, m, { durationSeconds: Math.round((data.endTs - data.startTs) / 1000) }, data.schoolId);
+  };
+
+  let result;
+  try {
+    result = await tryTranscribe(buf, mime);
+  } catch (e: any) {
+    const msg: string = e?.message || '';
+    const is400 = msg.includes('400') || msg.toLowerCase().includes('invalid');
+    if (is400 && process.env.STT_TRANSCODE_TO_WAV === '1') {
+      if (process.env.API_DEBUG === '1') console.warn('🎛️  Whisper 400 decode error — attempting WAV transcode fallback');
+      const transcoded = await maybeTranscodeToWav(buf, mime);
+      mime = transcoded.mime;
+      result = await tryTranscribe(transcoded.buffer, transcoded.mime);
+    } else {
+      throw e;
+    }
+  }
+
+  // Normalize a single segment for now (timestamps if available in result in future)
+  const segment = {
+    id: data.chunkId,
+    text: result.text || '',
+    startTs: data.startTs,
+    endTs: data.endTs,
+  };
+
+  // Feed AI buffers and trigger insights (namespaced guidance) for REST-first uploads
+  // Non-blocking; failures here should not affect transcript emission/persistence
+  try {
+    const text = (segment.text || '').trim();
+    if (text.length > 0) {
+      const { aiAnalysisBufferService } = await import('../services/ai-analysis-buffer.service');
+      await aiAnalysisBufferService.bufferTranscription(data.groupId, data.sessionId, text);
+
+      // Resolve teacherId once per session (cache in-memory for worker lifetime)
+      const teacherId = await getTeacherIdForSessionCached(data.sessionId);
+      if (teacherId) {
+        const { aiAnalysisTriggerService } = await import('../services/ai-analysis-trigger.service');
+        await aiAnalysisTriggerService.checkAndTriggerAIAnalysis(data.groupId, data.sessionId, teacherId);
+      }
+    }
+  } catch (e) {
+    if (process.env.API_DEBUG === '1') {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('⚠️ AI buffer/trigger failed (non-blocking):', msg);
+    }
+  }
+
+  // Publish to Redis transcript buffer (append to JSON array)
+  const key = `transcr:session:${data.sessionId}:group:${data.groupId}`;
+  const ttlHours = parseInt(process.env.TRANSCRIPT_REDIS_TTL_HOURS || '12', 10);
+  try {
+    const clientR = redisService.getClient();
+    const current = await clientR.get(key);
+    let arr: any[] = [];
+    if (current) {
+      try { arr = JSON.parse(current); } catch { arr = []; }
+    }
+    // Idempotent append: skip if chunkId exists
+    if (!arr.some((s) => s?.id === segment.id)) {
+      arr.push(segment);
+      arr.sort((a, b) => (a.startTs || 0) - (b.startTs || 0));
+    }
+    await clientR.set(key, JSON.stringify(arr));
+    await clientR.expire(key, ttlHours * 3600);
+  } catch {}
+
+  // Emit WS event with overlap-aware merging on server side
+  try {
+    const ns = getNamespacedWebSocketService();
+    // Prefer merged emission if available; fallback to direct emit
+    const svc: any = ns?.getSessionsService();
+    if (svc && typeof svc.emitMergedGroupTranscript === 'function') {
+      if (process.env.API_DEBUG === '1') {
+        try { console.log('📡 Emitting transcription:group:new (merged)', { sessionId: data.sessionId, groupId: data.groupId, chunkId: data.chunkId }); } catch {}
+      }
+      svc.emitMergedGroupTranscript(data.sessionId, data.groupId, segment.text, {
+        traceId: data.traceId,
+        window: { startTs: data.startTs, endTs: data.endTs, chunkId: data.chunkId },
+      });
+    } else {
+      if (process.env.API_DEBUG === '1') {
+        try { console.log('📡 Emitting transcription:group:new', { sessionId: data.sessionId, groupId: data.groupId, chunkId: data.chunkId }); } catch {}
+      }
+      svc?.emitToGroup(data.groupId, 'transcription:group:new', {
+        sessionId: data.sessionId,
+        groupId: data.groupId,
+        text: segment.text,
+        startTs: data.startTs,
+        endTs: data.endTs,
+        traceId: data.traceId,
+      });
+    }
+  } catch {}
+
+  sttJobsSuccessTotal.inc();
+  const base = data.receivedAt || start;
+  transcriptEmitLatencyMs.observe(Date.now() - base);
+}
+
+// Simple in-memory cache for sessionId -> teacherId lookups (worker-lifetime)
+const teacherCache = new Map<string, string | null>();
+async function getTeacherIdForSessionCached(sessionId: string): Promise<string | null> {
+  if (teacherCache.has(sessionId)) return teacherCache.get(sessionId)!;
+  try {
+    const row = await (await import('../services/databricks.service')).databricksService.queryOne<{ teacher_id?: string }>(
+      `SELECT teacher_id FROM classwaves.sessions.classroom_sessions WHERE id = ? LIMIT 1`,
+      [sessionId]
+    );
+    const tid = (row as any)?.teacher_id || null;
+    teacherCache.set(sessionId, tid);
+    return tid;
+  } catch {
+    teacherCache.set(sessionId, null);
+    return null;
+  }
+}
+
+export function startAudioSttWorker(): Worker {
+  const concurrency = parseInt(process.env.STT_QUEUE_CONCURRENCY || '10', 10);
+  const base = redisService.getClient() as any;
+  const baseOpts = { ...(base?.options || {}) };
+  delete (baseOpts as any).commandTimeout; // avoid interfering with BullMQ blocking commands
+  (baseOpts as any).maxRetriesPerRequest = null;
+  const worker = new Worker('audio-stt', async (job) => {
+    if (process.env.API_DEBUG === '1') {
+      try { console.log('🎧 STT worker picked job', { id: job.id, name: job.name, bytes: (job.data?.bytes || 0), mime: job.data?.mime }); } catch {}
+    }
+    try {
+      await processAudioJob(job.data as AudioJob);
+    } catch (e) {
+      if (process.env.API_DEBUG === '1') {
+        try {
+          const d = job.data as AudioJob;
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn('🟠 STT job failed', { chunkId: d?.chunkId, mime: d?.mime, bytes: d?.bytes, error: msg });
+        } catch {}
+      }
+      sttJobsFailedTotal.inc();
+      // Dev safeguard: if STT_FORCE_MOCK=1, synthesize a minimal segment to keep UX moving
+      if (process.env.STT_FORCE_MOCK === '1') {
+        try {
+          const data = job.data as AudioJob;
+          const segment = { id: data.chunkId, text: 'mock (worker fallback)', startTs: data.startTs, endTs: data.endTs };
+          const key = `transcr:session:${data.sessionId}:group:${data.groupId}`;
+          const clientR = redisService.getClient();
+          const raw = await clientR.get(key);
+          const arr = raw ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
+          if (!arr.some((s: any) => s?.id === segment.id)) arr.push(segment);
+          await clientR.set(key, JSON.stringify(arr));
+          await clientR.expire(key, (parseInt(process.env.TRANSCRIPT_REDIS_TTL_HOURS || '12', 10)) * 3600);
+          // emit merged transcript via WS if inline
+          try {
+            const ns = getNamespacedWebSocketService();
+            const svc: any = ns?.getSessionsService();
+            svc?.emitMergedGroupTranscript?.(data.sessionId, data.groupId, segment.text, { window: { startTs: data.startTs, endTs: data.endTs, chunkId: data.chunkId } });
+          } catch {}
+          return; // swallow error in dev mock
+        } catch { /* ignore */ }
+      }
+      throw e;
+    }
+  }, { connection: baseOpts as any, concurrency });
+
+  // Observability hooks
+  try {
+    worker.on('ready', () => {
+      if (process.env.API_DEBUG === '1') console.log('🎧 STT worker ready');
+    });
+    worker.on('active', (job) => {
+      if (process.env.API_DEBUG === '1') console.log('🎧 STT worker active', { id: job.id });
+    });
+    worker.on('completed', (job) => {
+      if (process.env.API_DEBUG === '1') console.log('✅ STT job completed', { id: job.id });
+    });
+    worker.on('failed', (job, err) => {
+      console.warn('❌ STT job failed (event)', { id: job?.id, err: err?.message });
+    });
+    worker.on('error', (err) => {
+      console.error('❌ STT worker error', err);
+    });
+  } catch {}
+  return worker;
+}
+
+// If run directly, start worker
+if (require.main === module) {
+  startAudioSttWorker();
+}
+import dotenv from 'dotenv';
+// Ensure environment variables are loaded when running worker standalone
+if (!process.env.NODE_ENV || process.env.NODE_ENV === 'development') {
+  try { dotenv.config(); } catch {}
+}

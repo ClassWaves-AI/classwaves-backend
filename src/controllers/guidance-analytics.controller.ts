@@ -17,6 +17,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { getCompositionRoot } from '../app/composition-root';
 import { databricksService } from '../services/databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 import { teacherPromptService } from '../services/teacher-prompt.service';
 import { recommendationEngineService } from '../services/recommendation-engine.service';
 import { alertPrioritizationService } from '../services/alert-prioritization.service';
@@ -228,13 +229,25 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       query: req.query,
       processingTime
     });
-    
-    return res.status(500).json({
-      success: false,
-      error: 'ANALYTICS_RETRIEVAL_FAILED',
-      message: 'Failed to retrieve teacher analytics',
-      processingTime
-    });
+    // Graceful fallback: when schema/table missing in dev, return empty analytics instead of 500
+    const msg = (error?.message || '').toString().toUpperCase();
+    const schemaMissing = msg.includes('TABLE_OR_VIEW_NOT_FOUND') || msg.includes('TABLE NOT FOUND') || msg.includes('VIEW NOT FOUND');
+    if (schemaMissing || process.env.DATABRICKS_ENABLED === 'false') {
+      const timeframe = (req.query as any)?.timeframe || 'month';
+      const empty = {
+        teacherId: targetTeacherId,
+        timeframe,
+        generatedAt: new Date().toISOString(),
+        promptMetrics: { totalGenerated: 0, totalAcknowledged: 0, totalUsed: 0, totalDismissed: 0, acknowledgmentRate: 0, usageRate: 0, averageResponseTime: 0, categoryBreakdown: {} },
+        recommendations: { totalGenerated: 0, totalUsed: 0, averageRating: 0, topCategories: [], improvementTrends: {} },
+        alerts: { totalAlerts: 0, priorityDistribution: {}, categoryDistribution: {}, averageResponseTime: 0, deliveryRate: 0 },
+        effectiveness: { overallScore: 0, studentEngagementImprovement: 0, learningOutcomeImprovement: 0, discussionQualityImprovement: 0, adaptationSpeed: 0 },
+        sessions: { totalSessions: 0, averageSessionQuality: 0, mostSuccessfulStrategies: [], improvementAreas: [], recentTrends: {} }
+      };
+      return res.status(200).json({ success: true, analytics: empty, processingTime, degraded: true });
+    }
+
+    return res.status(500).json({ success: false, error: 'ANALYTICS_RETRIEVAL_FAILED', message: 'Failed to retrieve teacher analytics', processingTime });
   }
 };
 
@@ -421,12 +434,28 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
       }));
     }
 
+    // Project guidanceCounts from session summary JSON (freeze-time counts)
+    let guidanceCounts: { highPriorityCount: number; tier2Count: number } = { highPriorityCount: 0, tier2Count: 0 };
+    try {
+      const row = await databricksService.queryOne<{ hp: any; t2: any }>(
+        `SELECT 
+           get_json_object(summary_json, '$.guidanceInsights.meta.highPriorityCount') AS hp,
+           get_json_object(summary_json, '$.guidanceInsights.meta.tier2Count') AS t2
+         FROM ${databricksConfig.catalog}.ai_insights.session_summaries
+         WHERE session_id = ?
+         ORDER BY analysis_timestamp DESC
+         LIMIT 1`, [sessionId]
+      );
+      const toInt = (v: any) => { const s = String(v ?? '0').replace(/"/g,''); const n = parseInt(s,10); return Number.isFinite(n) ? n : 0; };
+      guidanceCounts = { highPriorityCount: toInt(row?.hp), tier2Count: toInt(row?.t2) };
+    } catch {}
+
     const processingTime = Date.now() - startTime;
     console.log(`✅ Session analytics retrieved for ${sessionId} in ${processingTime}ms`);
 
     return res.json({
       success: true,
-      analytics,
+      analytics: { ...analytics, guidanceCounts },
       processingTime
     });
 

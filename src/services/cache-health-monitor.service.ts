@@ -151,12 +151,14 @@ export class CacheHealthMonitor {
       try {
         await this.checkHealth();
       } catch (error) {
-        console.error('Health check failed:', error);
+        // Downgrade to warning to avoid noisy logs on transient Redis hiccups
+        const msg = error instanceof Error ? error.message : String(error);
+        console.warn('Health check degraded:', msg);
       }
     }, intervalMs);
 
-    // Initial health check
-    setImmediate(() => this.checkHealth());
+    // Initial health check after a short delay to avoid startup thrash
+    setTimeout(() => this.checkHealth().catch(() => undefined), 1500);
   }
 
   /**
@@ -279,14 +281,14 @@ export class CacheHealthMonitor {
       await redisService.ping();
       const latency = Date.now() - startTime;
 
-      // Get Redis info
+      // Get Redis info with defensive timeouts to avoid noisy command timeouts
       const client = redisService.getClient();
-      const info = await client.info('memory');
-      const keyCount = await client.dbsize();
-      
+      const info = await this.safeRedisCall(() => client.info('memory'), 2000);
+      const keyCountRaw = await this.safeRedisCall(() => client.dbsize(), 2000);
+
       // Parse memory usage
-      const memoryMatch = info.match(/used_memory:(\d+)/);
-      const maxMemoryMatch = info.match(/maxmemory:(\d+)/);
+      const memoryMatch = typeof info === 'string' ? info.match(/used_memory:(\d+)/) : null;
+      const maxMemoryMatch = typeof info === 'string' ? info.match(/maxmemory:(\d+)/) : null;
       
       let memoryUsage = -1;
       if (memoryMatch && maxMemoryMatch) {
@@ -299,17 +301,32 @@ export class CacheHealthMonitor {
         connected: true,
         latency,
         memoryUsage,
-        keyCount,
+        keyCount: typeof keyCountRaw === 'number' ? keyCountRaw : -1,
       };
 
     } catch (error) {
-      console.error('Redis health check failed:', error);
+      // Reduce noise; report degraded without stack
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn('Redis health check degraded:', msg);
       return {
         connected: false,
         latency: -1,
         memoryUsage: -1,
         keyCount: -1,
       };
+    }
+  }
+
+  // Helper to wrap Redis calls with a soft timeout and error suppression
+  private async safeRedisCall<T>(fn: () => Promise<T>, timeoutMs: number = 2000): Promise<T | null> {
+    try {
+      const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs));
+      const guarded = fn().catch(() => null as unknown as T);
+      const result = await Promise.race([guarded, timeout]);
+      // If timed out, return null; underlying promise may still reject later, but we won't await it
+      return (result === null ? null : (result as T));
+    } catch {
+      return null;
     }
   }
 

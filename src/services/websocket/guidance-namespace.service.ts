@@ -561,6 +561,13 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     if (!hasSessionSubs && !hasAllSubs) {
       try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'alert' }); } catch {}
     }
+    // Persist prompt event (non-blocking)
+    (async () => {
+      try {
+        const { guidanceEventsService } = await import('../guidance-events.service');
+        await guidanceEventsService.record({ sessionId, groupId: prompt?.groupId, type: 'prompt', payload: prompt, timestamp: new Date() });
+      } catch {}
+    })();
   }
 
   public emitTeacherRecommendations(sessionId: string, prompts: any[], opts?: { generatedAt?: string | number; tier?: 'tier1' | 'tier2' }): void {
@@ -601,6 +608,15 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         await redisService.getClient().expire(key, parseInt(process.env.SLI_SESSION_TTL_SECONDS || '3600', 10));
       } catch {}
     })();
+    // Persist prompt recommendations as individual prompt events
+    (async () => {
+      try {
+        const { guidanceEventsService } = await import('../guidance-events.service');
+        for (const p of prompts) {
+          await guidanceEventsService.record({ sessionId, groupId: p?.groupId, type: 'prompt', payload: p, timestamp: new Date() });
+        }
+      } catch {}
+    })();
   }
 
   public emitTier1Insight(sessionId: string, insight: any): void {
@@ -621,6 +637,13 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     if (!hasSubs) {
       try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier1' }); } catch {}
     }
+    // Persist tier1 insight
+    (async () => {
+      try {
+        const { guidanceEventsService } = await import('../guidance-events.service');
+        await guidanceEventsService.record({ sessionId, groupId: insight?.groupId, type: 'tier1', payload: insight, timestamp: new Date() });
+      } catch {}
+    })();
   }
 
   public emitTier2Insight(sessionId: string, insight: any): void {
@@ -640,6 +663,13 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     if (!hasSubs) {
       try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier2' }); } catch {}
     }
+    // Persist tier2 insight
+    (async () => {
+      try {
+        const { guidanceEventsService } = await import('../guidance-events.service');
+        await guidanceEventsService.record({ sessionId, type: 'tier2', payload: insight, timestamp: new Date() });
+      } catch {}
+    })();
   }
 
   public emitGuidanceAnalytics(sessionId: string, analytics: any): void {

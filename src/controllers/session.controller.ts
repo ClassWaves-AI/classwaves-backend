@@ -150,7 +150,8 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
             id: s.id,
             accessCode, // Retrieved from Redis
             topic: s.title,
-            goal: s.description,
+            goal: s.goal ?? s.description,
+            subject: s.subject ?? undefined,
             status: s.status as 'created' | 'active' | 'paused' | 'ended' | 'archived',
             teacherId: s.teacher_id,
             schoolId: s.school_id,
@@ -507,7 +508,9 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       await getCompositionRoot().getSessionRepository().insertSession({
         id: sessionId,
         title: topic,
-        description: description || goal,
+        description: description || undefined,
+        goal: goal || undefined,
+        subject: subject || undefined,
         status: 'created',
         scheduled_start: scheduledStart ? new Date(scheduledStart) : null,
         planned_duration_minutes: plannedDuration, // REQUIRED COLUMN
@@ -715,9 +718,9 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           teacher_id: teacher.id,
           school_id: school.id,
           topic,
-          goal: description || goal || undefined,
-          subject: topic,
-          description: description || topic,
+          goal: goal || undefined,
+          subject: subject,
+          description: description || undefined,
           status: 'created',
           join_code: accessCode,
           planned_duration_minutes: plannedDuration,
@@ -1132,9 +1135,9 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     teacher_id: session.teacher_id,
     school_id: session.school_id,
     topic: session.title,
-    goal: session.description || undefined,
-    subject: session.title, // Using title as subject for compatibility
-    description: session.description || session.title,
+    goal: session.goal || undefined,
+    subject: session.subject || undefined,
+    description: session.description || undefined,
     status: session.status,
     join_code: session.access_code,
     scheduled_start: session.scheduled_start ? new Date(session.scheduled_start) : undefined,
@@ -1167,9 +1170,9 @@ function buildSessionFromRow(session: any, sessionId: string): Session {
     teacher_id: session.teacher_id,
     school_id: session.school_id,
     topic: session.title,
-    goal: session.description || undefined,
-    subject: session.title,
-    description: session.description || session.title,
+    goal: session.goal || undefined,
+    subject: session.subject || undefined,
+    description: session.description || undefined,
     status: session.status,
     join_code: session.access_code,
     scheduled_start: session.scheduled_start ? new Date(session.scheduled_start) : undefined,
@@ -1708,6 +1711,9 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     }
     console.log('🔄 Session status change event emitted: created → active');
 
+    // WS gating status in Redis
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'active', 24 * 3600); } catch {}
+
     return res.json({
       success: true,
       data: {
@@ -1783,6 +1789,8 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         traceId: (res.locals as any)?.traceId || (req as any)?.traceId
       });
     } catch {}
+    // Set ending flag for gating
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ending', 3600); } catch {}
 
     // Update session status with duration tracking
     const actualEnd = new Date();
@@ -1807,6 +1815,8 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, session.status, 'ended');
     }
     console.log('🔄 Session status change event emitted:', session.status, '→ ended');
+    // Persist ended status for gating (short TTL)
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ended', 24 * 3600); } catch {}
     
     // Record audit log (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -1948,33 +1958,46 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         setImmediate(() => { runAnalytics().catch((e) => console.error('Analytics async error:', e)); });
       }
 
-      // Trigger group + session summaries if feature flag enabled
-      const summariesEnabled = String(process.env.FEATURE_GROUP_SESSION_SUMMARIES || '0') === '1';
-      const runSummaries = async () => {
-        try {
-          const { summarySynthesisService } = await import('../services/summary-synthesis.service');
-          await summarySynthesisService.runSummariesForSession(sessionId);
-          // Emit summaries:ready
-          const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
-          getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'summaries:ready', {
-            sessionId,
-            timestamp: new Date().toISOString()
-          });
-        } catch (e) {
-          console.warn('⚠️ Summary synthesis failed:', e instanceof Error ? e.message : String(e));
-        }
-      };
-      if (summariesEnabled) {
-        if (process.env.NODE_ENV === 'test') {
-          await runSummaries();
-        } else {
-          setImmediate(() => { runSummaries().catch((e) => console.error('Summaries async error:', e)); });
-        }
+      // Flush any pending transcripts from Redis to DB BEFORE running summaries
+      try {
+        const { transcriptPersistenceService } = await import('../services/transcript-persistence.service');
+        await transcriptPersistenceService.flushSession(sessionId);
+      } catch (e) {
+        console.warn('⚠️ Transcript flush on session end failed (non-blocking):', e instanceof Error ? e.message : String(e));
       }
-      
+
+      // Trigger group + session summaries if feature flag enabled (after flush)
+      try {
+        const summariesEnabled = String(process.env.FEATURE_GROUP_SESSION_SUMMARIES || '1') === '1';
+        const runSummaries = async () => {
+          try {
+            const { summarySynthesisService } = await import('../services/summary-synthesis.service');
+            await summarySynthesisService.runSummariesForSession(sessionId);
+            // Emit summaries:ready
+            const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+            getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'summaries:ready', {
+              sessionId,
+              timestamp: new Date().toISOString()
+            });
+          } catch (e) {
+            console.warn('⚠️ Summary synthesis failed:', e instanceof Error ? e.message : String(e));
+          }
+        };
+        if (summariesEnabled) {
+          if (process.env.NODE_ENV === 'test') {
+            await runSummaries();
+          } else {
+            setImmediate(() => { runSummaries().catch((e) => console.error('Summaries async error:', e)); });
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to schedule summaries:', e instanceof Error ? e.message : String(e));
+      }
+
     } catch (e) {
       console.warn('WebSocket notify failed in endSession:', e);
     }
+    
     
     // Get final session stats
     const statsRepo = getCompositionRoot().getSessionStatsRepository();
@@ -2041,6 +2064,19 @@ export async function getSessionSummaries(req: Request, res: Response): Promise<
 
     let sessionSummaryJson: any = null;
     try { sessionSummaryJson = JSON.parse(sessionSummary.summary_json); } catch {}
+
+    // Attach guidance insights using repository-backed service (no DB code here)
+    try {
+      const { guidanceInsightsService } = await import('../services/guidance-insights.service');
+      const guidanceInsights = await guidanceInsightsService.getForSession(sessionId);
+      sessionSummaryJson = {
+        ...sessionSummaryJson,
+        guidanceInsights,
+      };
+    } catch (e) {
+      // Graceful degradation: keep existing summary even if insights fail
+      console.warn('⚠️ Failed to load guidance insights for summaries:', e instanceof Error ? e.message : String(e));
+    }
     const groupsMeta = groupSummaries.map(g => ({
       groupId: g.group_id,
       analysisTimestamp: g.analysis_timestamp,
@@ -2077,6 +2113,19 @@ export async function getGroupSummary(req: Request, res: Response): Promise<Resp
     if (!record) return res.status(202).json({ status: 'pending' });
     let json: any = null;
     try { json = JSON.parse(record.summary_json); } catch {}
+
+    // Attach guidance insights for this group (tier1 for group + tier2 group slice)
+    try {
+      const { guidanceInsightsService } = await import('../services/guidance-insights.service');
+      const guidanceInsights = await guidanceInsightsService.getForGroup(sessionId, groupId);
+      json = {
+        ...json,
+        guidanceInsights,
+      };
+    } catch (e) {
+      console.warn('⚠️ Failed to load group guidance insights:', e instanceof Error ? e.message : String(e));
+    }
+
     return res.json({ groupId, summary: json });
   } catch (error) {
     return res.status(500).json({ error: 'SUMMARY_FETCH_FAILED' });
@@ -2338,7 +2387,9 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
     });
-    
+    // WS gating status in Redis
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'paused', 24 * 3600); } catch {}
+
     return res.json({
       success: true,
       data: {

@@ -15,6 +15,20 @@
 
 </div>
 
+## Docs-First (Authoritative Standards)
+
+- Start at `docs/INDEX.md` → `docs/ai/INDEX.md` for platform-wide standards and architecture.
+- Repository guidelines and agent expectations: `AGENTS.md` (root).
+- Most relevant docs for this repo:
+  - Coding: `docs/ai/CODING-STANDARD.md`
+  - Security: `docs/ai/SECURITY.md`
+  - Testing: `docs/ai/TESTING-STANDARDS.md`
+  - Platform Architecture: `docs/ai/PLATFORM-ARCHITECTURE.md`
+  - API Documentation: `docs/ai/API-DOCUMENTATION.md`
+  - Tools & Automation: `docs/ai/TOOLS-AUTOMATION.md`
+
+Following these is mandatory; keep changes aligned and record decisions as ADRs in `docs/adr/` when non-trivial.
+
 ## Table of Contents
 
 - [Features](#features)
@@ -341,6 +355,37 @@ npm run db:verify
 # Start development server
 npm run dev
 ```
+
+### Make an Impact Fast
+- Run verification locally: `npm test && npm run lint && npm run type-check` (target ≥80% coverage; see Testing section).
+- Explore ports and adapters (Hexagonal):
+  - Ports: `src/services/ports/*`
+  - Domain services: `src/services/**/*`
+  - HTTP adapters: `src/routes/*` + `src/controllers/*` with Zod validation in `src/utils/validation.schemas.ts`
+  - WebSocket: `src/services/websocket.service.ts` and events in `src/types/websocket.types.ts`
+- Add/adjust an API route: wire Zod schema → controller → service. Add unit tests under `src/__tests__/unit` and integration under `src/__tests__/integration`.
+- Validate DB contracts: `npm run db:verify` (Databricks), cache policy: `npm run cache:policy:print`.
+
+### Full-Stack Dev Helpers
+- Start all services for E2E quickly from the repo root:
+  - `./start-classwaves.sh` (and `./stop-classwaves.sh`)
+  - Quick CLI helper: `node scripts/cw.js backend <script>` (e.g., `node scripts/cw.js backend test`). See root `README.md` for details.
+
+### Env & Ports
+- Default port: `3000` (HTTP + WebSocket).
+- Copy `.env.example` → `.env` (or `.env.local`) and fill required values. Critical keys to start:
+  - Redis: `REDIS_URL` (and optional `REDIS_PASSWORD`)
+  - Databricks: `DATABRICKS_HOST`, `DATABRICKS_TOKEN`
+  - STT/AI: `STT_PROVIDER` (e.g., `openai`), `AI_TIER1_ENDPOINT`, `AI_TIER2_ENDPOINT`, `AI_SUMMARIZER_ENDPOINT`
+  - Security: JWT/Google OAuth settings (see existing README sections and `.env.example`)
+- Cache/Rate-limit prefixes and epochs default to ON; see `.env.example` for `CW_CACHE_*` and `CW_RL_*` toggles.
+
+### Troubleshooting
+- Port already in use: `lsof -ti :3000 | xargs -r kill -9`.
+- Redis connection errors: verify `REDIS_URL` and that Redis is running locally.
+- Databricks auth/403: check `DATABRICKS_TOKEN` scope and endpoint paths.
+- WebSocket drops/backpressure: review `WS_MAX_AUDIO_*` limits in `.env.example` and server logs.
+- Jest hangs: set `METRICS_DEFAULT_DISABLED=1` in test env to avoid open handles.
 
 ### Verification
 ```bash

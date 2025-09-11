@@ -523,7 +523,7 @@ export class AIAnalysisBufferService {
     const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
        WHERE analysis_type = 'tier1' 
        AND session_id = ? 
-       AND JSON_EXTRACT(result_data, "$.groupId") = ?
+       AND get_json_object(result_data, '$.groupId') = ?
        ORDER BY analysis_timestamp DESC LIMIT 1`;
 
     const result = await databricksService.queryOne(query, [sessionId, groupId]);

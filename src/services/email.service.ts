@@ -7,6 +7,7 @@ import nodemailer from 'nodemailer';
 import Handlebars from 'handlebars';
 import { convert } from 'html-to-text';
 import { databricksService } from './databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 import { 
   EmailRecipient, 
   SessionEmailData, 
@@ -383,6 +384,16 @@ export class EmailService {
     error?: string
   ): Promise<void> {
     try {
+      // Resolve a non-null user_id for notification_queue (teacher who owns the session)
+      let userId = 'system';
+      try {
+        const owner = await databricksService.queryOne<any>(
+          `SELECT teacher_id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
+          [sessionId]
+        );
+        if (owner?.teacher_id) userId = String(owner.teacher_id);
+      } catch {}
+
       const auditRecord: Partial<EmailAuditRecord> = {
         id: databricksService.generateId(),
         session_id: sessionId,
@@ -403,13 +414,13 @@ export class EmailService {
       // Record in notifications queue as delivery log
       const queueRecord: Record<string, any> = {
         id: databricksService.generateId(),
-        user_id: null,
+        user_id: userId,
         notification_type: 'session_email',
         priority: 'normal',
         channel: 'email',
         recipient_address: recipient,
         subject: auditRecord.subject,
-        content: null,
+        content: JSON.stringify({ templateId, sessionId, recipient }),
         template_id: templateId,
         // Column is MAP<STRING, STRING>; use raw SQL map expression
         template_data: databricksService.mapStringString({ sessionId }),

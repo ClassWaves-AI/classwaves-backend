@@ -6,6 +6,27 @@ import { getSummaryGeneratedCounter, getSummaryFailedCounter, getSummaryLatencyH
 
 export class SummarySynthesisService {
   private maxGroupConcurrency = parseInt(process.env.SUMMARY_GROUP_CONCURRENCY || '4', 10);
+  private async computeGuidanceCounts(sessionId: string): Promise<{ highPriorityCount: number; tier2Count: number }> {
+    try {
+      const row = await databricksService.queryOne<{ hp: any; t2: any }>(
+        `SELECT 
+           COALESCE(SUM(CASE WHEN priority_level = 'high' THEN 1 ELSE 0 END), 0) AS hp,
+           COALESCE((SELECT COUNT(1) FROM ${databricksConfig.catalog}.ai_insights.analysis_results ar 
+                     WHERE ar.session_id = ? AND ar.analysis_type = 'tier2'), 0) AS t2
+         FROM ${databricksConfig.catalog}.ai_insights.teacher_guidance_metrics gm
+         WHERE gm.session_id = ?`,
+         [sessionId, sessionId]
+      );
+      const toInt = (v: any) => {
+        if (v === null || v === undefined) return 0;
+        const n = parseInt(String(v), 10);
+        return Number.isFinite(n) ? n : 0;
+      };
+      return { highPriorityCount: toInt(row?.hp), tier2Count: toInt(row?.t2) };
+    } catch {
+      return { highPriorityCount: 0, tier2Count: 0 };
+    }
+  }
 
   async summarizeGroup(sessionId: string, groupId: string): Promise<void> {
     const start = Date.now();
@@ -45,6 +66,21 @@ export class SummarySynthesisService {
       const groupSummaries = groups.map(g => ({ groupId: g.group_id, ...(safeParse(g.summary_json) || {}) }));
       const ai = getCompositionRoot().getAIAnalysisPort();
       const sessionSummary = await ai.summarizeSession(groupSummaries as any, { sessionId });
+
+      // Freeze-time guidance counts (high priority prompts, tier2 count)
+      try {
+        const counts = await this.computeGuidanceCounts(sessionId);
+        const guidanceInsights: any = (sessionSummary as any).guidanceInsights || {};
+        (sessionSummary as any).guidanceInsights = {
+          ...guidanceInsights,
+          meta: {
+            ...(guidanceInsights.meta || {}),
+            highPriorityCount: counts.highPriorityCount,
+            tier2Count: counts.tier2Count,
+            generatedAt: new Date().toISOString()
+          }
+        };
+      } catch {}
       const id = this.buildId('session', sessionId, undefined, sessionSummary?.analysisTimestamp);
       await repo.upsertSessionSummary({
         id,
@@ -96,4 +132,3 @@ function safeParse(json: string): any | null {
 }
 
 export const summarySynthesisService = new SummarySynthesisService();
-

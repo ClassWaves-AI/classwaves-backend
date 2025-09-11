@@ -47,7 +47,9 @@ export const SESSION_LIST_FIELDS: QueryFieldSet = {
   fields: [
     'id',
     'title',
-    'description', 
+    'description',
+    'goal',
+    'subject',
     'status',
     'teacher_id',
     'school_id',

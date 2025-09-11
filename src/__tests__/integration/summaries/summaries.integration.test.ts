@@ -103,6 +103,7 @@ describe('Integration: Session Summaries pipeline', () => {
       .expect(200);
     expect(getRes.body.sessionId).toBe(sessionId);
     expect(getRes.body.sessionSummary).toBeDefined();
+    expect(getRes.body.sessionSummary).toHaveProperty('guidanceInsights');
     expect(Array.isArray(getRes.body.groups)).toBe(true);
     expect(getRes.body.groups.length).toBeGreaterThan(0);
 
@@ -113,5 +114,6 @@ describe('Integration: Session Summaries pipeline', () => {
       .expect(200);
     expect(groupRes.body.groupId).toBe(groupId);
     expect(groupRes.body.summary).toBeDefined();
+    expect(groupRes.body.summary).toHaveProperty('guidanceInsights');
   });
 });

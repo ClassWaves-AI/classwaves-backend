@@ -184,6 +184,13 @@ export const SessionJoinPayloadSchema = z.object({
   sessionId: z.string().min(1, 'sessionId is required').or(z.string().min(1).transform((v) => v)),
 }).passthrough();
 
+// WebSocket: session status update payload (notify-only)
+export const SessionStatusUpdateSchema = z.object({
+  sessionId: z.string().min(1),
+  status: z.enum(['active', 'paused', 'ended']),
+  teacher_notes: z.string().max(1000).optional(),
+}).passthrough();
+
 // WebSocket: group status update payload
 export const GroupStatusUpdateSchema = z.object({
   groupId: z.string().min(1),
@@ -191,6 +198,31 @@ export const GroupStatusUpdateSchema = z.object({
   status: z.enum(['connected', 'ready', 'active', 'paused', 'issue', 'waiting']).optional(),
   isReady: z.boolean().optional(),
   issueReason: z.string().max(200).optional(),
+}).passthrough();
+
+// WebSocket: group join/leave payload
+export const GroupJoinLeaveSchema = z.object({
+  groupId: z.string().min(1),
+  sessionId: z.string().min(1),
+}).passthrough();
+
+// WebSocket: group leader ready payload
+export const GroupLeaderReadySchema = z.object({
+  groupId: z.string().min(1),
+  sessionId: z.string().min(1),
+  ready: z.boolean(),
+}).passthrough();
+
+// WebSocket: WaveListener issue payload
+export const WaveListenerIssueSchema = z.object({
+  groupId: z.string().min(1),
+  sessionId: z.string().min(1),
+  reason: z.enum(['device_error', 'permission_denied', 'network_issue', 'low_bandwidth', 'unknown']),
+}).passthrough();
+
+// WebSocket: audio stream lifecycle (start/stop)
+export const AudioStreamLifecycleSchema = z.object({
+  groupId: z.string().min(1),
 }).passthrough();
 
 // Security schemas

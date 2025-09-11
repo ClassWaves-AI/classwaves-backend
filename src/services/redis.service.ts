@@ -147,8 +147,8 @@ class RedisService {
           maxRetriesPerRequest: 3,
           enableReadyCheck: true,
           lazyConnect: false,
-          connectTimeout: parseInt(process.env.REDIS_TIMEOUT || '3000', 10),
-          commandTimeout: parseInt(process.env.REDIS_TIMEOUT || '3000', 10),
+          connectTimeout: parseInt(process.env.REDIS_TIMEOUT || '5000', 10),
+          commandTimeout: parseInt(process.env.REDIS_TIMEOUT || '5000', 10),
           retryStrategy: (times: number) => {
             const delay = Math.min(times * 50, 2000);
             if (times > 10) {
@@ -179,8 +179,8 @@ class RedisService {
         maxRetriesPerRequest: 3,
         enableReadyCheck: true,
         lazyConnect: false,
-        connectTimeout: 3000,
-        commandTimeout: 3000,
+        connectTimeout: 5000,
+        commandTimeout: 5000,
       };
     }
     
@@ -207,9 +207,15 @@ class RedisService {
   }
 
   private setupEventHandlers(): void {
+    // Socket connected; authentication/ready may still be pending
     this.client.on('connect', () => {
+      console.log('🔌 RedisService socket connected');
+    });
+
+    // Mark service ready only when Redis is fully ready (post-auth, post-handshake)
+    this.client.on('ready', () => {
       this.connected = true;
-      console.log('✅ RedisService connected');
+      console.log('✅ RedisService ready');
     });
 
     this.client.on('error', (err: any) => {
@@ -261,7 +267,9 @@ class RedisService {
   }
 
   isConnected(): boolean {
-    return this.connected;
+    // Ensure the underlying client reports ready state
+    const status = (this.client as any)?.status;
+    return this.connected && status === 'ready';
   }
 
   /**
@@ -331,14 +339,14 @@ class RedisService {
     try {
       const redisKey = `session:${sessionId}`;
       
-      // Add timeout to prevent Redis hanging
-      const getPromise = this.client.get(redisKey);
-      const timeoutPromise = new Promise<string | null>((_, reject) => 
-        setTimeout(() => reject(new Error('Redis get timeout')), 
-        parseInt(process.env.REDIS_TIMEOUT || '3000', 10))
+      // Add timeout to prevent Redis hanging; handle late rejection to avoid unhandled noise
+      const getPromise = this.client.get(redisKey).catch(() => null);
+      const timeoutPromise = new Promise<'timeout'>(resolve => 
+        setTimeout(() => resolve('timeout'), parseInt(process.env.REDIS_TIMEOUT || '5000', 10))
       );
       
-      const data = await Promise.race([getPromise, timeoutPromise]) as string | null;
+      const raced = await Promise.race([getPromise as any, timeoutPromise]);
+      const data = raced === 'timeout' ? null : (raced as string | null);
       
       if (!data) {
         console.log(`❌ Session not found in Redis: ${sessionId}`);

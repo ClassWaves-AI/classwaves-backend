@@ -32,18 +32,20 @@ async function startServer() {
     // Create HTTP server with debugging
     const httpServer = createServer(app);
     
-    // CRITICAL DEBUG: Log all HTTP requests at server level BEFORE Express
-    httpServer.on('request', (req, res) => {
-      console.log('🔧 DEBUG: HTTP SERVER - Request received:', {
-        method: req.method,
-        url: req.url,
-        headers: {
-          'content-type': req.headers['content-type'],
-          'content-length': req.headers['content-length'],
-          'user-agent': req.headers['user-agent']
-        }
+    // Optional debug: Log HTTP requests (enable with API_DEBUG=1)
+    if (process.env.API_DEBUG === '1') {
+      httpServer.on('request', (req, res) => {
+        console.log('🔧 DEBUG: HTTP SERVER - Request received:', {
+          method: req.method,
+          url: req.url,
+          headers: {
+            'content-type': req.headers['content-type'],
+            'content-length': req.headers['content-length'],
+            'user-agent': req.headers['user-agent']
+          }
+        });
       });
-    });
+    }
     
     // Initialize Namespaced WebSocket server (after Redis is ready)
     const wsService = initializeNamespacedWebSocket(httpServer);
@@ -65,6 +67,23 @@ async function startServer() {
         console.log('✅ All critical services healthy');
       } else {
         console.warn('⚠️  Server running with some services degraded');
+      }
+      // Initialize rate limiters now that services are up
+      try {
+        const { initializeRateLimiters } = require('./middleware/rate-limit.middleware');
+        initializeRateLimiters()?.catch?.(() => undefined);
+      } catch {}
+
+      // Optionally run STT worker inline in this process for dev convenience
+      try {
+        if (String(process.env.STT_INLINE_WORKER || '0') === '1') {
+          const { startAudioSttWorker } = require('./workers/audio-stt.worker');
+          startAudioSttWorker();
+          console.log('🎧 STT worker running inline with server (STT_INLINE_WORKER=1)');
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('⚠️ Failed to start inline STT worker (non-blocking):', msg);
       }
     });
 

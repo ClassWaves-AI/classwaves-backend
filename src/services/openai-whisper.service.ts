@@ -34,7 +34,50 @@ export class OpenAIWhisperService implements SpeechToTextPort {
   private readonly budgetMemory = new Map<string, { minutes: number; lastPct: number }>();
   private readonly budgetAlertsStore = new Map<string, Array<{ id: string; percentage: number; triggeredAt: string; acknowledged: boolean }>>();
 
+  private normalizeMimeForUpload(mimeType: string): string {
+    const mt = (mimeType || '').toLowerCase();
+    if (mt.startsWith('audio/webm')) return 'audio/webm';
+    if (mt.startsWith('audio/ogg') || mt.startsWith('application/ogg')) return 'audio/ogg';
+    if (mt.startsWith('audio/wav') || mt.startsWith('audio/x-wav')) return 'audio/wav';
+    if (mt.startsWith('audio/mpeg') || mt.startsWith('audio/mp3')) return 'audio/mpeg';
+    if (mt.startsWith('audio/mp4')) return 'audio/mp4';
+    if (mt.startsWith('audio/mpga')) return 'audio/mpga';
+    return mt || 'application/octet-stream';
+  }
+
+  private filenameForMime(mimeType: string): string {
+    const mt = this.normalizeMimeForUpload(mimeType);
+    if (mt === 'audio/ogg') return 'audio.ogg';
+    if (mt === 'audio/wav') return 'audio.wav';
+    if (mt === 'audio/mpeg') return 'audio.mp3';
+    if (mt === 'audio/mp4') return 'audio.mp4';
+    if (mt === 'audio/mpga') return 'audio.mpga';
+    return 'audio.webm';
+  }
+
+  private sniffContainerMime(buf: Buffer): string | null {
+    try {
+      if (!buf || buf.length < 12) return null;
+      // OGG: 'OggS'
+      if (buf[0] === 0x4f && buf[1] == 0x67 && buf[2] == 0x67 && buf[3] == 0x53) return 'audio/ogg';
+      // WEBM/Matroska: EBML header 1A 45 DF A3
+      if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return 'audio/webm';
+      // WAV: 'RIFF'....'WAVE'
+      if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+          buf[8] === 0x57 && buf[9] === 0x41 && buf[10] === 0x56 && buf[11] === 0x45) return 'audio/wav';
+      // MP3: 'ID3' or frame sync 0xFF 0xFB/F3/F2
+      if ((buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) || (buf[0] === 0xff && (buf[1] & 0xE0) === 0xE0)) return 'audio/mpeg';
+      // MP4/M4A: ... 'ftyp'
+      if (buf.length >= 12 && buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return 'audio/mp4';
+      return null;
+    } catch { return null; }
+  }
+
   async transcribeBuffer(audio: Buffer, mimeType: string, options: WhisperOptions = {}, schoolId?: string): Promise<WhisperResult> {
+    // Dev override: force mock regardless of API key
+    if (process.env.STT_FORCE_MOCK === '1') {
+      return { text: 'mock transcription (forced)', confidence: 0.95, language: options.language || 'en', duration: 0 };
+    }
     // In test environment, always return mock immediately to avoid timing issues with Bottleneck/jest timers
     if (process.env.NODE_ENV === 'test') {
       return { text: 'mock transcription (test)', confidence: 0.95, language: options.language || 'en', duration: 0 };
@@ -54,11 +97,16 @@ export class OpenAIWhisperService implements SpeechToTextPort {
       // Optional: persist metrics to DB when enabled
       if (process.env.ENABLE_DB_METRICS_PERSIST === '1') {
         try {
-          await databricksService.insert('operational.api_metrics', {
+          await databricksService.insert('operational.system_events', {
             id: Date.now().toString(),
-            service: 'openai_whisper',
-            status: 'success',
-            bytes: audio.byteLength,
+            event_type: 'api_call',
+            severity: 'info',
+            component: 'openai_whisper',
+            message: `transcribe success (${audio.byteLength} bytes)`,
+            error_details: null,
+            school_id: schoolId || null,
+            session_id: null,
+            user_id: null,
             created_at: new Date(),
           } as any);
         } catch {
@@ -85,7 +133,10 @@ export class OpenAIWhisperService implements SpeechToTextPort {
       attempt++;
       try {
         const form = new FormData();
-        form.append('file', audio, { filename: 'audio.webm', contentType: mimeType });
+        const sniffed = this.sniffContainerMime(audio);
+        const norm = sniffed || this.normalizeMimeForUpload(mimeType);
+        const filename = this.filenameForMime(norm);
+        form.append('file', audio, { filename, contentType: norm });
         form.append('model', 'whisper-1');
         if (options.language) form.append('language', options.language);
         form.append('response_format', 'json');
@@ -119,11 +170,16 @@ export class OpenAIWhisperService implements SpeechToTextPort {
           // Optional: persist failure
           if (process.env.ENABLE_DB_METRICS_PERSIST === '1') {
             try {
-              await databricksService.insert('operational.api_metrics', {
+              await databricksService.insert('operational.system_events', {
                 id: Date.now().toString(),
-                service: 'openai_whisper',
-                status: 'error',
-                error_message: (err as any)?.message || 'unknown',
+                event_type: 'api_call',
+                severity: 'error',
+                component: 'openai_whisper',
+                message: 'transcribe failed',
+                error_details: (err as any)?.message || 'unknown',
+                school_id: null,
+                session_id: null,
+                user_id: null,
                 created_at: new Date(),
               } as any);
             } catch {}
@@ -336,4 +392,3 @@ export class OpenAIWhisperService implements SpeechToTextPort {
 }
 
 export const openAIWhisperService = new OpenAIWhisperService();
-

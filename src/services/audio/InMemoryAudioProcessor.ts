@@ -57,6 +57,9 @@ export class InMemoryAudioProcessor {
   private processingStats = new Map<string, { count: number; totalLatency: number }>();
   // Per-group mutex to ensure atomic window operations
   private groupLocks = new Map<string, Promise<any>>();
+  // Cache minimal container headers per group to make submissions self-contained
+  private webmHeaders = new Map<string, Buffer>();
+  private oggHeaders = new Map<string, Buffer>();
   private readonly MAX_TOTAL_MEMORY_MB = parseInt(process.env.AI_BUFFER_MAX_MEMORY_MB || '256', 10);
   private readonly MAX_HEAP_SIZE_MB = parseInt(process.env.MAX_HEAP_SIZE_MB || '1024', 10);
   private readonly maxBufferSize = 10_000_000; // 10MB threshold per group
@@ -139,9 +142,54 @@ export class InMemoryAudioProcessor {
         await this.handleBackPressure(groupId);
         this.verifyNoDiskWrites();
         const state = this.getOrCreateGroupWindow(groupId, mimeType);
+        // Opportunistically capture a container header (WebM/Ogg) for this group from the first header-bearing chunk
+        try {
+          const mt = (mimeType || '').toLowerCase();
+          if (mt.startsWith('audio/webm') && !this.webmHeaders.has(groupId)) {
+            const hdr = this.extractWebMHeader(audioChunk);
+            if (hdr && hdr.length > 0) this.webmHeaders.set(groupId, hdr);
+          } else if (mt.startsWith('audio/ogg') && !this.oggHeaders.has(groupId)) {
+            const hdr = this.extractOggHeader(audioChunk);
+            if (hdr && hdr.length > 0) this.oggHeaders.set(groupId, hdr);
+          }
+        } catch {}
         state.chunks.push(audioChunk);
         state.bytes += audioChunk.length;
         this.activeBuffers.set(bufferKey, { data: audioChunk, mimeType, timestamp: new Date(), size: audioChunk.length });
+
+        // Special-case: Browser MediaRecorder emits self-contained WebM/Ogg files per timeslice.
+        // Concatenating them creates invalid containers. For these formats, transcribe per chunk
+        // and reset the window accumulator.
+        const isContainerized = this.isContainerizedFormat(mimeType);
+        if (isContainerized) {
+          const start = performance.now();
+          let submitBuffer = audioChunk;
+          try {
+            const mt = (mimeType || '').toLowerCase();
+            if (mt.startsWith('audio/webm') && !this.hasWebMHeader(audioChunk)) {
+              submitBuffer = this.maybePrependWebMHeader(groupId, audioChunk);
+            } else if (mt.startsWith('audio/ogg') && !this.hasOggHeader(audioChunk)) {
+              submitBuffer = this.maybePrependOggHeader(groupId, audioChunk);
+            }
+          } catch {}
+          const transcription = await openAIWhisperService.transcribeBuffer(submitBuffer, mimeType, {}, schoolId);
+          // Zero and reset window
+          try { this.secureZeroBuffer(audioChunk); } catch {}
+          state.chunks = [];
+          state.bytes = 0;
+          state.windowStartedAt = Date.now() + this.getRandomJitterMs();
+          const elapsed = performance.now() - start;
+          this.recordPerformanceMetrics(groupId, elapsed);
+          return {
+            groupId,
+            sessionId,
+            text: transcription.text,
+            confidence: transcription.confidence ?? 0.95,
+            timestamp: new Date().toISOString(),
+            language: transcription.language,
+            duration: transcription.duration,
+          } as GroupTranscriptionResult;
+        }
         const now = Date.now();
         const atBoundary = (now - state.windowStartedAt) / 1000 >= state.windowSeconds;
         if (!atBoundary) return null;
@@ -289,7 +337,13 @@ export class InMemoryAudioProcessor {
     const submitStart = performance.now();
     this.windowSecondsMetric.observe(state.windowSeconds);
     const mimeType = state.mimeType || fallbackMimeType;
-    const windowBuffer = Buffer.concat(state.chunks, state.bytes);
+    let windowBuffer = Buffer.concat(state.chunks, state.bytes);
+    // Ensure WebM windows are self-contained files by prepending a cached header when needed
+    try {
+      if ((mimeType || '').toLowerCase().startsWith('audio/webm')) {
+        windowBuffer = this.maybePrependWebMHeader(groupId, windowBuffer);
+      }
+    } catch {}
     // Ensure immediate zeroing of individual chunks after concat
     for (const chunk of state.chunks) this.secureZeroBuffer(chunk);
     state.chunks = [];
@@ -356,6 +410,76 @@ export class InMemoryAudioProcessor {
       throw new AudioProcessingError('UNSUPPORTED_FORMAT', 
         `Unsupported audio format: ${mimeType}. Supported: ${this.supportedFormats.join(', ')}`);
     }
+  }
+
+  private isContainerizedFormat(mimeType: string): boolean {
+    const mt = (mimeType || '').toLowerCase();
+    return mt.startsWith('audio/webm') || mt.startsWith('audio/ogg');
+  }
+
+  // --- WebM header utilities ---
+  // Detect if a buffer starts with EBML header (1A 45 DF A3)
+  private hasWebMHeader(buf: Buffer): boolean {
+    return buf && buf.length >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3;
+  }
+  // Find the first Matroska Cluster element (1F 43 B6 75) index
+  private findWebMClusterStart(buf: Buffer): number {
+    if (!buf || buf.length < 4) return -1;
+    const pat = Buffer.from([0x1f, 0x43, 0xb6, 0x75]);
+    return buf.indexOf(pat);
+  }
+  // Extract a minimal header (EBML+Segment+Tracks) by slicing up to Cluster start
+  private extractWebMHeader(buf: Buffer): Buffer | null {
+    try {
+      if (!buf || buf.length < 16) return null;
+      if (!this.hasWebMHeader(buf)) return null;
+      const idx = this.findWebMClusterStart(buf);
+      if (idx > 0) {
+        return buf.subarray(0, idx);
+      }
+      // If no Cluster in this chunk, cache the whole thing as provisional header
+      return buf;
+    } catch {
+      return null;
+    }
+  }
+  // If buffer lacks EBML header and we have a cached header for the group, prepend it
+  private maybePrependWebMHeader(groupId: string, buf: Buffer): Buffer {
+    if (!buf || buf.length === 0) return buf;
+    if (this.hasWebMHeader(buf)) return buf; // already a full file
+    const hdr = this.webmHeaders.get(groupId);
+    if (hdr && hdr.length > 0) {
+      if (process.env.API_DEBUG === '1') {
+        console.log(JSON.stringify({ event: 'webm_header_prepended', groupId, header_bytes: hdr.length, window_bytes: buf.length }));
+      }
+      return Buffer.concat([hdr, buf], hdr.length + buf.length);
+    }
+    return buf;
+  }
+
+  // --- OGG header utilities ---
+  private hasOggHeader(buf: Buffer): boolean {
+    return buf && buf.length >= 4 && buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53; // 'OggS'
+  }
+  private extractOggHeader(buf: Buffer): Buffer | null {
+    try {
+      if (!buf || buf.length < 32) return null;
+      if (!this.hasOggHeader(buf)) return null;
+      // As a pragmatic approach, cache the entire first chunk as header for reuse
+      return buf;
+    } catch { return null; }
+  }
+  private maybePrependOggHeader(groupId: string, buf: Buffer): Buffer {
+    if (!buf || buf.length === 0) return buf;
+    if (this.hasOggHeader(buf)) return buf;
+    const hdr = this.oggHeaders.get(groupId);
+    if (hdr && hdr.length > 0) {
+      if (process.env.API_DEBUG === '1') {
+        console.log(JSON.stringify({ event: 'ogg_header_prepended', groupId, header_bytes: hdr.length, window_bytes: buf.length }));
+      }
+      return Buffer.concat([hdr, buf], hdr.length + buf.length);
+    }
+    return buf;
   }
 
   /**
@@ -605,6 +729,23 @@ export class InMemoryAudioProcessor {
         databricksConnectivity: 'mock',
       }
     };
+  }
+
+  /**
+   * Reset group state (window buffers and header). Call on stream end.
+   */
+  public resetGroupState(groupId: string): void {
+    try {
+      const state = this.groupWindows.get(groupId);
+      if (state) {
+        for (const c of state.chunks) this.secureZeroBuffer(c);
+        state.chunks = [];
+        state.bytes = 0;
+        this.groupWindows.delete(groupId);
+      }
+      this.webmHeaders.delete(groupId);
+      this.oggHeaders.delete(groupId);
+    } catch {}
   }
 
   // Best-effort flush for a set of groups (used during session drain)

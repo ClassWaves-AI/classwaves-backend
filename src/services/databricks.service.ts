@@ -458,6 +458,7 @@ export class DatabricksService {
       'teacher_prompt_effectiveness': 'ai_insights',
       'group_summaries': 'ai_insights',
       'session_summaries': 'ai_insights',
+      'guidance_events': 'ai_insights',
 
       // Analytics schema
       'educational_metrics': 'analytics',
@@ -969,7 +970,7 @@ export class DatabricksService {
     
     // Only add fields that exist in the classroom_sessions table schema
     const allowedFields = [
-      'title', 'description', 'status', 'scheduled_start', 'actual_start', 'actual_end',
+      'title', 'description', 'goal', 'subject', 'status', 'scheduled_start', 'actual_start', 'actual_end',
       'planned_duration_minutes', 'actual_duration_minutes', 'target_group_size',
       'auto_group_enabled', 'recording_enabled', 'transcription_enabled', 'ai_analysis_enabled',
       'ferpa_compliant', 'coppa_compliant', 'recording_consent_obtained', 'data_retention_date',

@@ -194,6 +194,38 @@ router.get('/session/:sessionId',
   analyticsController.getSessionAnalytics as any
 );
 
+/** Simple projection endpoint for freeze-time guidance counts */
+router.get('/session/:sessionId/guidance-counts',
+  analyticsLimiter,
+  validateParams(sessionParamsSchema),
+  async (req, res) => {
+    try {
+      const { sessionId } = req.params as any;
+      // Minimal projection from session_summaries JSON
+      const { databricksService } = await import('../services/databricks.service');
+      const { databricksConfig } = await import('../config/databricks.config');
+      const row = await databricksService.queryOne<{ hp: any; t2: any }>(
+        `SELECT 
+           get_json_object(summary_json, '$.guidanceInsights.meta.highPriorityCount') AS hp,
+           get_json_object(summary_json, '$.guidanceInsights.meta.tier2Count') AS t2
+         FROM ${databricksConfig.catalog}.ai_insights.session_summaries
+         WHERE session_id = ?
+         ORDER BY analysis_timestamp DESC
+         LIMIT 1`, [sessionId]
+      );
+      const toInt = (v: any) => { const s = String(v ?? '0').replace(/"/g,''); const n = parseInt(s,10); return Number.isFinite(n) ? n : 0; };
+      const counts = { highPriorityCount: toInt(row?.hp), tier2Count: toInt(row?.t2) };
+      return res.json({ success: true, counts, timestamp: new Date().toISOString() });
+    } catch (error) {
+      // Graceful fallback: no summary yet or table missing -> return zeros instead of 500
+      if (process.env.API_DEBUG === '1') {
+        console.warn('guidance-counts query failed (fallback to zeros):', error instanceof Error ? error.message : String(error));
+      }
+      return res.json({ success: true, counts: { highPriorityCount: 0, tier2Count: 0 }, timestamp: new Date().toISOString() });
+    }
+  }
+);
+
 /**
  * GET /analytics/session/:sessionId/overview
  * 

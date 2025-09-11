@@ -95,25 +95,35 @@ export async function initializeRateLimiters() {
 export const rateLimitMiddleware = async (req: Request, res: Response, next: Function) => {
   // Skip preflight and safe methods
   if (req.method === 'OPTIONS' || req.method === 'HEAD') return next();
+  // Skip audio uploads and infra endpoints
+  const path = req.path || '';
+  const ctype = String(req.headers['content-type'] || '').toLowerCase();
+  if (path.startsWith('/api/v1/audio/') || path === '/api/v1/ready' || path === '/api/v1/health' || path === '/metrics' || ctype.startsWith('multipart/form-data')) {
+    return next();
+  }
   if (process.env.NODE_ENV === 'test') {
     return next();
   }
   // If rate limiter hasn't been initialized yet, allow the request but log warning
   if (!rateLimiterInitialized) {
-    console.warn('⚠️  Rate limiter not initialized, allowing request');
+    if (process.env.API_DEBUG === '1') console.warn('⚠️  Rate limiter not initialized, allowing request');
     return next();
   }
 
   try {
     const key = req.ip || 'unknown';
     
-    // Add timeout to prevent Redis hanging
-    const rateLimitPromise = rateLimiter.consume(key);
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Rate limit timeout')), 2000)
-    );
-    
-    await Promise.race([rateLimitPromise, timeoutPromise]);
+    // Add timeout and ensure any late rejection is handled to avoid unhandled promise noise
+    const rateLimitPromise = (rateLimiter as any).consume(key).catch((e: any) => {
+      if (process.env.API_DEBUG === '1') console.warn('⚠️  Rate limiter consume error (deferred):', e?.message || e);
+      return null;
+    });
+    const timeoutPromise = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 2000));
+    const outcome = await Promise.race([rateLimitPromise, timeoutPromise]);
+    if (outcome === 'timeout' || outcome === null) {
+      console.warn('⚠️  Rate limiter timeout/deferred error, allowing request');
+      return next();
+    }
     next();
   } catch (rejRes: any) {
     if (rejRes.message === 'Rate limit timeout') {
@@ -131,10 +141,12 @@ export const rateLimitMiddleware = async (req: Request, res: Response, next: Fun
 
 // Stricter rate limiting for auth endpoints
 export const authRateLimitMiddleware = async (req: Request, res: Response, next: Function) => {
-  console.log('🔧 DEBUG: Auth rate limit middleware called');
-  console.log('🔧 DEBUG: NODE_ENV:', process.env.NODE_ENV);
-  console.log('🔧 DEBUG: Request path:', req.path);
-  console.log('🔧 DEBUG: Rate limiter initialized:', authRateLimiterInitialized);
+  if (process.env.API_DEBUG === '1') {
+    console.log('🔧 DEBUG: Auth rate limit middleware called');
+    console.log('🔧 DEBUG: NODE_ENV:', process.env.NODE_ENV);
+    console.log('🔧 DEBUG: Request path:', req.path);
+    console.log('🔧 DEBUG: Rate limiter initialized:', authRateLimiterInitialized);
+  }
   
   // Skip preflight and safe methods
   if (req.method === 'OPTIONS' || req.method === 'HEAD') return next();
@@ -145,23 +157,28 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
   }
   // If auth rate limiter hasn't been initialized yet, allow the request but log warning
   if (!authRateLimiterInitialized) {
-    console.warn('⚠️  Auth rate limiter not initialized, allowing request');
+    if (process.env.API_DEBUG === '1') console.warn('⚠️  Auth rate limiter not initialized, allowing request');
     return next();
   }
 
   try {
     const key = req.ip || 'unknown';
-    console.log('🔧 DEBUG: Auth rate limiter key:', key);
+    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: Auth rate limiter key:', key);
     
-    // Add timeout to prevent Redis hanging
-    const rateLimitPromise = authRateLimiter.consume(key);
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Auth rate limit timeout')), 2000)
-    );
+    // Add timeout and ensure late rejections are handled
+    const rateLimitPromise = (authRateLimiter as any).consume(key).catch((e: any) => {
+      if (process.env.API_DEBUG === '1') console.warn('⚠️  Auth rate limiter consume error (deferred):', e?.message || e);
+      return null;
+    });
+    const timeoutPromise = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 2000));
     
-    console.log('🔧 DEBUG: About to check auth rate limit');
-    await Promise.race([rateLimitPromise, timeoutPromise]);
-    console.log('🔧 DEBUG: Auth rate limit check passed');
+    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: About to check auth rate limit');
+    const outcome = await Promise.race([rateLimitPromise, timeoutPromise]);
+    if (outcome === 'timeout' || outcome === null) {
+      console.warn('⚠️  Auth rate limiter timeout/deferred error, allowing request');
+      return next();
+    }
+    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: Auth rate limit check passed');
     next();
   } catch (rejRes: any) {
     console.error('🔧 DEBUG: Auth rate limiter error:', rejRes);
@@ -212,7 +229,12 @@ export const createUserRateLimiter = (keyPrefix: string, points: number, duratio
       const authReq = req as any;
       const key = authReq.user?.id || req.ip || 'unknown';
       
-      await userRateLimiter.consume(key);
+      const consumePromise = (userRateLimiter as any).consume(key).catch(() => null);
+      const outcome = await Promise.race([consumePromise, new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 2000))]);
+      if (outcome === 'timeout' || outcome === null) {
+        if (process.env.API_DEBUG === '1') console.warn('⚠️  User rate limiter timeout/deferred error, allowing request');
+        return next();
+      }
       next();
     } catch (rejRes: any) {
       res.status(429).json({

@@ -3,7 +3,7 @@ import { NamespaceBaseService, NamespaceSocketData } from './namespace-base.serv
 import { databricksService } from '../databricks.service';
 import { redisService } from '../redis.service';
 import * as client from 'prom-client';
-import { SessionJoinPayloadSchema, SessionStatusUpdateSchema, GroupJoinLeaveSchema, GroupLeaderReadySchema, WaveListenerIssueSchema, GroupStatusUpdateSchema, AudioChunkPayloadSchema, AudioStreamLifecycleSchema } from '@classwaves/shared';
+import { SessionJoinPayloadSchema, SessionStatusUpdateSchema, GroupJoinLeaveSchema, GroupLeaderReadySchema, WaveListenerIssueSchema, GroupStatusUpdateSchema, AudioChunkPayloadSchema, AudioStreamLifecycleSchema } from '../../utils/validation.schemas';
 import { DedupeWindow, computeGroupBroadcastHash } from './utils/dedupe.util';
 import { RedisRateLimiter } from './utils/rate-limiter.util';
 import { SessionSnapshotCache } from './utils/snapshot-cache.util';
@@ -277,7 +277,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     });
 
     socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; mimeType: string }) => {
-      await this.handleAudioChunk(socket, data);
+      // Phase 1: WS audio ingestion disabled; HTTP uploads are canonical.
+      try {
+        this.emitToRoom(`group:${data?.groupId || 'unknown'}`, 'audio:error', { code: 'UNSUPPORTED_OPERATION', message: 'Use HTTP uploads for audio windows' });
+      } catch {}
+      return;
     });
 
     socket.on('audio:end_stream', async (data: { groupId: string }) => {
@@ -1189,6 +1193,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         SessionsNamespaceService.wsAudioBytesTotal.inc({ school: schoolId }, approxBytes);
       } catch {}
 
+      // Compute short traceId for correlating client/server logs
+      let traceId = '';
+      try {
+        const { createHash } = await import('crypto');
+        const sid = (socket.data as any)?.sessionId || 'unknown';
+        traceId = createHash('sha1').update(`${sid}|${data.groupId}|${Date.now()}`).digest('hex').slice(0, 12);
+      } catch {}
+
       const { inMemoryAudioProcessor } = await import('../audio/InMemoryAudioProcessor');
       const windowInfo = inMemoryAudioProcessor.getGroupWindowInfo(data.groupId);
       if (windowInfo.bytes > 5 * 1024 * 1024 || windowInfo.chunks > 50) {
@@ -1200,19 +1212,26 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         }));
         try { audioBuffer.fill(0); } catch {}
         try { (SessionsNamespaceService as any).wsAudioDropCounter?.inc?.({ namespace: this.getNamespaceName(), reason: 'BACKPRESSURE', school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
-        this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'BACKPRESSURE', windowBytes: windowInfo.bytes, windowChunks: windowInfo.chunks });
+        this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'WINDOW_OVERFLOW', windowBytes: windowInfo.bytes, windowChunks: windowInfo.chunks, traceId });
         this.recordDropAndMaybeHint(socket, data.groupId);
         return;
       }
 
       // Ingest to zero-disk processor
-      const result = await inMemoryAudioProcessor.ingestGroupAudioChunk(
-        data.groupId,
-        audioBuffer,
-        resolvedMime,
-        (socket.data as any).sessionId,
-        (socket.data as any).schoolId
-      );
+      let result: any;
+      try {
+        result = await inMemoryAudioProcessor.ingestGroupAudioChunk(
+          data.groupId,
+          audioBuffer,
+          resolvedMime,
+          (socket.data as any).sessionId,
+          (socket.data as any).schoolId
+        );
+      } catch (e) {
+        console.error('STT pipeline error:', e);
+        this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'STT_FAILED', traceId });
+        return;
+      }
 
       // Structured accept log
       console.log(JSON.stringify({ event: 'audio_chunk_accepted', groupId: data.groupId, approx_chunk_bytes: approxBytes, window_seconds: windowInfo.windowSeconds }));
@@ -1227,6 +1246,20 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         // Skip if identical to the last emitted text for this group (case-insensitive)
         const lastText = this.lastTranscriptText.get(data.groupId);
         if (lastText && lastText.trim().toLowerCase() === mergedText.trim().toLowerCase()) {
+          return;
+        }
+        // Additional dedupe: collapse repeated token runs and compare
+        const collapseRuns = (s: string): string => {
+          const tokens = s.split(/\s+/);
+          const out: string[] = [];
+          for (const t of tokens) {
+            if (out.length === 0 || out[out.length - 1].toLowerCase() !== t.toLowerCase()) {
+              out.push(t);
+            }
+          }
+          return out.join(' ');
+        };
+        if (lastText && collapseRuns(lastText).toLowerCase() === collapseRuns(mergedText).toLowerCase()) {
           return;
         }
         // Reset soft backpressure streak on success
@@ -1248,7 +1281,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           timestamp: result.timestamp,
           confidence: result.confidence,
           language: result.language,
-          traceId: (socket.data as any)?.traceId || undefined,
+          traceId: traceId || (socket.data as any)?.traceId || undefined,
         });
         // Remember last emitted text for duplicate suppression
         this.lastTranscriptText.set(data.groupId, mergedText);
@@ -1264,22 +1297,27 @@ export class SessionsNamespaceService extends NamespaceBaseService {
             const start = new Date(result.timestamp);
             const durSec = (result.duration ?? 0) as number;
             const end = Number.isFinite(durSec) && durSec > 0 ? new Date(start.getTime() + Math.floor(durSec * 1000)) : start;
-            await databricksService.insert('sessions.transcriptions', {
-              id,
-              session_id: sessionId,
-              group_id: data.groupId,
-              speaker_id: String(data.groupId),
-              speaker_type: 'group',
-              speaker_name: groupName,
-              content: result.text,
-              language_code: result.language || 'en',
-              start_time: start,
-              end_time: end,
-              duration_seconds: durSec || 0,
-              confidence_score: result.confidence ?? 0,
-              is_final: true,
-              created_at: new Date(),
-            });
+            try {
+              await databricksService.insert('sessions.transcriptions', {
+                id,
+                session_id: sessionId,
+                group_id: data.groupId,
+                speaker_id: String(data.groupId),
+                speaker_type: 'group',
+                speaker_name: groupName,
+                content: result.text,
+                language_code: result.language || 'en',
+                start_time: start,
+                end_time: end,
+                duration_seconds: durSec || 0,
+                confidence_score: result.confidence ?? 0,
+                is_final: true,
+                created_at: new Date(),
+              });
+            } catch (e) {
+              console.warn('⚠️ DB persist failed:', e instanceof Error ? e.message : String(e));
+              this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'DB_PERSIST_FAILED', traceId });
+            }
           }
         } catch (e) {
           console.warn('⚠️ Failed to persist transcription (non-blocking):', e instanceof Error ? e.message : String(e));
@@ -1325,10 +1363,13 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
     } catch (error) {
       console.error('Audio chunk processing error:', error);
-      socket.emit('error', {
-        code: 'AUDIO_PROCESSING_FAILED',
-        message: 'Failed to process audio chunk',
-      });
+      // Emit namespaced, recoverable audio error instead of generic socket 'error'
+      try {
+        this.emitToRoom(`group:${data.groupId}`, 'audio:error', {
+          groupId: data.groupId,
+          error: 'AUDIO_PROCESSING_FAILED',
+        });
+      } catch {}
     }
   }
 
@@ -1438,6 +1479,12 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         this.lastTranscriptTailTokens.delete(data.groupId);
         this.lastTranscriptText.delete(data.groupId);
       } catch {}
+
+      // Also reset audio processor buffers and cached WebM header for this group
+      try {
+        const { inMemoryAudioProcessor } = await import('../audio/InMemoryAudioProcessor');
+        inMemoryAudioProcessor.resetGroupState(data.groupId);
+      } catch {}
     } catch (error) {
       console.error('Audio stream end error:', error);
       socket.emit('error', { 
@@ -1480,6 +1527,21 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
   public emitToGroup(groupId: string, event: string, data: any): void {
     this.emitToRoom(`group:${groupId}`, event, data);
+  }
+
+  // Public helper for overlap-aware transcript emission used by HTTP STT worker
+  public emitMergedGroupTranscript(sessionId: string, groupId: string, text: string, opts?: { traceId?: string; window?: { startTs?: number; endTs?: number; chunkId?: string } }) {
+    const mergedText = this.mergeOverlappingTranscript(groupId, text);
+    this.emitToRoom(`session:${sessionId}`, 'transcription:group:new', {
+      id: opts?.window?.chunkId, // expose chunkId as stable id for client-side de-duplication
+      sessionId,
+      groupId,
+      text: mergedText,
+      startTs: opts?.window?.startTs,
+      endTs: opts?.window?.endTs,
+      chunkId: opts?.window?.chunkId,
+      traceId: opts?.traceId,
+    });
   }
 
   // Public utility: reset transcript merge state for a set of groups (e.g., on session end)

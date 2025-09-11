@@ -99,7 +99,7 @@ export class DatabricksSessionRepository implements SessionRepositoryPort {
     const sql = `
       SELECT
         s.id, s.status, s.teacher_id, s.school_id,
-        s.title, s.description, s.target_group_size, s.scheduled_start, s.actual_start,
+        s.title, s.description, s.goal, s.subject, s.target_group_size, s.scheduled_start, s.actual_start,
         s.planned_duration_minutes, s.created_at, s.access_code,
         g.group_count,
         g.student_count,
@@ -127,7 +127,7 @@ export class DatabricksSessionRepository implements SessionRepositoryPort {
     const sql = `
       SELECT
         s.id, s.status, s.teacher_id, s.school_id,
-        s.title, s.description,
+        s.title, s.description, s.goal, s.subject,
         s.scheduled_start, s.actual_start, s.created_at,
         s.target_group_size,
         s.total_groups   AS group_count,

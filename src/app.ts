@@ -21,8 +21,10 @@ import jwksRoutes from './routes/jwks.routes';
 import adminRoutes from './routes/admin.routes';
 import budgetRoutes from './routes/budget.routes';
 import aiAnalysisRoutes from './routes/ai-analysis.routes';
+import audioUploadRoutes from './routes/audio-upload.routes';
 import guidanceAnalyticsRoutes from './routes/guidance-analytics.routes';
 import analyticsMonitoringRoutes from './routes/analytics-monitoring.routes';
+import transcriptsRoutes from './routes/transcripts.routes';
 
 import healthRoutes from './routes/health.routes';
 import debugRoutes from './routes/debug.routes';
@@ -37,6 +39,8 @@ import { errorLoggingHandler } from './middleware/error-logging.middleware';
 import client from 'prom-client';
 import { traceIdMiddleware } from './middleware/trace-id.middleware';
 import { httpMetricsMiddleware } from './middleware/metrics.middleware';
+import { transcriptPersistenceService } from './services/transcript-persistence.service';
+import { databricksConfig } from './config/databricks.config';
 
 // Optional OTEL: initialize and wire tracing when enabled
 try {
@@ -67,17 +71,18 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // CRITICAL DEBUG: Add request logging at the very top level before ANY middleware
 app.use((req, res, next) => {
-  console.log('🔧 DEBUG: TOP LEVEL - Request received:', {
-    method: req.method,
-    url: req.url,
-    path: req.path,
-    headers: {
-      'content-type': req.headers['content-type'],
-      'user-agent': req.headers['user-agent'],
-      'content-length': req.headers['content-length']
-    }
-  });
-  
+  if (process.env.API_DEBUG === '1') {
+    console.log('🔧 DEBUG: TOP LEVEL - Request received:', {
+      method: req.method,
+      url: req.url,
+      path: req.path,
+      headers: {
+        'content-type': req.headers['content-type'],
+        'user-agent': req.headers['user-agent'],
+        'content-length': req.headers['content-length']
+      }
+    });
+  }
   // Add response error handling
   const originalSend = res.send;
   res.send = function(data) {
@@ -91,7 +96,6 @@ app.use((req, res, next) => {
     }
     return originalSend.call(this, data);
   };
-  
   next();
 });
 
@@ -168,8 +172,10 @@ const globalRateLimit = rateLimit({
     console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
     // Skip rate limiting for preflight and safe/infra endpoints
     const isPreflight = req.method === 'OPTIONS' || req.method === 'HEAD';
-    const isInfra = req.path === '/api/v1/health' || req.path === '/metrics';
-    const shouldSkip = isPreflight || isInfra;
+    const isInfra = req.path === '/api/v1/health' || req.path === '/metrics' || req.path === '/api/v1/ready';
+    // Skip for audio upload windows to avoid interfering with 10s cadence
+    const isAudioUpload = req.path.startsWith('/api/v1/audio/');
+    const shouldSkip = isPreflight || isInfra || isAudioUpload;
     console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
     return shouldSkip;
   },
@@ -186,17 +192,16 @@ const globalRateLimit = rateLimit({
 
 // Add debugging wrapper for global rate limit (after CORS so preflight succeeds)
 app.use((req, res, next) => {
-  console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
-  console.log('🔧 DEBUG: About to apply global rate limit');
+  if (process.env.API_DEBUG === '1') {
+    console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
+    console.log('🔧 DEBUG: About to apply global rate limit');
+  }
   globalRateLimit(req, res, (err) => {
     if (err) {
       console.error('🔧 DEBUG: Global rate limit error:', err);
-      return res.status(500).json({
-        error: 'RATE_LIMIT_ERROR', 
-        message: 'Rate limiting service error'
-      });
+      return res.status(500).json({ error: 'RATE_LIMIT_ERROR', message: 'Rate limiting service error' });
     }
-    console.log('🔧 DEBUG: Global rate limit passed');
+    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: Global rate limit passed');
     next();
   });
 });
@@ -304,14 +309,16 @@ app.use('/api/v1/auth', authRateLimitMiddleware);
 
 // Body parsing middleware with debugging
 app.use((req, res, next) => {
-  console.log('🔧 DEBUG: About to parse JSON body for:', req.method, req.path);
+  if (process.env.API_DEBUG === '1' && (req.headers['content-type'] || '').includes('application/json')) {
+    console.log('🔧 DEBUG: About to parse JSON body for:', req.method, req.path);
+  }
   next();
 });
 
 app.use(express.json({ 
   limit: '10mb',
   verify: (req: any, res, buf) => {
-    console.log('🔧 DEBUG: JSON parsing - body length:', buf.length);
+    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: JSON parsing - body length:', buf.length);
   }
 }));
 
@@ -340,6 +347,7 @@ app.use(requireCSRF({
     '/api/v1/auth/google',
     '/api/v1/auth/generate-test-token',
     '/api/v1/sessions', // allow factory to skip via startsWith; join is unauthenticated
+    '/api/v1/audio', // REST-first audio uploads use Bearer token; CSRF not required
   ]
 }));
 
@@ -394,11 +402,16 @@ app.get('/api/v1/health', async (_req, res) => {
       }
     }
 
-    try {
-      const whisperHealth = await openAIWhisperService.healthCheck();
-      checks.services.openai_whisper = whisperHealth ? 'healthy' : 'unhealthy';
-    } catch {
-      checks.services.openai_whisper = 'unhealthy';
+    // Whisper health check can cause outbound traffic/errors; gate behind env flag
+    if (process.env.OPENAI_WHISPER_HEALTH_ENABLED === '1') {
+      try {
+        const whisperHealth = await openAIWhisperService.healthCheck?.();
+        checks.services.openai_whisper = whisperHealth ? 'healthy' : 'unhealthy';
+      } catch {
+        checks.services.openai_whisper = 'unhealthy';
+      }
+    } else {
+      checks.services.openai_whisper = 'skipped';
     }
 
     // Include audio processor / breaker state for resilience visibility
@@ -465,6 +478,8 @@ app.use('/api/v1/schools', budgetRoutes);
 app.use('/api/v1/ai', aiAnalysisRoutes);
 app.use('/api/v1/analytics', guidanceAnalyticsRoutes);
 app.use('/api/v1/analytics/monitoring', analyticsMonitoringRoutes);
+app.use('/api/v1/audio', audioUploadRoutes);
+app.use('/api/v1/transcripts', transcriptsRoutes);
 app.use('/api/v1/health', healthRoutes);
 app.use('/api/v1/debug', debugRoutes);
 
@@ -503,3 +518,17 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
 });
 
 export default app;
+
+// Background transcript batch flush (disabled in tests)
+try {
+  const secs = parseInt(process.env.TRANSCRIPT_BATCH_FLUSH_SECS || '0', 10);
+  const canDb = !!databricksConfig.token && process.env.DATABRICKS_ENABLED !== 'false';
+  if (secs > 0 && process.env.NODE_ENV !== 'test' && canDb) {
+    const interval = setInterval(() => {
+      transcriptPersistenceService.flushAll().catch((e) => {
+        console.warn('Transcript periodic flush failed:', e instanceof Error ? e.message : String(e));
+      });
+    }, secs * 1000);
+    (interval as any).unref?.();
+  }
+} catch {}
