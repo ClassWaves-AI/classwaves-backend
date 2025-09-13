@@ -9,6 +9,9 @@ import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { fail } from '../utils/api-response';
+import { ErrorCodes } from '@classwaves/shared';
+import { logger } from '../utils/logger';
 
 export interface AdminSecurityOptions {
   allowedRoles: Array<'admin' | 'super_admin'>;
@@ -49,12 +52,7 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
           severity: 'HIGH'
         });
         
-        return res.status(401).json({
-          success: false,
-          error: 'AUTHENTICATION_REQUIRED',
-          message: 'Authentication required for admin routes',
-          statusCode: 401
-        });
+        return fail(res, ErrorCodes.AUTH_REQUIRED, 'Authentication required for admin routes', 401);
       }
 
       // 2. Verify role access
@@ -66,13 +64,9 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
           severity: 'HIGH'
         });
 
-        return res.status(403).json({
-          success: false,
-          error: 'INSUFFICIENT_PRIVILEGES',
-          message: options.customErrorMessage || 'Administrator privileges required for this operation',
+        return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, options.customErrorMessage || 'Administrator privileges required for this operation', 403, {
           required: options.allowedRoles,
           current: authReq.user.role,
-          statusCode: 403
         });
       }
 
@@ -85,12 +79,7 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
           severity: 'HIGH'
         });
 
-        return res.status(403).json({
-          success: false,
-          error: 'ADMIN_ACCOUNT_INVALID',
-          message: userValidation.reason || 'Administrator account is not valid for access',
-          statusCode: 403
-        });
+        return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, userValidation.reason || 'Administrator account is not valid for access', 403);
       }
 
       // 4. School matching validation (if required)
@@ -109,12 +98,7 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
             severity: 'HIGH'
           });
 
-          return res.status(403).json({
-            success: false,
-            error: 'SCHOOL_ACCESS_DENIED',
-            message: schoolValidation.reason || 'Access denied to requested school',
-            statusCode: 403
-          });
+          return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, schoolValidation.reason || 'Access denied to requested school', 403);
         }
       }
 
@@ -129,13 +113,13 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
       }
 
       const validationDuration = Date.now() - startTime;
-      console.log(`✅ Admin route access granted: ${req.method} ${req.path} for ${authReq.user.role} ${authReq.user.id} in ${validationDuration}ms`);
+      logger.info('Admin route access granted', { method: req.method, path: req.path, role: authReq.user.role, durationMs: validationDuration });
 
       next();
 
     } catch (error) {
       const validationDuration = Date.now() - startTime;
-      console.error(`❌ Admin route security validation error after ${validationDuration}ms:`, error);
+      logger.error('Admin route security validation error', { durationMs: validationDuration, error: (error as any)?.message || String(error) });
 
       await logAdminSecurityEvent(req, authReq.user, 'ROUTE_SECURITY_VIOLATION', {
         reason: 'Security validation error',
@@ -143,12 +127,7 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
         severity: 'CRITICAL'
       });
 
-      return res.status(500).json({
-        success: false,
-        error: 'SECURITY_VALIDATION_ERROR',
-        message: 'Admin route security validation failed',
-        statusCode: 500
-      });
+      return fail(res, ErrorCodes.INTERNAL_ERROR, 'Admin route security validation failed', 500);
     }
   };
 }
@@ -205,7 +184,7 @@ async function validateAdminUserStatus(
     return { valid: true };
 
   } catch (error) {
-    console.error('Error validating admin user status:', error);
+    logger.error('Error validating admin user status', { error: (error as any)?.message || String(error) });
     return {
       valid: false,
       reason: 'Admin user validation failed',
@@ -246,7 +225,7 @@ async function validateSchoolAccess(
     };
 
   } catch (error) {
-    console.error('Error validating school access:', error);
+    logger.error('Error validating school access', { error: (error as any)?.message || String(error) });
     return {
       allowed: false,
       reason: 'School access validation failed'
@@ -307,7 +286,7 @@ async function logAdminSecurityEvent(
     });
 
   } catch (error) {
-    console.error('Error logging admin security event:', error);
+    logger.error('Error logging admin security event', { error: (error as any)?.message || String(error) });
   }
 }
 

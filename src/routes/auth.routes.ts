@@ -6,6 +6,9 @@ import { authenticate } from '../middleware/auth.middleware';
 import { generateCSRFToken } from '../middleware/csrf.middleware';
 import { AuthRequest } from '../types/auth.types';
 import { authHealthMonitor } from '../services/auth-health-monitor.service';
+import { fail } from '../utils/api-response';
+import { ErrorCodes } from '@classwaves/shared';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -65,12 +68,8 @@ router.get('/me', authenticate, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Session validation error:', error);
-    res.status(401).json({
-      success: false,
-      error: 'INVALID_SESSION',
-      message: 'Session validation failed',
-    });
+    logger.warn('Session validation error', { error: (error as any)?.message || String(error) });
+    return fail(res, ErrorCodes.AUTH_REQUIRED, 'Session validation failed', 401);
   }
 });
 
@@ -88,27 +87,21 @@ router.get('/csrf-token', authenticate, async (req, res) => {
 
 // Generate test token for E2E testing (test environment only)
 router.post('/generate-test-token', (req, res, next) => {
-  console.log('🔧 DEBUG: Route /generate-test-token hit');
-  console.log('🔧 DEBUG: Request method:', req.method);
-  console.log('🔧 DEBUG: Request headers:', req.headers);
-  console.log('🔧 DEBUG: Request body:', req.body);
-  console.log('🔧 DEBUG: NODE_ENV:', process.env.NODE_ENV);
-  console.log('🔧 DEBUG: E2E_TEST_SECRET:', process.env.E2E_TEST_SECRET);
+  logger.debug('Route /generate-test-token hit', { method: req.method });
   next();
 }, validate(generateTestTokenSchema), generateTestTokenHandler);
 
 // Simple test token endpoint for API audit system (development only)
 router.post('/test-token', (req, res) => {
   if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({
-      success: false,
-      error: 'NOT_ALLOWED_IN_PRODUCTION',
-      message: 'Test tokens are not allowed in production'
-    });
+    return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Test tokens are not allowed in production', 403);
   }
 
   try {
-    const { email = 'test@classwaves.ai', role = 'teacher' } = req.body;
+    const { email = 'test@classwaves.ai', role = 'teacher', secretKey } = req.body;
+    if (!process.env.E2E_TEST_SECRET || secretKey !== process.env.E2E_TEST_SECRET) {
+      return fail(res, ErrorCodes.AUTH_REQUIRED, 'Invalid secret key for test token generation', 401);
+    }
     
     // Create a test teacher and school for the token
     const testTeacher = {
@@ -140,11 +133,7 @@ router.post('/test-token', (req, res) => {
       message: 'Real JWT test token generated for API audit'
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: 'TOKEN_GENERATION_FAILED',
-      message: 'Failed to generate test token'
-    });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to generate test token', 500);
   }
 });
 
@@ -195,11 +184,7 @@ router.get('/health/metrics', authenticate, async (req, res) => {
     
     // Only allow admin access to detailed metrics
     if (user?.role !== 'admin' && user?.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'UNAUTHORIZED',
-        message: 'Admin access required for detailed metrics'
-      });
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Admin access required for detailed metrics', 403);
     }
     
     const performanceReport = await authHealthMonitor.generatePerformanceReport();
@@ -218,12 +203,8 @@ router.get('/health/metrics', authenticate, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Auth metrics retrieval failed:', error);
-    res.status(500).json({
-      success: false,
-      error: 'METRICS_RETRIEVAL_FAILED',
-      message: 'Failed to retrieve authentication metrics'
-    });
+    logger.error('Auth metrics retrieval failed', { error: (error as any)?.message || String(error) });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve authentication metrics', 500);
   }
 });
 
@@ -240,11 +221,7 @@ router.post('/health/alerts/:alertId/resolve', authenticate, async (req, res) =>
     
     // Only allow admin access
     if (user?.role !== 'admin' && user?.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'UNAUTHORIZED',
-        message: 'Admin access required to resolve alerts'
-      });
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Admin access required to resolve alerts', 403);
     }
     
     const resolved = authHealthMonitor.resolveAlert(alertId);
@@ -256,19 +233,11 @@ router.post('/health/alerts/:alertId/resolve', authenticate, async (req, res) =>
         alertId
       });
     } else {
-      res.status(404).json({
-        success: false,
-        error: 'ALERT_NOT_FOUND',
-        message: 'Alert not found or already resolved'
-      });
+      return fail(res, ErrorCodes.NOT_FOUND, 'Alert not found or already resolved', 404);
     }
   } catch (error) {
-    console.error('❌ Alert resolution failed:', error);
-    res.status(500).json({
-      success: false,
-      error: 'ALERT_RESOLUTION_FAILED',
-      message: 'Failed to resolve alert'
-    });
+    logger.error('Alert resolution failed', { error: (error as any)?.message || String(error) });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to resolve alert', 500);
   }
 });
 

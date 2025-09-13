@@ -4,6 +4,7 @@ import { Request } from 'express';
 import { Teacher, School } from '../types/auth.types';
 import { redisService } from './redis.service';
 import { JWTConfigService } from '../config/jwt.config';
+import { logger } from '../utils/logger';
 
 interface SecureJWTPayload {
   userId: string;
@@ -13,6 +14,10 @@ interface SecureJWTPayload {
   fingerprint: string;
   type: 'access' | 'refresh';
   role: string;
+  roles?: string[];
+  permissions?: string[];
+  iss?: string;
+  sub?: string;
   iat: number;
   exp: number;
   jti: string; // JWT ID for anti-replay
@@ -70,40 +75,35 @@ static createDeviceFingerprint(req: Request): string {
         }
       }
     }
-    console.log('🔧 DEBUG: Starting device fingerprint creation');
+    logger.debug('Starting device fingerprint creation');
     
     const userAgent = req.headers['user-agent'] || '';
     const ip = req.ip || '';
     
-    console.log('🔧 DEBUG: Fingerprint components:', {
-      userAgent: userAgent,
-      ip: ip,
-      'x-forwarded-for': req.headers['x-forwarded-for'],
-      'x-real-ip': req.headers['x-real-ip']
-    });
+    logger.debug('Fingerprint components received');
     
     // Handle potential CI environment issues
     if (!userAgent && !ip) {
-      console.log('🔧 DEBUG: WARNING - Both user-agent and IP are missing, using fallback');
+      logger.warn('Both user-agent and IP are missing, using fallback fingerprint');
       const fallbackFingerprint = crypto
         .createHash(this.FINGERPRINT_ALGORITHM)
         .update('ci-environment-fallback')
         .digest('hex')
         .substring(0, 16);
-      console.log('🔧 DEBUG: Fallback fingerprint created:', fallbackFingerprint);
+      logger.debug('Fallback fingerprint created');
       return fallbackFingerprint;
     }
     
     const components = [userAgent, ip];
-    console.log('🔧 DEBUG: Components array:', components);
+    logger.debug('Fingerprint components array computed');
     
     const fingerprint = crypto
       .createHash(this.FINGERPRINT_ALGORITHM)
       .update(components.join('|'))
       .digest('hex')
       .substring(0, 16); // First 16 chars for storage efficiency
-      
-    console.log('🔧 DEBUG: Device fingerprint created:', fingerprint);
+    
+    logger.debug('Device fingerprint created');
     return fingerprint;
   }
   
@@ -114,17 +114,7 @@ static createDeviceFingerprint(req: Request): string {
     sessionId: string, 
     req: Request
   ): Promise<TokenPair> {
-    console.log('🔧 DEBUG: Starting SecureJWTService.generateSecureTokens');
-    console.log('🔧 DEBUG: Input parameters:', {
-      teacherId: teacher.id,
-      schoolId: school.id,
-      sessionId: sessionId,
-      requestHeaders: {
-        'user-agent': req.headers['user-agent'],
-        'x-forwarded-for': req.headers['x-forwarded-for'],
-        'ip': req.ip
-      }
-    });
+    logger.debug('Starting SecureJWTService.generateSecureTokens');
     
     try {
       console.log('🔧 DEBUG: Creating device fingerprint');
@@ -132,7 +122,7 @@ static createDeviceFingerprint(req: Request): string {
       console.log('🔧 DEBUG: Device fingerprint created:', deviceFingerprint);
       
       const now = Math.floor(Date.now() / 1000);
-      console.log('🔧 DEBUG: Current timestamp:', now);
+      logger.debug('Current timestamp set for JWT');
       
       const basePayload = {
         userId: teacher.id,
@@ -141,32 +131,35 @@ static createDeviceFingerprint(req: Request): string {
         sessionId,
         fingerprint: deviceFingerprint,
         role: teacher.role,
+        roles: [teacher.role],
+        permissions: [],
+        iss: 'classwaves',
+        sub: teacher.id,
         iat: now
       };
-      console.log('🔧 DEBUG: Base payload created:', basePayload);
+      logger.debug('JWT base payload created');
       
       // Generate unique JTIs for anti-replay protection
-      console.log('🔧 DEBUG: Generating JTIs');
+      logger.debug('Generating JTIs');
       const accessJti = crypto.randomUUID();
       const refreshJti = crypto.randomUUID();
-      console.log('🔧 DEBUG: JTIs generated:', { accessJti, refreshJti });
+      logger.debug('JTIs generated');
       
       // Check JWT secrets
-      console.log('🔧 DEBUG: Checking JWT secrets availability');
+      logger.debug('Checking JWT secrets availability');
       const jwtSecret = process.env.JWT_SECRET;
       const jwtRefreshSecret = process.env.JWT_REFRESH_SECRET;
-      console.log('🔧 DEBUG: JWT_SECRET present:', !!jwtSecret);
-      console.log('🔧 DEBUG: JWT_REFRESH_SECRET present:', !!jwtRefreshSecret);
+      logger.debug('JWT secrets presence checked');
       
       if (!jwtSecret || !jwtRefreshSecret) {
         throw new Error('JWT secrets not available');
       }
       
       // Short-lived access token (15 minutes) - Use centralized JWT configuration
-      console.log('🔧 DEBUG: Signing access token');
+      logger.debug('Signing access token');
       const accessSigningKey = SecureJWTService.jwtConfig.getSigningKey();
       const accessAlgorithm = SecureJWTService.jwtConfig.getAlgorithm();
-      console.log('🔧 DEBUG: Using algorithm:', accessAlgorithm);
+      logger.debug('Using access token algorithm');
       
       const accessToken = jwt.sign({
         ...basePayload,
@@ -176,10 +169,10 @@ static createDeviceFingerprint(req: Request): string {
       }, accessSigningKey, {
         algorithm: accessAlgorithm
       });
-      console.log('🔧 DEBUG: Access token signed successfully');
+      logger.debug('Access token signed successfully');
       
       // Longer-lived refresh token (7 days) - Use HS256 with refresh secret per auth design
-      console.log('🔧 DEBUG: Signing refresh token');
+      logger.debug('Signing refresh token');
       const refreshToken = jwt.sign({
         ...basePayload,
         type: 'refresh',
@@ -188,14 +181,14 @@ static createDeviceFingerprint(req: Request): string {
       }, jwtRefreshSecret || SecureJWTService.jwtConfig.getJWTSecret(), {
         algorithm: 'HS256'
       });
-      console.log('🔧 DEBUG: Refresh token signed successfully');
+      logger.debug('Refresh token signed successfully');
       
       // Store token metadata for tracking and revocation
-      console.log('🔧 DEBUG: Storing token metadata');
+      logger.debug('Storing token metadata');
       await this.storeTokenMetadata(accessJti, refreshJti, teacher.id, sessionId);
-      console.log('🔧 DEBUG: Token metadata stored successfully');
+      logger.debug('Token metadata stored successfully');
       
-      console.log(`🔐 Generated secure tokens for user ${teacher.id} - Access: ${this.ACCESS_TOKEN_TTL}s, Refresh: ${this.REFRESH_TOKEN_TTL}s`);
+      logger.info('Generated secure tokens for user', { userId: teacher.id, accessTtl: this.ACCESS_TOKEN_TTL, refreshTtl: this.REFRESH_TOKEN_TTL });
       
       const result = { 
         accessToken, 
@@ -205,16 +198,11 @@ static createDeviceFingerprint(req: Request): string {
         refreshExpiresIn: this.REFRESH_TOKEN_TTL
       };
       
-      console.log('🔧 DEBUG: SecureJWTService.generateSecureTokens completed successfully');
+      logger.debug('SecureJWTService.generateSecureTokens completed successfully');
       return result;
       
     } catch (error) {
-      console.error('🔧 DEBUG: ERROR in SecureJWTService.generateSecureTokens:', error);
-      console.error('🔧 DEBUG: JWT Generation error details:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : 'No stack trace',
-        name: error instanceof Error ? error.name : 'Unknown'
-      });
+      logger.error('ERROR in SecureJWTService.generateSecureTokens', { error: (error as any)?.message || String(error) });
       throw error;
     }
   }
@@ -241,19 +229,14 @@ static createDeviceFingerprint(req: Request): string {
       
       // SECURITY 4: Verify token type matches expected
       if (payload.type !== tokenType) {
-        console.warn(`🚨 Token type mismatch: expected ${tokenType}, got ${payload.type}`);
+        logger.warn('Token type mismatch', { expected: tokenType, actual: payload.type });
         return null;
       }
       
       // SECURITY 5: Verify device fingerprint
       const currentFingerprint = this.createDeviceFingerprint(req);
       if (payload.fingerprint !== currentFingerprint) {
-        console.warn(`🚨 Device fingerprint mismatch for user ${payload.userId}:`, {
-          expected: payload.fingerprint,
-          actual: currentFingerprint,
-          userAgent: req.headers['user-agent'],
-          ip: req.ip
-        });
+        logger.warn('Device fingerprint mismatch', { userId: payload.userId });
         
         // Log suspicious activity for monitoring
         await this.logSuspiciousActivity(payload.userId, 'fingerprint_mismatch', req);
@@ -263,7 +246,7 @@ static createDeviceFingerprint(req: Request): string {
       // SECURITY 6: Check token blacklist (for logout/revocation)
       const isBlacklisted = await this.isTokenBlacklisted(payload.jti);
       if (isBlacklisted) {
-        console.warn(`🚨 Blacklisted token attempted: ${payload.jti} for user ${payload.userId}`);
+        logger.warn('Blacklisted token attempted', { jti: '[REDACTED]', userId: payload.userId });
         return null;
       }
       
@@ -271,7 +254,7 @@ static createDeviceFingerprint(req: Request): string {
       const replayKey = `replay:${payload.jti}`;
       const hasBeenUsed = await redisService.get(replayKey);
       if (hasBeenUsed && tokenType === 'refresh') {
-        console.warn(`🚨 Token replay detected: ${payload.jti} for user ${payload.userId}`);
+        logger.warn('Token replay detected', { jti: '[REDACTED]', userId: payload.userId });
         await this.logSuspiciousActivity(payload.userId, 'token_replay', req);
         return null;
       }
@@ -285,8 +268,7 @@ static createDeviceFingerprint(req: Request): string {
     } catch (error) {
       const errorType = error instanceof jwt.TokenExpiredError ? 'expired' : 
                        error instanceof jwt.JsonWebTokenError ? 'invalid' : 'unknown';
-      
-      console.warn(`🚨 Token verification failed (${errorType}):`, error instanceof Error ? error.message : 'Unknown error');
+      logger.warn('Token verification failed', { type: errorType });
       return null;
     }
   }
@@ -361,7 +343,7 @@ static createDeviceFingerprint(req: Request): string {
       // This prevents auth middleware fallback issues when session cookie is used
       try {
         const { SecureSessionService } = await import('./secure-session.service');
-        console.log('🔄 Updating Redis session data with new device fingerprint...');
+        logger.debug('Updating Redis session data with new device fingerprint');
         
         // Update existing session with new device fingerprint and activity timestamp
         await SecureSessionService.updateSessionOnRotation(
@@ -370,17 +352,17 @@ static createDeviceFingerprint(req: Request): string {
           req
         );
         
-        console.log(`✅ Session ${payload.sessionId} updated with new device fingerprint`);
+        logger.debug('Session updated with new device fingerprint');
       } catch (sessionError) {
-        console.error('❌ Failed to update session data during token rotation:', sessionError);
+        logger.error('Failed to update session data during token rotation', { error: (sessionError as any)?.message || String(sessionError) });
         // Don't fail the entire rotation, but log the issue for monitoring
         // The tokens are still valid, just the session fallback might have issues
       }
       
-      console.log(`🔄 Token rotation successful for user ${teacher.id}`);
+      logger.info('Token rotation successful', { userId: teacher.id });
       return newTokens;
     } catch (error) {
-      console.error(`❌ Token rotation failed:`, error);
+      logger.error('Token rotation failed', { error: (error as any)?.message || String(error) });
       return null;
     }
   }
@@ -491,7 +473,7 @@ static createDeviceFingerprint(req: Request): string {
     const key = `suspicious:${userId}:${Date.now()}`;
     await redisService.set(key, JSON.stringify(suspiciousActivity), 86400); // 24 hours
     
-    console.warn(`🚨 SUSPICIOUS ACTIVITY LOGGED:`, suspiciousActivity);
+    logger.warn('SUSPICIOUS ACTIVITY LOGGED');
     
     // In production: send to security monitoring system
     // await securityMonitoringService.alert(suspiciousActivity);

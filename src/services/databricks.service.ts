@@ -1,4 +1,5 @@
 import { DBSQLClient } from '@databricks/sql';
+import * as client from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 import { databricksConfig } from '../config/databricks.config';
 
@@ -129,6 +130,12 @@ export class DatabricksService {
   private columnCache: Map<string, Set<string>> = new Map();
   private currentSession: any = null;
   private sessionPromise: Promise<any> | null = null;
+  // Circuit breaker state
+  private breakerState: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
+  private consecutiveFailures = 0;
+  private requestCount = 0;
+  private lastFailureAt = 0;
+  private stateChangedAt = Date.now();
   private connectionParams: {
     hostname: string;
     path: string;
@@ -165,6 +172,123 @@ export class DatabricksService {
     this.client = new DBSQLClient();
 
     // STT via Databricks has been removed. Other Databricks services remain intact.
+  }
+
+  // ----------------------------
+  // Metrics (lazy registration)
+  // ----------------------------
+  private dbQueryAttempts = (() => {
+    const name = 'db_query_attempts_total';
+    const existing = client.register.getSingleMetric(name) as client.Counter<string> | undefined;
+    if (existing) return existing;
+    return new client.Counter({ name, help: 'Total DB query attempts', labelNames: ['operation'] });
+  })();
+
+  private dbQueryRetries = (() => {
+    const name = 'db_query_retries_total';
+    const existing = client.register.getSingleMetric(name) as client.Counter<string> | undefined;
+    if (existing) return existing;
+    return new client.Counter({ name, help: 'Total DB query retries', labelNames: ['reason'] });
+  })();
+
+  private dbQueryFailures = (() => {
+    const name = 'db_query_failures_total';
+    const existing = client.register.getSingleMetric(name) as client.Counter<string> | undefined;
+    if (existing) return existing;
+    return new client.Counter({ name, help: 'Total DB query failures', labelNames: ['code'] });
+  })();
+
+  private dbQueryLatency = (() => {
+    const name = 'db_query_latency_ms';
+    const existing = client.register.getSingleMetric(name) as client.Histogram<string> | undefined;
+    if (existing) return existing;
+    return new client.Histogram({
+      name,
+      help: 'DB query latency in ms',
+      buckets: [25, 50, 100, 200, 400, 800, 1600, 3200, 6400],
+    });
+  })();
+
+  private dbBreakerGauge = (() => {
+    const name = 'db_circuit_breaker_state';
+    const existing = client.register.getSingleMetric(name) as client.Gauge<string> | undefined;
+    if (existing) return existing;
+    return new client.Gauge({ name, help: 'DB circuit breaker state (0=CLOSED,1=HALF_OPEN,2=OPEN)' });
+  })();
+
+  private setBreakerGauge(): void {
+    const map: Record<typeof this.breakerState, number> = { CLOSED: 0, HALF_OPEN: 1, OPEN: 2 } as const;
+    try { this.dbBreakerGauge.set(map[this.breakerState]); } catch {}
+  }
+
+  // ----------------------------
+  // Error classification
+  // ----------------------------
+  private classifyError(err: any): 'TIMEOUT' | 'AUTH' | 'NETWORK' | 'THROTTLE' | 'INTERNAL' {
+    const msg = String((err && (err.message || err.code)) || err || '').toLowerCase();
+    if (msg.includes('timeout') || msg.includes('etimedout') || msg.includes('operation timeout')) return 'TIMEOUT';
+    if (msg.includes('unauth') || msg.includes('401') || msg.includes('403') || msg.includes('invalid token')) return 'AUTH';
+    if (
+      msg.includes('enotfound') ||
+      msg.includes('econnreset') ||
+      msg.includes('econnrefused') ||
+      msg.includes('eai_again') ||
+      msg.includes('getaddrinfo') ||
+      msg.includes('network') ||
+      msg.includes('socket hang up')
+    ) return 'NETWORK';
+    if (msg.includes('throttle') || msg.includes('rate') || msg.includes('429') || msg.includes('too many')) return 'THROTTLE';
+    return 'INTERNAL';
+  }
+
+  // Exportable for tests
+  public static classifyDatabricksError(err: any) {
+    return new DatabricksService().classifyError(err);
+  }
+
+  // ----------------------------
+  // Circuit breaker helpers
+  // ----------------------------
+  private now() { return Date.now(); }
+
+  private breakerCanPass(): boolean {
+    if (this.breakerState === 'OPEN') {
+      const elapsed = this.now() - this.stateChangedAt;
+      if (elapsed >= databricksConfig.breakerResetTimeoutMs) {
+        this.transitionBreaker('HALF_OPEN', 'reset timeout elapsed');
+        return true;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private transitionBreaker(next: 'CLOSED' | 'OPEN' | 'HALF_OPEN', reason: string): void {
+    if (this.breakerState === next) return;
+    const prev = this.breakerState;
+    this.breakerState = next;
+    this.stateChangedAt = this.now();
+    this.setBreakerGauge();
+    console.log(`🔄 DB Circuit Breaker ${prev} → ${next} (${reason})`);
+    if (next === 'CLOSED') {
+      this.consecutiveFailures = 0;
+      this.requestCount = 0;
+    }
+  }
+
+  private recordFailureAndMaybeOpen(code: string) {
+    this.consecutiveFailures++;
+    this.lastFailureAt = this.now();
+    this.dbQueryFailures.inc({ code });
+    const minReq = databricksConfig.breakerMinimumRequests;
+    const threshold = databricksConfig.breakerFailureThreshold;
+    if (this.requestCount >= minReq && this.consecutiveFailures >= threshold) {
+      this.transitionBreaker('OPEN', `failures=${this.consecutiveFailures} (>=${threshold})`);
+    }
+  }
+
+  public getCircuitBreakerStatus(): { state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'; consecutiveFailures: number; since: number } {
+    return { state: this.breakerState, consecutiveFailures: this.consecutiveFailures, since: this.stateChangedAt };
   }
 
   /**
@@ -241,10 +365,14 @@ export class DatabricksService {
         console.warn('⚠️ Skipping Databricks connection in dev mode (no token)');
         return;
       }
-      this.connection = await (this.client as any).connect({
-        ...connectionOptions,
-        authType: 'access-token',
-      });
+      // Enforce connect timeout
+      this.connection = await Promise.race([
+        (this.client as any).connect({
+          ...connectionOptions,
+          authType: 'access-token',
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Connect timeout after ${databricksConfig.connectTimeoutMs}ms`)), databricksConfig.connectTimeoutMs))
+      ]);
       console.log('✅ Connected to Databricks SQL Warehouse');
     } catch (error) {
       console.error('❌ Failed to connect to Databricks:', error);
@@ -324,7 +452,8 @@ export class DatabricksService {
     console.log(`🔍 DB QUERY START: ${queryPreview}`);
     
     let retries = 0;
-    const maxRetries = 2;
+    const maxRetries = Math.max(0, databricksConfig.maxRetries);
+    this.requestCount++;
 
     while (retries <= maxRetries) {
       try {
@@ -363,9 +492,16 @@ export class DatabricksService {
         console.log(`⏱️  Parameter formatting took ${(performance.now() - paramStart).toFixed(2)}ms`);
         
         const executeStart = performance.now();
+        if (!this.breakerCanPass()) {
+          throw new Error('DB_CIRCUIT_OPEN');
+        }
         let operation: any;
         try {
-          operation = await session.executeStatement(finalSql, {});
+          const execPromise = (async () => session.executeStatement(finalSql, {}))();
+          operation = await Promise.race([
+            execPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`QUERY_TIMEOUT:${databricksConfig.queryTimeoutMs}`)), databricksConfig.queryTimeoutMs))
+          ]);
         } catch (e) {
           // Ensure operation is closed if created (defensive)
           if (operation && operation.close) {
@@ -376,13 +512,20 @@ export class DatabricksService {
         console.log(`⏱️  Statement execution took ${(performance.now() - executeStart).toFixed(2)}ms`);
         
         const fetchStart = performance.now();
-        const fetchResult: any = await operation.fetchAll();
+        const fetchPromise = (async () => operation.fetchAll())();
+        const fetchResult: any = await Promise.race([
+          fetchPromise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`QUERY_TIMEOUT:${databricksConfig.queryTimeoutMs}`)), databricksConfig.queryTimeoutMs))
+        ]);
         console.log(`⏱️  Result fetching took ${(performance.now() - fetchStart).toFixed(2)}ms`);
         
         await operation.close();
         
         const queryTotal = performance.now() - queryStart;
+        try { this.dbQueryLatency.observe(queryTotal); } catch {}
         console.log(`🔍 DB QUERY COMPLETE - Total time: ${queryTotal.toFixed(2)}ms`);
+        if (this.breakerState === 'HALF_OPEN') this.transitionBreaker('CLOSED', 'successful probe in half-open');
+        this.consecutiveFailures = 0;
         
         // Normalize result shape from DBSQLClient
         // In our environment, fetchAll() returns an array of row objects.
@@ -407,18 +550,31 @@ export class DatabricksService {
         
         return rows;
       } catch (error) {
-        console.error(`Query error (attempt ${retries + 1}):`, error);
-        
-        // Reset session on error and retry
+        const code = this.classifyError(error);
+        console.error(`Query error (attempt ${retries + 1}) [${code}]:`, error);
+        this.recordFailureAndMaybeOpen(code);
+        // Reset session on error and maybe retry
         await this.resetSession();
-        retries++;
         
-        if (retries > maxRetries) {
+        if (retries >= maxRetries) {
           throw error;
         }
         
-        // Brief delay before retry
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Transient errors are retriable; non-transient (AUTH/INTERNAL) are not
+        const retriable = code === 'TIMEOUT' || code === 'NETWORK' || code === 'THROTTLE';
+        if (!retriable) {
+          throw error;
+        }
+        retries++;
+        this.dbQueryRetries.inc({ reason: code });
+        // Exponential backoff with jitter
+        const base = databricksConfig.backoffBaseMs;
+        const max = databricksConfig.backoffMaxMs;
+        const jitterRatio = Math.max(0, Math.min(1, databricksConfig.jitterRatio));
+        const delay = Math.min(max, base * Math.pow(2, retries - 1));
+        const jitter = delay * jitterRatio * (Math.random() - 0.5) * 2; // +/- jitterRatio
+        const sleep = Math.max(0, Math.round(delay + jitter));
+        await new Promise((r) => setTimeout(r, sleep));
       }
     }
     
@@ -1251,6 +1407,24 @@ export class DatabricksService {
   }
 
   // Removed: transcribeAudio/transcribeWithMetrics (STT migrated to OpenAI Whisper)
+
+  /**
+   * Health probe with strict timeout; returns minimal data for readiness
+   */
+  async healthProbe(timeoutMs?: number): Promise<{ ok: boolean; durations: { total: number }; breaker: { state: 'CLOSED' | 'OPEN' | 'HALF_OPEN'; consecutiveFailures: number; since: number }; serverTime?: string }>{
+    const t0 = Date.now();
+    try {
+      const sql = 'SELECT 1 as ok, current_timestamp() as server_time';
+      const original = databricksConfig.queryTimeoutMs;
+      // Temporarily override timeout for probe
+      (databricksConfig as any).queryTimeoutMs = timeoutMs || Math.min(original, 1500);
+      const row = await this.queryOne<{ ok: number; server_time: string }>(sql);
+      (databricksConfig as any).queryTimeoutMs = original;
+      return { ok: !!row, durations: { total: Date.now() - t0 }, breaker: this.getCircuitBreakerStatus(), serverTime: row?.server_time };
+    } catch {
+      return { ok: false, durations: { total: Date.now() - t0 }, breaker: this.getCircuitBreakerStatus() };
+    }
+  }
 }
 
 // Create singleton instance
@@ -1269,6 +1443,8 @@ export const databricksService = {
   disconnect: () => getDatabricksService().disconnect(),
   query: <T = any>(sql: string, params: any[] = []) => getDatabricksService().query<T>(sql, params),
   queryOne: <T = any>(sql: string, params: any[] = []) => getDatabricksService().queryOne<T>(sql, params),
+  healthProbe: (timeoutMs?: number) => getDatabricksService().healthProbe(timeoutMs),
+  getBreakerStatus: () => getDatabricksService().getCircuitBreakerStatus(),
   generateId: () => getDatabricksService().generateId(),
   insert: (table: string, data: Record<string, any>) => getDatabricksService().insert(table, data),
   batchInsert: (table: string, rows: Record<string, any>[]) => getDatabricksService().batchInsert(table, rows),

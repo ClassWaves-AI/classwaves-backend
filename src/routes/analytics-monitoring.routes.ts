@@ -17,6 +17,8 @@ import {
   setupPreAggregatedTables,
   triggerCacheSync
 } from '../controllers/analytics-monitoring.controller';
+import { validate, validateQuery } from '../middleware/validation.middleware';
+import { analyticsCleanupSchema, analyticsSampleRateSchema, analyticsCacheSyncSchema, analyticsLogsQuerySchema, analyticsCostAnalysisQuerySchema } from '../utils/validation.schemas';
 
 const router = Router();
 
@@ -34,7 +36,7 @@ router.get('/performance', getAnalyticsPerformance);
  * Get recent analytics operation logs with optional filtering
  * Query params: operation, table, sessionId, limit, since
  */
-router.get('/logs', getAnalyticsLogs);
+router.get('/logs', validateQuery(analyticsLogsQuerySchema), getAnalyticsLogs);
 
 /**
  * GET /health
@@ -47,21 +49,21 @@ router.get('/health', getAnalyticsHealth);
  * Update the analytics logging sample rate
  * Body: { sampleRate: number } (0-1)
  */
-router.post('/sample-rate', updateSampleRate);
+router.post('/sample-rate', validate(analyticsSampleRateSchema), updateSampleRate);
 
 /**
  * POST /cleanup
  * Trigger analytics log cleanup for old entries
  * Body: { olderThanHours?: number } (default: 24)
  */
-router.post('/cleanup', triggerCleanup);
+router.post('/cleanup', validate(analyticsCleanupSchema), triggerCleanup);
 
 /**
  * GET /cost-analysis
  * Get query cost analysis and optimization recommendations
  * Query params: timeframeHours (1-168, default: 24)
  */
-router.get('/cost-analysis', getCostAnalysis);
+router.get('/cost-analysis', validateQuery(analyticsCostAnalysisQuerySchema), getCostAnalysis);
 
 /**
  * POST /setup-tables
@@ -78,6 +80,6 @@ router.post('/setup-tables', setupPreAggregatedTables);
  * Admin-only endpoint for testing and maintenance
  * Body: { force?: boolean } (default: false)
  */
-router.post('/cache-sync', triggerCacheSync);
+router.post('/cache-sync', validate(analyticsCacheSyncSchema), triggerCacheSync);
 
 export default router;

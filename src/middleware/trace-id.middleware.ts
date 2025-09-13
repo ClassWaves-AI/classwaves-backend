@@ -12,7 +12,12 @@ function generateTraceId(): string {
 }
 
 export function traceIdMiddleware(req: Request, res: Response, next: NextFunction) {
-  const incoming = (req.headers['x-trace-id'] || req.headers['x-traceid'] || req.headers['trace-id']) as string | undefined;
+  const incoming = (
+    req.headers['x-request-id'] ||
+    req.headers['x-trace-id'] ||
+    req.headers['x-traceid'] ||
+    req.headers['trace-id']
+  ) as string | undefined;
   const traceId = (incoming && String(incoming).trim()) || generateTraceId();
 
   // Expose on response locals and header
@@ -27,4 +32,3 @@ export function traceIdMiddleware(req: Request, res: Response, next: NextFunctio
 export function getTraceId(res: Response): string | undefined {
   return (res.locals as any)?.traceId as string | undefined;
 }
-

@@ -19,6 +19,7 @@ import rosterRoutes from './routes/roster.routes';
 import kioskRoutes from './routes/kiosk.routes';
 import jwksRoutes from './routes/jwks.routes';
 import adminRoutes from './routes/admin.routes';
+import adminMetricsRoutes from './routes/admin.metrics.routes';
 import budgetRoutes from './routes/budget.routes';
 import aiAnalysisRoutes from './routes/ai-analysis.routes';
 import audioUploadRoutes from './routes/audio-upload.routes';
@@ -39,8 +40,12 @@ import { errorLoggingHandler } from './middleware/error-logging.middleware';
 import client from 'prom-client';
 import { traceIdMiddleware } from './middleware/trace-id.middleware';
 import { httpMetricsMiddleware } from './middleware/metrics.middleware';
+import { requestLoggingMiddleware } from './middleware/request-logging.middleware';
 import { transcriptPersistenceService } from './services/transcript-persistence.service';
 import { databricksConfig } from './config/databricks.config';
+import { fail } from './utils/api-response';
+import { ErrorCodes } from '@classwaves/shared';
+import { logger } from './utils/logger';
 
 // Optional OTEL: initialize and wire tracing when enabled
 try {
@@ -61,18 +66,17 @@ if (process.env.NODE_ENV === 'test') {
 
 // CRITICAL DEBUG: Add global error handling to catch uncaught exceptions
 process.on('uncaughtException', (error) => {
-  console.error('🔧 DEBUG: Uncaught Exception:', error);
-  console.error('🔧 DEBUG: Stack:', error.stack);
+  logger.error('Uncaught Exception', { error: (error as any)?.message || String(error) });
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('🔧 DEBUG: Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled Rejection', { reason: (reason as any)?.message || String(reason) });
 });
 
 // CRITICAL DEBUG: Add request logging at the very top level before ANY middleware
 app.use((req, res, next) => {
   if (process.env.API_DEBUG === '1') {
-    console.log('🔧 DEBUG: TOP LEVEL - Request received:', {
+    logger.debug('TOP LEVEL - Request received', {
       method: req.method,
       url: req.url,
       path: req.path,
@@ -87,11 +91,10 @@ app.use((req, res, next) => {
   const originalSend = res.send;
   res.send = function(data) {
     if (res.statusCode >= 400) {
-      console.error('🔧 DEBUG: Error response being sent:', {
+      logger.error('Error response being sent', {
         statusCode: res.statusCode,
         method: req.method,
         path: req.path,
-        data: typeof data === 'string' ? data.substring(0, 200) : data
       });
     }
     return originalSend.call(this, data);
@@ -101,6 +104,9 @@ app.use((req, res, next) => {
 
 // Correlation: assign/propagate X-Trace-Id for every request
 app.use(traceIdMiddleware);
+
+// Structured request logging (start/finish with correlation IDs)
+app.use(requestLoggingMiddleware);
 
 // Attach OTEL HTTP tracing middleware if enabled
 try {
@@ -169,23 +175,19 @@ const globalRateLimit = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    console.log('🔧 DEBUG: Global rate limit check for path:', req.path);
+    logger.debug('Global rate limit check', { path: req.path });
     // Skip rate limiting for preflight and safe/infra endpoints
     const isPreflight = req.method === 'OPTIONS' || req.method === 'HEAD';
     const isInfra = req.path === '/api/v1/health' || req.path === '/metrics' || req.path === '/api/v1/ready';
     // Skip for audio upload windows to avoid interfering with 10s cadence
     const isAudioUpload = req.path.startsWith('/api/v1/audio/');
     const shouldSkip = isPreflight || isInfra || isAudioUpload;
-    console.log('🔧 DEBUG: Global rate limit skip decision:', shouldSkip);
+    logger.debug('Global rate limit skip decision', { shouldSkip });
     return shouldSkip;
   },
   handler: (req, res) => {
-    console.error('🔧 DEBUG: Global rate limit exceeded for path:', req.path);
-    res.status(429).json({
-      error: 'RATE_LIMIT_EXCEEDED',
-      message: 'Too many requests from this IP, please try again later.',
-      retryAfter: '15 minutes'
-    });
+    logger.warn('Global rate limit exceeded', { path: req.path });
+    return fail(res, ErrorCodes.RATE_LIMITED, 'Too many requests from this IP, please try again later.', 429, { retryAfter: '15 minutes' as any });
   }
   // Use default IP-based key generator (handles IPv6 correctly)
 });
@@ -193,15 +195,14 @@ const globalRateLimit = rateLimit({
 // Add debugging wrapper for global rate limit (after CORS so preflight succeeds)
 app.use((req, res, next) => {
   if (process.env.API_DEBUG === '1') {
-    console.log('🔧 DEBUG: Request received - path:', req.path, 'method:', req.method);
-    console.log('🔧 DEBUG: About to apply global rate limit');
+    logger.debug('Request received - applying global rate limit', { path: req.path, method: req.method });
   }
   globalRateLimit(req, res, (err) => {
     if (err) {
-      console.error('🔧 DEBUG: Global rate limit error:', err);
-      return res.status(500).json({ error: 'RATE_LIMIT_ERROR', message: 'Rate limiting service error' });
+      logger.error('Global rate limit error', { error: (err as any)?.message || String(err) });
+      return fail(res, ErrorCodes.INTERNAL_ERROR, 'Rate limiting service error', 500);
     }
-    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: Global rate limit passed');
+    if (process.env.API_DEBUG === '1') logger.debug('Global rate limit passed');
     next();
   });
 });
@@ -401,6 +402,10 @@ app.get('/api/v1/health', async (_req, res) => {
         checks.services.databricks = 'unhealthy';
       }
     }
+    try {
+      const breaker = databricksService.getBreakerStatus?.();
+      if (breaker) checks.services.databricks_breaker = breaker.state;
+    } catch {}
 
     // Whisper health check can cause outbound traffic/errors; gate behind env flag
     if (process.env.OPENAI_WHISPER_HEALTH_ENABLED === '1') {
@@ -474,6 +479,7 @@ app.use('/api/v1/sessions', sessionRoutes);
 app.use('/api/v1/roster', rosterRoutes);
 app.use('/api/v1/kiosk', kioskRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/admin', adminMetricsRoutes);
 app.use('/api/v1/schools', budgetRoutes);
 app.use('/api/v1/ai', aiAnalysisRoutes);
 app.use('/api/v1/analytics', guidanceAnalyticsRoutes);

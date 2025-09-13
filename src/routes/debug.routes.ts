@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { databricksService } from '../services/databricks.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
+import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
@@ -157,5 +159,67 @@ router.get('/websocket/active-connections', async (req: Request, res: Response) 
     return res.json({ success: true, namespaces: data, timestamp: new Date().toISOString() });
   } catch (error) {
     return res.status(500).json({ success: false, error: 'ACTIVE_CONNECTIONS_FAILED' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Dev-only: Emit a sample transcript line to a session (teacher UI validation)
+// POST /api/v1/debug/sessions/:sessionId/emit-transcription
+// Body: { groupId: string, text?: string, confidence?: number, groupName?: string }
+// Guard: 
+//   - In dev/test: requires header e2e_test_secret = process.env.E2E_TEST_SECRET
+//   - In production: requires header x-dev-auth = process.env.DEV_OBSERVABILITY_TOKEN
+// ---------------------------------------------------------------------------
+router.post('/sessions/:sessionId/emit-transcription', async (req: Request, res: Response) => {
+  try {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd) {
+      const token = req.header('x-dev-auth');
+      const expected = process.env.DEV_OBSERVABILITY_TOKEN;
+      if (!token || !expected || token !== expected) {
+        return res.status(403).json({ success: false, error: 'Forbidden' });
+      }
+    } else {
+      const secret = req.header('e2e_test_secret');
+      const expected = process.env.E2E_TEST_SECRET || 'test';
+      if (!secret || secret !== expected) {
+        return res.status(403).json({ success: false, error: 'Forbidden' });
+      }
+    }
+
+    const paramsSchema = z.object({ sessionId: z.string().min(1) });
+    const bodySchema = z.object({
+      groupId: z.string().min(1),
+      text: z.string().optional(),
+      confidence: z.number().min(0).max(1).optional(),
+      groupName: z.string().optional(),
+    });
+
+    const { sessionId } = paramsSchema.parse(req.params);
+    const { groupId, text, confidence, groupName } = bodySchema.parse(req.body || {});
+
+    const ws = getNamespacedWebSocketService();
+    if (!ws) {
+      return res.status(503).json({ success: false, error: 'WEBSOCKET_UNAVAILABLE' });
+    }
+
+    // Prepare payload similar to real STT emission
+    const payload = {
+      id: uuidv4(),
+      groupId,
+      groupName: groupName || `Group ${groupId}`,
+      text: text || 'This is a test transcription line emitted from /debug.',
+      timestamp: new Date().toISOString(),
+      confidence: typeof confidence === 'number' ? confidence : 0.92,
+      language: 'en',
+      traceId: `debug-${Date.now().toString(36)}`,
+    };
+
+    // Emit to session room so any connected teacher UIs receive it immediately
+    ws.getSessionsService().emitToSession(sessionId, 'transcription:group:new', payload);
+
+    return res.json({ success: true, emitted: payload, sessionId });
+  } catch (error) {
+    return res.status(400).json({ success: false, error: 'INVALID_REQUEST' });
   }
 });

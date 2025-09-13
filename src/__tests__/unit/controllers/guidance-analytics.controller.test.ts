@@ -80,7 +80,8 @@ describe('Guidance Analytics Controller', () => {
       expect(res!.status as any).not.toHaveBeenCalledWith(500);
       expect(res!.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
-        analytics: expect.objectContaining({
+        data: expect.objectContaining({
+          analytics: expect.objectContaining({
           teacherId: 'teacher-1',
           promptMetrics: expect.objectContaining({
             totalGenerated: 0,
@@ -115,7 +116,7 @@ describe('Guidance Analytics Controller', () => {
       await getTeacherAnalytics(req as any, res as Response);
 
       expect(res.status).toHaveBeenCalledWith(403);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: false, error: 'UNAUTHORIZED' }));
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: false, error: expect.objectContaining({ code: 'INSUFFICIENT_PERMISSIONS' }) }));
     });
   });
 
@@ -143,7 +144,8 @@ describe('Guidance Analytics Controller', () => {
       expect(res.status).not.toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
         success: true,
-        analytics: expect.objectContaining({
+        data: expect.objectContaining({
+          analytics: expect.objectContaining({
           sessionId: 'session-1',
           overview: expect.any(Object),
           guidanceActivity: expect.any(Object),

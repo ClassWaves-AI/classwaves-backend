@@ -10,10 +10,14 @@ export const CacheTTLPolicy = {
 
   // Query cache strategies
   query: {
-    'session-list': 900,
+    // Read-mostly endpoints (policy-driven short TTLs)
+    'session-list': 45,
     'session-detail': 600,
     'teacher-analytics': 1800,
     'session-analytics': 1200,
+    // New: lightweight caches for fast UI reconciliation
+    'group-status': 10,
+    'dashboard-metrics': 45,
   },
 
   // Edge/security-related TTLs
@@ -36,4 +40,3 @@ export function ttlWithJitter(baseSeconds: number, jitterPercent = 0.15): number
   const delta = Math.floor(Math.random() * (range * 2 + 1)) - range; // [-range, +range]
   return Math.max(1, Math.floor(baseSeconds + delta));
 }
-

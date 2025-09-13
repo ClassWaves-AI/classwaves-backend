@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { cacheManager, CacheTTLConfig } from '../services/cache-manager.service';
+import * as client from 'prom-client';
 import { cacheEventBus } from '../services/cache-event-bus.service';
 import { AuthRequest } from '../types/auth.types';
 
@@ -61,13 +62,23 @@ export function cacheResponse(config: CacheConfig, options: CacheMiddlewareOptio
         ? CacheTTLConfig[config.ttl as keyof typeof CacheTTLConfig] || defaultTTL
         : config.ttl || defaultTTL;
 
-      // Try to get from cache
+      // Try to get from cache (track latency + hit/miss)
+      const start = Date.now();
       const cached = await cacheManager.get(cacheKey);
+      const queryType = String(config.namespace || 'api');
+      const hitCounter = (client.register.getSingleMetric('cache_hit_total') as client.Counter<string>)
+        || new client.Counter({ name: 'cache_hit_total', help: 'Cache hits', labelNames: ['queryType'] });
+      const missCounter = (client.register.getSingleMetric('cache_miss_total') as client.Counter<string>)
+        || new client.Counter({ name: 'cache_miss_total', help: 'Cache misses', labelNames: ['queryType'] });
+      const getLatency = (client.register.getSingleMetric('cache_get_latency_ms') as client.Histogram<string>)
+        || new client.Histogram({ name: 'cache_get_latency_ms', help: 'Cache GET latency (ms)', labelNames: ['queryType'], buckets: [1, 2, 5, 10, 20, 50, 100, 200] });
       
       if (cached) {
         if (logLevel !== 'none') {
           console.log(`⚡ Cache HIT: ${cacheKey}`);
         }
+        try { hitCounter.inc({ queryType }); } catch {}
+        try { getLatency.observe({ queryType }, Date.now() - start); } catch {}
         
         // Return cached response
         return res.json(cached);
@@ -75,6 +86,8 @@ export function cacheResponse(config: CacheConfig, options: CacheMiddlewareOptio
 
       // Cache miss - intercept response
       const originalJson = res.json;
+      try { missCounter.inc({ queryType }); } catch {}
+      try { getLatency.observe({ queryType }, Date.now() - start); } catch {}
       
       res.json = function(data: any) {
         // Store in cache asynchronously

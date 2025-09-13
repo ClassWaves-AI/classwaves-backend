@@ -222,16 +222,31 @@ export class AnalyticsComputationService {
             } as TimelineAnalysis;
           });
 
-          // Check presence of "planned vs actual" marker used in tests; when missing, avoid deriving engagement
-          let plannedVsActual: any = undefined;
-          try {
-            plannedVsActual = await databricksService.queryOne(`SELECT 1 as marker FROM ${databricksConfig.catalog}.analytics.__planned_vs_actual WHERE session_id = ? LIMIT 1`, [sessionId]);
-          } catch (_) {
-            // ignore
-          }
-          if (plannedVsActual === null) {
-            engagementMetrics.averageEngagement = 0;
-            engagementMetrics.participationRate = 0;
+          // Check presence of "planned vs actual" marker (guarded by feature flag).
+          // When disabled, we do not force engagement to 0 and we avoid querying the view.
+          const usePlannedVsActual = String(process.env.ANALYTICS_USE_PLANNED_VS_ACTUAL || '1') !== '0';
+          if (usePlannedVsActual) {
+            let plannedVsActual: any = undefined;
+            try {
+              plannedVsActual = await databricksService.queryOne(
+                `SELECT 1 as marker FROM ${databricksConfig.catalog}.analytics.__planned_vs_actual WHERE session_id = ? LIMIT 1`,
+                [sessionId]
+              );
+            } catch (_) {
+              // ignore query errors (view may be absent in dev)
+            }
+            if (plannedVsActual === null) {
+              // View exists but contains no marker for this session; be conservative
+              engagementMetrics.averageEngagement = 0;
+              engagementMetrics.participationRate = 0;
+            }
+          } else {
+            // Feature disabled; keep computed engagement metrics
+            try {
+              if (process.env.API_DEBUG === '1') {
+                console.log('ℹ️ planned_vs_actual disabled via ANALYTICS_USE_PLANNED_VS_ACTUAL=0; using computed engagement metrics');
+              }
+            } catch {}
           }
 
           // Keep membership summary independent of engagement metrics to match tests

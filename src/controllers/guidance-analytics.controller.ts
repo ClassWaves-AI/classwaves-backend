@@ -29,6 +29,7 @@ import {
   logQueryOptimization
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
+import { ok, fail, ErrorCodes } from '../utils/api-response';
 
 // ============================================================================
 // Request/Response Schemas
@@ -84,11 +85,7 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
   try {
     const query = req.query as any;
     if (targetTeacherId !== teacher.id && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'UNAUTHORIZED',
-        message: 'Access denied: Cannot view other teacher analytics'
-      });
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Access denied: Cannot view other teacher analytics', 403);
     }
     
     // ✅ COMPLIANCE: Audit logging for analytics access (async)
@@ -210,11 +207,7 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
     const processingTime = Date.now() - startTime;
     console.log(`✅ Teacher analytics retrieved for ${targetTeacherId} in ${processingTime}ms`);
 
-    return res.json({
-      success: true,
-      analytics,
-      processingTime
-    });
+    return ok(res, { analytics, processingTime });
 
   } catch (error: any) {
     const processingTime = Date.now() - startTime;
@@ -244,10 +237,10 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
         effectiveness: { overallScore: 0, studentEngagementImprovement: 0, learningOutcomeImprovement: 0, discussionQualityImprovement: 0, adaptationSpeed: 0 },
         sessions: { totalSessions: 0, averageSessionQuality: 0, mostSuccessfulStrategies: [], improvementAreas: [], recentTrends: {} }
       };
-      return res.status(200).json({ success: true, analytics: empty, processingTime, degraded: true });
+      return ok(res, { analytics: empty, processingTime, degraded: true }, 200);
     }
 
-    return res.status(500).json({ success: false, error: 'ANALYTICS_RETRIEVAL_FAILED', message: 'Failed to retrieve teacher analytics', processingTime });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve teacher analytics', 500, { processingTime });
   }
 };
 
@@ -272,11 +265,7 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     // ✅ SECURITY: Verify session ownership (super_admin can access any session)
     const sessionOwnership = await verifySessionOwnership(sessionId, teacher.id, school.id);
     if (!sessionOwnership.isOwner && teacher.role !== 'admin' && teacher.role !== 'super_admin') {
-      return res.status(403).json({
-        success: false,
-        error: 'UNAUTHORIZED',
-        message: 'Access denied: Session not found or access denied'
-      });
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Access denied: Session not found or access denied', 403);
     }
 
     // ✅ COMPLIANCE: Audit logging for session analytics access
@@ -453,21 +442,13 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     const processingTime = Date.now() - startTime;
     console.log(`✅ Session analytics retrieved for ${sessionId} in ${processingTime}ms`);
 
-    return res.json({
-      success: true,
-      analytics: { ...analytics, guidanceCounts },
-      processingTime
-    });
+    return ok(res, { analytics: { ...analytics, guidanceCounts }, processingTime });
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
     console.error('❌ Session analytics retrieval failed:', error);
     
-    return res.status(500).json({
-      success: false,
-      error: 'SESSION_ANALYTICS_FAILED',
-      message: 'Failed to retrieve session analytics'
-    });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve session analytics', 500);
   }
 };
 

@@ -44,9 +44,20 @@ router.get('/websocket', healthController.getWebSocketHealth.bind(healthControll
 router.get('/errors', healthController.getErrorSummary.bind(healthController));
 
 /**
+ * GET /api/v1/health/redis
+ * Redis health probe (ping + short-lived RW)
+ */
+router.get('/redis', healthController.getRedisHealthDetailed.bind(healthController));
+/**
+ * GET /api/v1/health/databricks
+ * Databricks health probe (fast, strict timeout)
+ */
+router.get('/databricks', healthController.getDatabricksHealthDetailed.bind(healthController));
+
+/**
  * POST /api/v1/health/errors/clear
  * Clear error logs (admin only)
  */
-router.post('/errors/clear', authenticate, healthController.clearErrorLogs.bind(healthController));
+router.post('/errors/clear', authenticate, requireAnyAdmin, healthController.clearErrorLogs.bind(healthController));
 
 export default router;

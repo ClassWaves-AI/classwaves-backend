@@ -157,6 +157,18 @@ export const updateStudentSchema = z.object({
   audioConsentGiven: z.boolean().optional(),
 }).passthrough();
 
+export const inviteTeacherSchema = z.object({
+  email: z.string().email('Invalid email format'),
+  role: z.enum(['teacher', 'admin']).default('teacher'),
+  schoolId: z.string().uuid().optional(),
+});
+
+export const acceptInviteSchema = z.object({
+  token: z.string().uuid('Invalid invite token'),
+  name: z.string().min(1).max(100),
+  password: z.string().min(8).max(128).optional(),
+});
+
 export const ageVerificationSchema = z.object({
   birthDate: z.string().refine((val) => !isNaN(Date.parse(val)), {
     message: 'Invalid birth date format',
@@ -232,6 +244,31 @@ export const rateLimitSchema = z.object({
   message: z.string().default('Too many requests from this IP'),
 });
 
+// Districts schemas (admin only)
+export const createDistrictSchema = z.object({
+  name: z.string().min(1).max(200),
+  state: z.string().min(2).max(50),
+  region: z.string().max(100).optional(),
+  superintendentName: z.string().max(100).optional(),
+  contactEmail: z.string().email('Invalid email format').optional(),
+  contactPhone: z.string().max(30).optional(),
+  website: z.string().url('Invalid URL').optional(),
+  subscriptionTier: z.enum(['basic', 'pro', 'enterprise']).default('basic').optional(),
+  isActive: z.boolean().default(true).optional(),
+});
+
+export const updateDistrictSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  state: z.string().min(2).max(50).optional(),
+  region: z.string().max(100).optional(),
+  superintendentName: z.string().max(100).optional(),
+  contactEmail: z.string().email('Invalid email format').optional(),
+  contactPhone: z.string().max(30).optional(),
+  website: z.string().url('Invalid URL').optional(),
+  subscriptionTier: z.enum(['basic', 'pro', 'enterprise']).optional(),
+  isActive: z.boolean().optional(),
+}).refine((obj) => Object.keys(obj).length > 0, { message: 'At least one field must be provided for update' });
+
 // Common validation functions
 export function validateEmail(email: string): boolean {
   // Additional checks first
@@ -264,3 +301,79 @@ export function validateSchoolDomain(email: string): string | null {
   if (personalDomains.includes(domain.toLowerCase())) return null;
   return domain;
 }
+
+// -----------------------------
+// Phase 3: REST-edge add-ons
+// -----------------------------
+
+// PUT /api/v1/sessions/:sessionId body
+export const updateSessionSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(1000).optional(),
+  status: z.enum(['created', 'active', 'paused', 'ended', 'archived']).optional(),
+  target_group_size: z.number().int().min(2).max(10).optional(),
+  auto_group_enabled: z.boolean().optional(),
+  scheduled_start: z.string()
+    .optional()
+    .refine((val) => {
+      if (!val) return true;
+      const iso8601Regex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?(Z|[+-]\d{2}:\d{2})$/;
+      return iso8601Regex.test(val) && !isNaN(Date.parse(val));
+    }, { message: 'Invalid datetime string - must be ISO 8601 format' }),
+  planned_duration_minutes: z.number().int().min(5).max(480).optional(),
+}).refine((obj) => Object.keys(obj).length > 0, {
+  message: 'At least one field must be provided for update',
+});
+
+// GET /api/v1/transcripts query
+export const transcriptsQuerySchema = z.object({
+  sessionId: z.string().min(1, 'sessionId is required'),
+  groupId: z.string().min(1, 'groupId is required'),
+  since: z.coerce.number().int().min(0).optional(),
+  until: z.coerce.number().int().min(0).optional(),
+}).refine((o) => (o.since == null || o.until == null || o.since <= o.until), {
+  message: 'since must be less than or equal to until',
+  path: ['since'],
+});
+
+// Session lifecycle bodies with optional notes
+export const sessionLifecycleNotesSchema = z.object({
+  teacher_notes: z.string().max(1000).optional(),
+});
+
+// POST /:sessionId/resend-email body
+export const resendSessionEmailSchema = z.object({
+  groupId: z.string().min(1, 'groupId is required'),
+  newLeaderId: z.string().min(1).optional(),
+  reason: z.enum(['resend', 'leader_change']).default('resend'),
+}).refine((o) => (o.reason !== 'leader_change' || !!o.newLeaderId), {
+  message: 'newLeaderId is required when reason is leader_change',
+  path: ['newLeaderId'],
+});
+
+// Analytics monitoring routes
+export const analyticsLogsQuerySchema = z.object({
+  operation: z.string().optional(),
+  table: z.string().optional(),
+  sessionId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100).optional(),
+  since: z.string().optional().refine((val) => !val || !isNaN(Date.parse(val)), {
+    message: 'since must be a valid ISO date/time string',
+  }),
+});
+
+export const analyticsSampleRateSchema = z.object({
+  sampleRate: z.number().min(0).max(1),
+});
+
+export const analyticsCleanupSchema = z.object({
+  olderThanHours: z.number().int().min(1).max(720).default(24).optional(),
+});
+
+export const analyticsCacheSyncSchema = z.object({
+  force: z.boolean().default(false).optional(),
+});
+
+export const analyticsCostAnalysisQuerySchema = z.object({
+  timeframeHours: z.coerce.number().int().min(1).max(168).default(24).optional(),
+});

@@ -1,18 +1,20 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyToken, JWTPayload } from '../utils/jwt.utils';
 import { AuthRequest } from '../types/auth.types';
-import { redisService } from '../services/redis.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
 import { SecureSessionService } from '../services/secure-session.service';
+import { fail } from '../utils/api-response';
+import { ErrorCodes } from '@classwaves/shared';
+import { logger } from '../utils/logger';
+import { parseClaims, type AuthContext, hasAnyRole } from '../utils/auth-claims';
 
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
   const authStart = performance.now();
-  console.log('🔐 AUTH MIDDLEWARE START');
-  console.log('📋 Request headers:', JSON.stringify({
-    authorization: req.headers.authorization ? 'Bearer ***' : 'none',
-    cookie: req.headers.cookie || 'none'
-  }, null, 2));
-  console.log('🍪 Parsed cookies:', req.cookies);
+  logger.debug('AUTH MIDDLEWARE START');
+  logger.debug('Auth request headers received', {
+    hasAuthorization: !!req.headers.authorization,
+    hasCookie: !!req.headers.cookie,
+  });
   
   try {
     const authHeader = req.headers.authorization;
@@ -29,10 +31,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       console.log('🍪 Using session cookie for authentication');
     } 
     else {
-      return res.status(401).json({
-        error: 'UNAUTHORIZED',
-        message: 'No valid authorization token provided',
-      });
+      return fail(res, ErrorCodes.AUTH_REQUIRED, 'No valid authorization token provided', 401);
     }
     
     try {
@@ -50,16 +49,13 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           
           // In test mode with E2E_TEST_SECRET, use basic JWT verification
           if (process.env.NODE_ENV === 'test' && process.env.E2E_TEST_SECRET) {
-            console.log('🧪 Using test mode JWT verification');
+            logger.debug('Using test mode JWT verification');
             payload = verifyToken(token) as JWTPayload;
           } else {
             // Verify JWT token with enhanced security
             const securePayload = await SecureJWTService.verifyTokenSecurity(token, req, 'access');
             if (!securePayload) {
-              return res.status(401).json({
-                error: 'INVALID_TOKEN',
-                message: 'Invalid or expired token',
-              });
+              return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid or expired token', 401);
             }
             // Convert SecureJWTPayload to JWTPayload
             payload = {
@@ -72,10 +68,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
             };
           }
           if (payload.type !== 'access') {
-            return res.status(401).json({
-              error: 'INVALID_TOKEN_TYPE',
-              message: 'Invalid token type',
-            });
+            return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid token type', 401);
           }
           // PREFER session cookie if present, since it represents the current active session
           // The JWT sessionId might be from a previous session that got rotated
@@ -96,19 +89,17 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
             } as any;
             (req as AuthRequest).school = { id: payload.schoolId } as any;
             (req as AuthRequest).sessionId = effectiveSessionId;
+            ;(req as any).authContext = parseClaims({ ...payload, roles: (payload as any)?.roles ?? [payload.role], sub: payload.userId }) as AuthContext;
             return next();
           }
         } catch (e) {
           // Fallback to cookie-based session if available
           if (req.cookies?.session_id) {
-            console.warn('⚠️  Authorization token invalid; falling back to session cookie');
+            logger.warn('Authorization token invalid; falling back to session cookie');
             effectiveSessionId = req.cookies.session_id;
           } else {
-            console.error('Token verification error:', e);
-            return res.status(401).json({
-              error: 'INVALID_TOKEN',
-              message: 'Invalid or expired token',
-            });
+            logger.warn('Token verification error', { error: (e as any)?.message || String(e) });
+            return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid or expired token', 401);
           }
         }
       } else {
@@ -119,33 +110,15 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       // Check if session exists using secure session service
       const sessionLookupStart = performance.now();
       const sessionData = await SecureSessionService.getSecureSession(effectiveSessionId, req);
-      console.log(`⏱️  Secure session lookup took ${(performance.now() - sessionLookupStart).toFixed(2)}ms`);
+      logger.debug('Secure session lookup timing', { durationMs: Number((performance.now() - sessionLookupStart).toFixed(2)) });
       
       if (!sessionData) {
         // Enhanced logging for rotation debugging
-        console.warn(`🚨 Session lookup failed for session ID: ${effectiveSessionId}`);
-        console.warn('🚨 This could be due to:');
-        console.warn('   1. Session expired naturally');
-        console.warn('   2. Token rotation in progress (deviceFingerprint mismatch)');
-        console.warn('   3. Session invalidated by security policy');
-        console.warn(`   4. JWT token source: ${token ? 'Bearer token' : 'session cookie'}`);
+        logger.warn('Session lookup failed', { sessionId: '[REDACTED]', tokenSource: token ? 'jwt' : 'cookie' });
         
         // For token rotation scenarios, provide a more specific error
         // This helps clients understand they may need to re-authenticate or retry
-        const errorResponse = {
-          error: 'SESSION_EXPIRED',
-          message: 'Session has expired or been invalidated',
-          // Add rotation hint for debugging (development only)
-          ...(process.env.NODE_ENV === 'development' && {
-            debug: {
-              sessionId: effectiveSessionId,
-              tokenSource: token ? 'jwt' : 'cookie',
-              hint: 'If this occurs during token rotation, the session may be updating'
-            }
-          })
-        };
-        
-        return res.status(401).json(errorResponse);
+        return fail(res, ErrorCodes.AUTH_REQUIRED, 'Session has expired or been invalidated', 401);
       }
 
       // Add user info to request from Redis session
@@ -153,23 +126,29 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       (req as AuthRequest).school = sessionData.school;
       (req as AuthRequest).sessionId = effectiveSessionId;
 
+      // Attach derived AuthContext for RBAC helpers
+      const roles = Array.isArray((sessionData.teacher as any)?.roles)
+        ? (sessionData.teacher as any).roles
+        : [sessionData.teacher.role]
+      ;(req as any).authContext = {
+        sub: sessionData.teacher.id,
+        email: sessionData.teacher.email,
+        schoolId: sessionData.school.id,
+        roles,
+        permissions: [],
+      } as AuthContext;
+
       const authTotal = performance.now() - authStart;
-      console.log(`🔐 AUTH MIDDLEWARE COMPLETE - Total time: ${authTotal.toFixed(2)}ms`);
+      logger.debug('AUTH MIDDLEWARE COMPLETE', { durationMs: Number(authTotal.toFixed(2)) });
       
       next();
     } catch (tokenError) {
-      console.error('Authentication error:', tokenError);
-      return res.status(500).json({
-        error: 'AUTHENTICATION_ERROR',
-        message: 'An error occurred during authentication',
-      });
+      logger.error('Authentication error', { error: (tokenError as any)?.message || String(tokenError) });
+      return fail(res, ErrorCodes.INTERNAL_ERROR, 'An error occurred during authentication', 500);
     }
   } catch (error) {
-    console.error('Authentication error:', error);
-    return res.status(500).json({
-      error: 'AUTHENTICATION_ERROR',
-      message: 'An error occurred during authentication',
-    });
+    logger.error('Authentication error', { error: (error as any)?.message || String(error) });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'An error occurred during authentication', 500);
   }
 }
 
@@ -178,21 +157,53 @@ export function requireRole(roles: string[]) {
     const authReq = req as AuthRequest;
     
     if (!authReq.user) {
-      return res.status(401).json({
-        error: 'UNAUTHORIZED',
-        message: 'Authentication required',
-      });
+      return fail(res, ErrorCodes.AUTH_REQUIRED, 'Authentication required', 401);
     }
 
     if (!roles.includes(authReq.user.role)) {
-      return res.status(403).json({
-        error: 'FORBIDDEN',
-        message: 'Insufficient permissions',
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Insufficient permissions', 403, {
         required: roles,
         current: authReq.user.role,
       });
     }
 
+    next();
+  };
+}
+
+// New RBAC helpers
+export function requireAnyRole(...roles: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const ctx = (req as any).authContext as AuthContext | undefined;
+    if (!ctx || !hasAnyRole(ctx, roles)) {
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Insufficient permissions', 403, {
+        required: roles,
+        current: ctx?.roles ?? [],
+      });
+    }
+    next();
+  };
+}
+
+export function requireSuperAdmin() {
+  return requireAnyRole('super_admin');
+}
+
+export function requireSchoolMatch(paramKey: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const authReq = req as AuthRequest;
+    const ctx = (req as any).authContext as AuthContext | undefined;
+    // super_admin bypasses tenant check
+    if (ctx?.roles?.includes('super_admin')) return next();
+
+    const targetId = (req.params as any)?.[paramKey] || (req.query as any)?.[paramKey];
+    const currentSchoolId = authReq.school?.id || ctx?.schoolId;
+    if (!targetId || !currentSchoolId || targetId !== currentSchoolId) {
+      return fail(res, ErrorCodes.INSUFFICIENT_PERMISSIONS, 'Tenant boundary violation', 403, {
+        requiredSchoolId: currentSchoolId,
+        targetSchoolId: targetId,
+      });
+    }
     next();
   };
 }

@@ -46,6 +46,7 @@ Following these is mandatory; keep changes aligned and record decisions as ADRs 
 - [Deployment](#deployment)
 - [Repository Integration](#repository-integration)
 - [Contributing](#contributing)
+ - [Logging & Trace IDs](#logging--trace-ids)
 
 ## Features
 
@@ -198,6 +199,17 @@ The backend uses environment flags to guard rollout and route events during the 
   - `1`: `flushGroups([...])` enqueues per-group flush tasks to smooth spikes during session end.
   - `0` (default): Drains sequentially without queueing (recommended for local/dev).
   - Note: Hot-path ingestion remains synchronous; queue only affects best-effort drain before analytics.
+
+## Logging & Trace IDs
+
+- Every HTTP request receives a `X-Trace-Id` header (prefers incoming `x-request-id` when provided). The ID is also available as `res.locals.traceId` and `(req as any).traceId` for correlation across code paths. Standard `ApiResponse` helpers automatically include `requestId` when present.
+- Structured JSON logs include: `level`, `msg`, `timestamp`, `requestId`, `userId`, `sessionId`, `groupId`, `route`, `statusCode`, and `durationMs` (for HTTP). Configure verbosity via `LOG_LEVEL` (`debug|info|warn|error|silent`).
+- WebSockets log `ws:connect` and `ws:disconnect` with `namespace`, `userId`, `socketId`, and `traceId` for cross-channel correlation.
+- Sensitive data is redacted (e.g., `Authorization`, `cookie`, `token`, `password`, `email`). To trace a flow, grep by trace ID in your logs:
+  - ripgrep: `rg -n "\\"requestId\\":\\"<traceId>\\""` in your log files
+  - log aggregator: filter by `requestId = <traceId>`
+
+See runbooks for incident workflows: `docs/ai/observability/RUNBOOKS.md`.
 
 ## Quick Start
 
@@ -770,6 +782,25 @@ app.use('/api/', rateLimiter({
 app.use(validateInput(sessionSchema));
 ```
 
+#### Protected Routes and Rate Limiting
+- Protected route groups:
+  - `/api/v1/admin/**` — requires authenticated `super_admin` by default; some routes allow `admin` via explicit middleware.
+  - `/api/v1/auth/me`, `/api/v1/auth/csrf-token` — require authentication.
+  - `/api/v1/health/errors/clear` — requires authentication and admin (`admin` or `super_admin`).
+- Rate limiting:
+  - Global limiter on `/api/**` with exemptions for `/api/v1/health`, `/api/v1/ready`, `/metrics`, and audio uploads.
+  - Stricter limiter on `/api/v1/auth/**` for authentication endpoints.
+  - Utility `createUserRateLimiter(prefix, points, duration)` for sensitive actions.
+  - All 429 responses use standardized ApiResponse envelopes.
+
+#### Logging and PII Redaction
+- Structured logger in `src/utils/logger.ts` redacts tokens, cookies, emails, and network identifiers.
+- Error responses include a `requestId` when available to aid support without exposing PII.
+
+#### Test Token Endpoints (Non‑Production Only)
+- `/api/v1/auth/generate-test-token` — requires `E2E_TEST_SECRET`.
+- `/api/v1/auth/test-token` — requires `E2E_TEST_SECRET`.
+
 ### Audit Trail
 All sensitive operations are logged to `compliance.audit_log`:
 - User authentication events
@@ -1088,3 +1119,7 @@ DLQ replay:
   - Caching keys include the `view` dimension: `sessions:teacher:<id>:view:<view|default>:limit:<n>`.
 
 - Default (no `view`): Uses the standard minimal list projection and respects the provided `limit` (defaults to 20).
+#### Consent and Retention
+- Student email and leader notifications enforce consent checks (COPPA/FERPA) via `EmailService` and `EmailComplianceService`. Non‑compliant recipients are skipped and logged without PII.
+- Student session join (WebSocket) blocks under‑13 without consent with error code `COPPA_CONSENT_REQUIRED`.
+- Retention utilities (`src/services/retention.service.ts`) provide a simple deletion date calculator. Default retention window can be configured via `RETENTION_DEFAULT_DAYS` (defaults to ~7 years / 2555 days).

@@ -15,6 +15,7 @@ import {
 } from '@classwaves/shared';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
+import { withTiming, observe } from '../utils/profile-metrics';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { 
   buildSessionListQuery,
@@ -23,6 +24,7 @@ import {
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
 import { cacheManager } from '../services/cache-manager.service';
+import { idempotencyPort } from '../utils/idempotency.port.instance';
 import { cacheEventBus } from '../services/cache-event-bus.service';
 import { analyticsLogger } from '../utils/analytics-logger';
 import { RetryService } from '../services/retry.service';
@@ -102,6 +104,7 @@ async function getAccessCodeBySession(sessionId: string): Promise<string | null>
  */
 export async function listSessions(req: Request, res: Response): Promise<Response> {
   try {
+    const totalStart = Date.now();
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
@@ -115,27 +118,27 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
       limit = 3; // Hard-cap dashboard view to 3
     }
     const status = req.query.status as string;
-    const sort = req.query.sort as string || 'created_at:desc';
+    const sort = (req.query.sort as string) || 'created_at:desc';
     
     // Generate cache key and tags
     const statusFilter = status ? `:status:${status}` : '';
     const viewKey = view ? `:view:${view}` : ':view:default';
-    const cacheKey = `sessions:teacher:${teacher.id}${viewKey}:limit:${limit}${statusFilter}`;
-    const cacheTags = [`teacher:${teacher.id}`, 'sessions'];
-    const ttl = ttlWithJitter(CacheTTLPolicy.query['session-list']);
+    const cacheKey = `sessions:teacher:${teacher.id}${viewKey}:limit:${limit}${statusFilter}:sort:${sort}:page:${page}`;
+    console.log('📦 Cache key (query-cache):', cacheKey);
 
-    console.log('📦 Cache key:', cacheKey);
-
-    // Use new cache manager with automatic cache-aside pattern
-    const sessions = await cacheManager.getOrSet(
+    // Use query cache (epoch-aware, coalescing, refresh-ahead)
+    const sessions = await queryCacheService.getCachedQuery(
       cacheKey,
+      'session-list',
       async () => {
         console.log('🔍 Cache MISS - fetching from database');
         
         // Get raw session data (route by view)
+        const dbStart = Date.now();
         const rawSessions = view === 'dashboard'
           ? await getTeacherSessionsForDashboard(teacher.id, limit)
           : await getTeacherSessionsOptimized(teacher.id, limit);
+        observe('sessions_list', 'db', Date.now() - dbStart);
         
         console.log('🔍 Raw sessions returned:', rawSessions?.length || 0);
         if (rawSessions && rawSessions.length > 0) {
@@ -143,6 +146,7 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
         }
 
         // Map DB rows to frontend contract
+        const mapStart = Date.now();
         const mappedSessions = await Promise.all((rawSessions || []).map(async (s: any) => {
           // Prefer DB column; fallback to Redis mapping only if missing
           const accessCode = s.access_code ?? (await getAccessCodeBySession(s.id));
@@ -175,6 +179,7 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
           };
         }));
 
+        observe('sessions_list', 'map', Date.now() - mapStart);
         return {
           sessions: mappedSessions,
           pagination: {
@@ -185,9 +190,17 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
           },
         };
       },
-      { tags: cacheTags, ttl, autoWarm: false }
+      { teacherId: teacher.id }
     );
 
+    observe('sessions_list', 'total', Date.now() - totalStart);
+    // Optional tuning log (non-prod): simple hit ratio snapshot
+    if (process.env.PERF_TUNING_LOGS === '1') {
+      try {
+        const m = (queryCacheService.getCacheMetrics() as any)['session-list'];
+        if (m) console.log('CACHE-HIT-RATIO session-list', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
+      } catch {}
+    }
     return res.json({
       success: true,
       data: sessions,
@@ -621,8 +634,12 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       throw new Error(`Failed to create session: ${errorMessage}`);
     }
 
-    // 4. Store access code in Redis for student leader joining
-    await storeSessionAccessCode(sessionId, accessCode);
+    // 4. Store access code in Redis for student leader joining (idempotent)
+    await idempotencyPort.withIdempotency(
+      `once:session-access:${sessionId}`,
+      10 * 60 * 1000,
+      async () => storeSessionAccessCode(sessionId, accessCode)
+    );
 
     // 5. Record analytics - session configured event
     await recordSessionConfigured(sessionId, teacher.id, groupPlan);
@@ -1263,39 +1280,44 @@ export async function getSession(req: Request, res: Response): Promise<Response>
  */
 export async function getDashboardMetrics(req: Request, res: Response): Promise<Response> {
   try {
+    const totalStart = Date.now();
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
     console.log('📊 Getting dashboard metrics for teacher:', teacher.id);
     
-    const sessionRepo = getCompositionRoot().getSessionRepository();
-    const groupRepo = getCompositionRoot().getGroupRepository();
-    const [activeSessions, todaySessions, totalStudents] = await Promise.all([
-      sessionRepo.countActiveSessionsForTeacher(teacher.id),
-      sessionRepo.countTodaySessionsForTeacher(teacher.id),
-      groupRepo.countTotalStudentsForTeacher(teacher.id)
-    ]);
-
-    const metrics = { activeSessions, todaySessions, totalStudents };
-
-    console.log('📊 Dashboard metrics calculated:', metrics);
-
-    return res.json({
-      success: true,
-      data: {
-        metrics,
-        timestamp: new Date().toISOString(),
+    const cacheKey = `dashboard:teacher:${teacher.id}`;
+    const data = await queryCacheService.getCachedQuery(
+      cacheKey,
+      'dashboard-metrics',
+      async () => {
+        const sessionRepo = getCompositionRoot().getSessionRepository();
+        const groupRepo = getCompositionRoot().getGroupRepository();
+        const dbStart = Date.now();
+        const [activeSessions, todaySessions, totalStudents] = await Promise.all([
+          sessionRepo.countActiveSessionsForTeacher(teacher.id),
+          sessionRepo.countTodaySessionsForTeacher(teacher.id),
+          groupRepo.countTotalStudentsForTeacher(teacher.id)
+        ]);
+        observe('dashboard_metrics', 'db', Date.now() - dbStart);
+        return { metrics: { activeSessions, todaySessions, totalStudents }, timestamp: new Date().toISOString() };
       },
-    });
+      { teacherId: teacher.id }
+    );
+    observe('dashboard_metrics', 'total', Date.now() - totalStart);
+    if (process.env.PERF_TUNING_LOGS === '1') {
+      try {
+        const m = (queryCacheService.getCacheMetrics() as any)['dashboard-metrics'];
+        if (m) console.log('CACHE-HIT-RATIO dashboard-metrics', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
+      } catch {}
+    }
+    return res.json({ success: true, data });
     
   } catch (error) {
     console.error('Error getting dashboard metrics:', error);
     return res.status(500).json({
       success: false,
-      error: {
-        code: 'DASHBOARD_METRICS_FAILED',
-        message: 'Failed to get dashboard metrics',
-      },
+      error: { code: 'DASHBOARD_METRICS_FAILED', message: 'Failed to get dashboard metrics' },
     });
   }
 }
@@ -1322,6 +1344,8 @@ export async function getCacheHealth(req: Request, res: Response): Promise<Respo
     
     const health = await cacheManager.getHealthStatus();
     const metrics = cacheManager.getMetrics();
+    // Include query cache metrics for tuning visibility
+    const queryCacheMetrics = queryCacheService.getCacheMetrics();
     const eventBusStats = cacheEventBus.getStats();
     
     return res.json({
@@ -1329,6 +1353,7 @@ export async function getCacheHealth(req: Request, res: Response): Promise<Respo
       data: {
         health,
         metrics,
+        queryCache: queryCacheMetrics,
         eventBus: eventBusStats,
         timestamp: Date.now(),
       },
@@ -1351,6 +1376,7 @@ export async function getCacheHealth(req: Request, res: Response): Promise<Respo
  */
 export async function getGroupsStatus(req: Request, res: Response): Promise<Response> {
   try {
+    const totalStart = Date.now();
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId || req.params.id;
@@ -1358,89 +1384,85 @@ export async function getGroupsStatus(req: Request, res: Response): Promise<Resp
     // Verify session ownership via repository
     const sessionRepo = getCompositionRoot().getSessionRepository();
     const session = await sessionRepo.getOwnedSessionBasic(sessionId, teacher.id);
-
     if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'SESSION_NOT_FOUND',
-          message: 'Session not found or access denied'
-        }
-      });
+      return res.status(404).json({ success: false, error: { code: 'SESSION_NOT_FOUND', message: 'Session not found or access denied' } });
     }
 
-    // Get current group statuses via repositories
-    const groupRepo = getCompositionRoot().getGroupRepository();
-    const groupsBasic = await groupRepo.getGroupsBasic(sessionId);
-    const members = await groupRepo.getMembersBySession(sessionId);
-    const memberCounts = new Map<string, number>();
-    for (const m of members) {
-      memberCounts.set(m.group_id, (memberCounts.get(m.group_id) || 0) + 1);
+    const payload = await queryCacheService.getCachedQuery(
+      `${sessionId}`,
+      'group-status',
+      async () => {
+        const groupRepo = getCompositionRoot().getGroupRepository();
+        const dbGroupsStart = Date.now();
+        const groupsBasic = await groupRepo.getGroupsBasic(sessionId);
+        observe('groups_status', 'db_groups', Date.now() - dbGroupsStart);
+        const dbMembersStart = Date.now();
+        const members = await groupRepo.getMembersBySession(sessionId);
+        observe('groups_status', 'db_members', Date.now() - dbMembersStart);
+        const mapStart = Date.now();
+        const memberCounts = new Map<string, number>();
+        for (const m of members) memberCounts.set(m.group_id, (memberCounts.get(m.group_id) || 0) + 1);
+        const groups = groupsBasic.map((g) => ({
+          id: g.id,
+          name: g.name,
+          status: (g as any).status || 'connected',
+          is_ready: g.is_ready,
+          leader_id: g.leader_id,
+          current_size: memberCounts.get(g.id) || 0,
+          max_size: (g as any).max_size || 4,
+          group_number: g.group_number,
+          issue_reason: (g as any).issue_reason || null,
+          issue_reported_at: (g as any).issue_reported_at || null,
+          updated_at: (g as any).updated_at || null,
+          actual_member_count: memberCounts.get(g.id) || 0,
+          has_leader: g.leader_id ? 1 : 0,
+        }));
+        const totalGroups = groups.length;
+        const readyGroups = groups.filter((g: any) => g.is_ready === true).length;
+        const issueGroups = groups.filter((g: any) => g.status === 'issue').length;
+        const allGroupsReady = readyGroups === totalGroups && totalGroups > 0;
+        const groupsStatus = groups.map((group: any) => ({
+          id: group.id,
+          name: group.name,
+          status: group.status || 'connected',
+          isReady: Boolean(group.is_ready),
+          hasLeader: Boolean(group.has_leader),
+          leaderId: group.leader_id || null,
+          memberCount: group.actual_member_count || 0,
+          maxSize: group.max_size || 4,
+          groupNumber: group.group_number,
+          issueReason: group.issue_reason || null,
+          issueReportedAt: group.issue_reported_at || null,
+          lastUpdated: group.updated_at
+        }));
+        observe('groups_status', 'map', Date.now() - mapStart);
+        return {
+          sessionId,
+          sessionStatus: session.status,
+          groups: groupsStatus,
+          summary: {
+            totalGroups,
+            readyGroups,
+            issueGroups,
+            allGroupsReady,
+            canStartSession: allGroupsReady && session.status === 'created'
+          },
+          timestamp: new Date().toISOString()
+        };
+      },
+      { sessionId }
+    );
+    observe('groups_status', 'total', Date.now() - totalStart);
+    if (process.env.PERF_TUNING_LOGS === '1') {
+      try {
+        const m = (queryCacheService.getCacheMetrics() as any)['group-status'];
+        if (m) console.log('CACHE-HIT-RATIO group-status', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
+      } catch {}
     }
-    const groups = groupsBasic.map((g) => ({
-      id: g.id,
-      name: g.name,
-      status: (g as any).status || 'connected',
-      is_ready: g.is_ready,
-      leader_id: g.leader_id,
-      current_size: memberCounts.get(g.id) || 0,
-      max_size: (g as any).max_size || 4,
-      group_number: g.group_number,
-      issue_reason: (g as any).issue_reason || null,
-      issue_reported_at: (g as any).issue_reported_at || null,
-      updated_at: (g as any).updated_at || null,
-      actual_member_count: memberCounts.get(g.id) || 0,
-      has_leader: g.leader_id ? 1 : 0,
-    }));
-
-    // Calculate readiness summary
-    const totalGroups = groups.length;
-    const readyGroups = groups.filter((g: any) => g.is_ready === true).length;
-    const issueGroups = groups.filter((g: any) => g.status === 'issue').length;
-    const allGroupsReady = readyGroups === totalGroups && totalGroups > 0;
-
-    // Format response for client consumption
-    const groupsStatus = groups.map((group: any) => ({
-      id: group.id,
-      name: group.name,
-      status: group.status || 'connected', // Default status if null
-      isReady: Boolean(group.is_ready),
-      hasLeader: Boolean(group.has_leader),
-      leaderId: group.leader_id || null,
-      memberCount: group.actual_member_count || 0,
-      maxSize: group.max_size || 4,
-      groupNumber: group.group_number,
-      issueReason: group.issue_reason || null,
-      issueReportedAt: group.issue_reported_at || null,
-      lastUpdated: group.updated_at
-    }));
-
-    return res.json({
-      success: true,
-      data: {
-        sessionId,
-        sessionStatus: session.status,
-        groups: groupsStatus,
-        summary: {
-          totalGroups,
-          readyGroups,
-          issueGroups,
-          allGroupsReady,
-          canStartSession: allGroupsReady && session.status === 'created'
-        },
-        timestamp: new Date().toISOString()
-      }
-    });
-
+    return res.json({ success: true, data: payload });
   } catch (error) {
     console.error('Error fetching groups status:', error);
-    return res.status(500).json({
-      success: false,
-      error: {
-        code: 'GROUPS_STATUS_FETCH_FAILED',
-        message: 'Failed to fetch groups status'
-      }
-    });
+    return res.status(500).json({ success: false, error: { code: 'GROUPS_STATUS_FETCH_FAILED', message: 'Failed to fetch groups status' } });
   }
 }
 

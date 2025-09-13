@@ -69,6 +69,7 @@ ALLOWED_ORIGINS=http://localhost:3001,http://127.0.0.1:3001
 # Feature flags
 ENABLE_RATE_LIMITING=true
 ENABLE_DB_METRICS_PERSIST=false
+RETENTION_DEFAULT_DAYS=2555 # Optional: default retention window (~7 years)
 ```
 
 ## Testing & Development
@@ -79,6 +80,39 @@ E2E_TEST_SECRET=dummy-secret-for-e2e-tests
 
 # Monitoring
 LOG_LEVEL=info
+
+## Databricks Resilience & Health
+```bash
+# Connection and query timeouts (milliseconds)
+DATABRICKS_CONNECT_TIMEOUT_MS=8000
+DATABRICKS_TIMEOUT_MS=8000
+
+# Retry policy (transient errors only) with backoff + jitter
+DATABRICKS_MAX_RETRIES=3
+DATABRICKS_BACKOFF_BASE_MS=200
+DATABRICKS_BACKOFF_MAX_MS=2000
+DATABRICKS_JITTER_RATIO=0.2
+
+# Circuit breaker thresholds
+DATABRICKS_BREAKER_FAILURE_THRESHOLD=5
+DATABRICKS_BREAKER_RESET_TIMEOUT_MS=60000
+DATABRICKS_BREAKER_MIN_REQUESTS=10
+
+# Health endpoint probe timeout (ms)
+DB_HEALTH_TIMEOUT_MS=1200
+```
+
+## Audio Upload Limits
+```bash
+# Max upload size for /api/v1/audio/window (bytes)
+AUDIO_UPLOAD_MAX_BYTES=5000000
+```
+
+## E2E / Dev Test Utilities
+```bash
+# Enables dev token route for E2E login shortcuts (non-production only)
+E2E_TEST_SECRET=test
+```
 ```
 
 ## Migration Notes

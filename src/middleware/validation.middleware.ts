@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError, ZodSchema } from 'zod';
+import { fail, failFromZod, ErrorCodes } from '../utils/api-response';
 
 export function validate(schema: ZodSchema) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -17,23 +18,11 @@ export function validate(schema: ZodSchema) {
       
       if (error instanceof ZodError) {
         console.error('🔧 DEBUG: Zod validation errors:', error.issues);
-        return res.status(400).json({
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid request data',
-          details: error.issues.map((err: any) => ({
-            field: err.path.join('.'),
-            message: typeof err.message === 'string' && err.message.includes('Invalid option')
-              ? err.message.replace('Invalid option', 'Invalid enum value')
-              : err.message,
-          })),
-        });
+        return failFromZod(res, error, 'body');
       }
-      
+
       console.error('🔧 DEBUG: Non-Zod validation error:', error);
-      return res.status(500).json({
-        error: 'INTERNAL_ERROR',
-        message: 'An unexpected error occurred',
-      });
+      return fail(res, ErrorCodes.INTERNAL_ERROR, 'An unexpected error occurred', 500);
     }
   };
 }
@@ -46,22 +35,10 @@ export function validateQuery(schema: ZodSchema) {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
-        return res.status(400).json({
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid query parameters',
-          details: error.issues.map((err: any) => ({
-            field: err.path.join('.'),
-            message: typeof err.message === 'string' && err.message.includes('Invalid option')
-              ? err.message.replace('Invalid option', 'Invalid enum value')
-              : err.message,
-          })),
-        });
+        return failFromZod(res, error, 'query');
       }
-      
-      return res.status(500).json({
-        error: 'INTERNAL_ERROR',
-        message: 'An unexpected error occurred',
-      });
+
+      return fail(res, ErrorCodes.INTERNAL_ERROR, 'An unexpected error occurred', 500);
     }
   };
 }
@@ -74,22 +51,10 @@ export function validateParams(schema: ZodSchema) {
       next();
     } catch (error) {
       if (error instanceof ZodError) {
-        return res.status(400).json({
-          error: 'VALIDATION_ERROR',
-          message: 'Invalid path parameters',
-          details: error.issues.map((err: any) => ({
-            field: err.path.join('.'),
-            message: typeof err.message === 'string' && err.message.includes('Invalid option')
-              ? err.message.replace('Invalid option', 'Invalid enum value')
-              : err.message,
-          })),
-        });
+        return failFromZod(res, error, 'params');
       }
-      
-      return res.status(500).json({
-        error: 'INTERNAL_ERROR',
-        message: 'An unexpected error occurred',
-      });
+
+      return fail(res, ErrorCodes.INTERNAL_ERROR, 'An unexpected error occurred', 500);
     }
   };
 }

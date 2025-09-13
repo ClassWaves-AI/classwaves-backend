@@ -21,7 +21,7 @@ import {
 import { authenticate } from '../middleware/auth.middleware';
 import { databricksService } from '../services/databricks.service';
 import { validate } from '../middleware/validation.middleware';
-import { createSessionSchema } from '../utils/validation.schemas';
+import { createSessionSchema, updateSessionSchema, sessionLifecycleNotesSchema, resendSessionEmailSchema } from '../utils/validation.schemas';
 
 
 const router = Router();
@@ -30,13 +30,13 @@ const router = Router();
 router.get('/', authenticate, listSessions);
 router.post('/', authenticate, validate(createSessionSchema), createSession);
 router.get('/:sessionId', authenticate, getSession);
-router.put('/:sessionId', authenticate, updateSession);
+router.put('/:sessionId', authenticate, validate(updateSessionSchema), updateSession);
 router.delete('/:sessionId', authenticate, deleteSession);
 
 // Session lifecycle
-router.post('/:sessionId/start', authenticate, startSession);
-router.post('/:sessionId/pause', authenticate, pauseSession);
-router.post('/:sessionId/end', authenticate, endSession);
+router.post('/:sessionId/start', authenticate, validate(sessionLifecycleNotesSchema), startSession);
+router.post('/:sessionId/pause', authenticate, validate(sessionLifecycleNotesSchema), pauseSession);
+router.post('/:sessionId/end', authenticate, validate(sessionLifecycleNotesSchema), endSession);
 router.get('/:sessionId/analytics', authenticate, getSessionAnalytics);
 // Summaries
 router.get('/:sessionId/summaries', authenticate, getSessionSummaries);
@@ -161,7 +161,7 @@ router.get('/:sessionId/participants', authenticate, getSessionParticipants);
 router.get('/:sessionId/groups/status', authenticate, getGroupsStatus);
 
 // Email notification endpoints
-router.post('/:sessionId/resend-email', authenticate, resendSessionEmail);
+router.post('/:sessionId/resend-email', authenticate, validate(resendSessionEmailSchema), resendSessionEmail);
 
 // Dashboard metrics endpoint
 router.get('/dashboard-metrics', authenticate, getDashboardMetrics);

@@ -23,6 +23,9 @@ import {
 // Removed resilientAuthService (GSI credential flow)
 import { authHealthMonitor } from '../services/auth-health-monitor.service';
 import { RetryService } from '../services/retry.service';
+import { fail } from '../utils/api-response';
+import { ErrorCodes } from '@classwaves/shared';
+import { logger } from '../utils/logger';
 
 let cachedGoogleClient: OAuth2Client | null = null;
 function getGoogleClient(): OAuth2Client {
@@ -352,44 +355,38 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
  */
 export async function rotateTokens(req: Request, res: Response): Promise<Response> {
   const rotationStart = performance.now();
-  console.log('🔄 TOKEN ROTATION START');
+  logger.debug('TOKEN ROTATION START');
   
   try {
     const { refreshToken } = req.body;
     
     // Validate input
     if (!refreshToken) {
-      return res.status(400).json({
-        error: 'MISSING_REFRESH_TOKEN',
-        message: 'Refresh token is required for token rotation',
-      });
+      return fail(res, ErrorCodes.INVALID_INPUT, 'Refresh token is required for token rotation', 400);
     }
     
-    console.log('🔍 Validating refresh token for rotation');
+    logger.debug('Validating refresh token for rotation');
     
     // ATOMIC OPERATION: Rotate tokens and update session
-    console.log('🔄 Starting atomic token rotation...');
+    logger.debug('Starting atomic token rotation');
     const newTokens = await SecureJWTService.rotateTokens(refreshToken, req);
     
     if (!newTokens) {
       const rotationTime = performance.now() - rotationStart;
-      console.log(`❌ TOKEN ROTATION FAILED - Time: ${rotationTime.toFixed(2)}ms`);
-      return res.status(401).json({
-        error: 'INVALID_REFRESH_TOKEN',
-        message: 'Invalid or expired refresh token',
+      logger.warn('TOKEN ROTATION FAILED', { durationMs: Number(rotationTime.toFixed(2)) });
+      return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid or expired refresh token', 401, {
         performance: {
           rotationTime: rotationTime,
-          timestamp: new Date().toISOString(),
         }
       });
     }
     
     const rotationTime = performance.now() - rotationStart;
-    console.log(`🎉 TOKEN ROTATION COMPLETE - Time: ${rotationTime.toFixed(2)}ms`);
+    logger.debug('TOKEN ROTATION COMPLETE', { durationMs: Number(rotationTime.toFixed(2)) });
     
     // CRITICAL: Set new session cookie atomically with token generation
     // This ensures the session cookie matches the device fingerprint in Redis
-    console.log('🍪 Setting updated session cookie with new device fingerprint');
+    logger.debug('Setting updated session cookie with new device fingerprint');
     res.cookie('session_id', newTokens.deviceFingerprint, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -398,7 +395,7 @@ export async function rotateTokens(req: Request, res: Response): Promise<Respons
       path: '/'
     });
     
-    console.log('✅ Session cookie updated successfully');
+    logger.debug('Session cookie updated successfully');
     
     return res.json({
       success: true,
@@ -417,13 +414,8 @@ export async function rotateTokens(req: Request, res: Response): Promise<Respons
     });
     
   } catch (error) {
-    console.error('❌ Token rotation failed:', error);
-    
-    return res.status(500).json({
-      error: 'TOKEN_ROTATION_FAILED',
-      message: 'Failed to rotate tokens',
-      details: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.message : 'Unknown error') : undefined,
-    });
+    logger.error('Token rotation failed', { error: (error as any)?.message || String(error) });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to rotate tokens', 500);
   }
 }
 
@@ -503,33 +495,25 @@ export async function secureLogout(req: Request, res: Response): Promise<Respons
 }
 
 export async function generateTestTokenHandler(req: Request, res: Response): Promise<Response> {
-  console.log('🔧 DEBUG: Starting generateTestTokenHandler');
+  logger.debug('Starting generateTestTokenHandler');
   
   // Allow in test and development environments
   if (process.env.NODE_ENV === 'production') {
-    console.log('🔧 DEBUG: Environment check failed - NODE_ENV:', process.env.NODE_ENV);
-    return res.status(404).json({
-      error: 'NOT_FOUND',
-      message: 'Endpoint not available in production environment',
-    });
+    logger.warn('Test token endpoint hit in production');
+    return fail(res, ErrorCodes.NOT_FOUND, 'Endpoint not available in production environment', 404);
   }
-  console.log('🔧 DEBUG: Environment check passed - NODE_ENV:', process.env.NODE_ENV);
+  logger.debug('Environment check passed for test token endpoint');
 
   try {
     const { secretKey } = req.body;
-    console.log('🔧 DEBUG: Request body received, secretKey present:', !!secretKey);
+    logger.debug('Test token request received', { hasSecretKey: !!secretKey });
     
     // Verify secret key (simple validation for testing)
     if (secretKey !== process.env.E2E_TEST_SECRET) {
-      console.log('🔧 DEBUG: Secret key validation failed');
-      console.log('🔧 DEBUG: Expected:', process.env.E2E_TEST_SECRET);
-      console.log('🔧 DEBUG: Received:', secretKey);
-      return res.status(401).json({
-        error: 'INVALID_SECRET',
-        message: 'Invalid secret key for test token generation',
-      });
+      logger.warn('Test token secret key validation failed');
+      return fail(res, ErrorCodes.AUTH_REQUIRED, 'Invalid secret key for test token generation', 401);
     }
-    console.log('🔧 DEBUG: Secret key validation passed');
+    logger.debug('Test token secret key validation passed');
 
     // Create a test teacher and school for the token
     const testTeacher = {
@@ -546,19 +530,14 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       domain: 'testschool.edu',
       subscription_tier: 'professional',
     };
-    console.log('🔧 DEBUG: Test teacher and school objects created');
+    logger.debug('Test teacher and school objects created');
 
     // Generate secure tokens for testing
-    console.log('🔧 DEBUG: Starting session ID generation');
+    logger.debug('Starting session ID generation');
     const sessionId = generateSessionId();
-    console.log('🔧 DEBUG: Session ID generated:', sessionId);
+    logger.debug('Session ID generated');
     
-    console.log('🔧 DEBUG: Starting secure token generation');
-    console.log('🔧 DEBUG: Request headers for fingerprinting:', {
-      'user-agent': req.headers['user-agent'],
-      'ip': req.ip,
-      'x-forwarded-for': req.headers['x-forwarded-for']
-    });
+    logger.debug('Starting secure token generation');
     
     const secureTokens = await SecureJWTService.generateSecureTokens(
       testTeacher as Teacher, 
@@ -566,10 +545,10 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       sessionId, 
       req
     );
-    console.log('🔧 DEBUG: Secure tokens generated successfully');
+    logger.debug('Secure tokens generated successfully');
 
     // Store a secure session so cookie-based auth works in E2E
-    console.log('🔧 DEBUG: Starting secure session storage');
+    logger.debug('Starting secure session storage');
     try {
       await SecureSessionService.storeSecureSession(
         sessionId,
@@ -577,17 +556,13 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
         testSchool as School,
         req
       );
-      console.log('🔧 DEBUG: Secure session storage completed successfully');
+      logger.debug('Secure session storage completed successfully');
     } catch (e) {
-      console.error('🔧 DEBUG: Failed to store secure test session:', e);
-      console.error('🔧 DEBUG: Session storage error details:', {
-        message: e instanceof Error ? e.message : 'Unknown error',
-        stack: e instanceof Error ? e.stack : 'No stack trace'
-      });
+      logger.error('Failed to store secure test session', { error: (e as any)?.message || String(e) });
     }
 
     // Set session cookie for convenience (Playwright also sets it, but this makes API usage consistent)
-    console.log('🔧 DEBUG: Setting session cookie');
+    logger.debug('Setting session cookie');
     res.cookie('session_id', sessionId, {
       httpOnly: true,
       secure: false,
@@ -596,7 +571,7 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       path: '/',
     });
 
-    console.log('🔧 DEBUG: Preparing successful response');
+    logger.debug('Preparing successful response');
     const response = {
       success: true,
       teacher: {
@@ -623,24 +598,11 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
       sessionId, // Include for test cleanup if needed
     };
     
-    console.log('🔧 DEBUG: generateTestTokenHandler completed successfully');
+    logger.debug('generateTestTokenHandler completed successfully');
     return res.json(response);
 
   } catch (error) {
-    console.error('🔧 DEBUG: FATAL ERROR in generateTestTokenHandler:', error);
-    console.error('🔧 DEBUG: Error details:', {
-      message: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : 'No stack trace',
-      name: error instanceof Error ? error.name : 'Unknown'
-    });
-    
-    return res.status(500).json({
-      error: 'TEST_TOKEN_GENERATION_FAILED',
-      message: 'Failed to generate test authentication token',
-      debug: process.env.NODE_ENV === 'test' ? {
-        errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        errorName: error instanceof Error ? error.name : 'Unknown'
-      } : undefined
-    });
+    logger.error('FATAL ERROR in generateTestTokenHandler', { error: (error as any)?.message || String(error) });
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to generate test authentication token', 500);
   }
 }

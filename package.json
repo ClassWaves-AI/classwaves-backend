@@ -8,6 +8,7 @@
     "dev:server-only": "nodemon --exec ts-node src/server.ts",
     "dev:redis": "./scripts/apply-redis-config.sh",
     "email:test-group-leader": "ts-node src/scripts/send-test-group-leader-email.ts",
+    "health:check": "curl -f http://localhost:3000/api/v1/health || exit 1",
     "build": "tsc -p tsconfig.prod.json",
     "start": "node dist/server.js",
     "test": "jest",
@@ -15,6 +16,8 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:unit": "jest --testPathPattern=unit",
+    "test:task:3.2": "jest src/__tests__/unit/services/idempotency.redis.adapter.test.ts src/__tests__/unit/controllers/admin.controller.api-response.test.ts --runInBand",
+    "test:unit:baseline": "jest -c jest.unit.baseline.config.js --runInBand",
     "test:integration": "ENABLE_NETWORK_TESTS=1 jest --testPathPattern=src/__tests__/integration --testPathIgnorePatterns=\"\"",
     "test:integration:all": "ENABLE_NETWORK_TESTS=1 jest --testPathPattern=src/__tests__/integration --runInBand --testPathIgnorePatterns=\"\"",
     "test:integration:ws:rest-first": "ENABLE_NETWORK_TESTS=1 jest src/__tests__/integration/ws-rest-first-control.integration.test.ts --runInBand --testPathIgnorePatterns=\"\"",
@@ -59,6 +62,9 @@
     "ci:check-raw-stars": "rg -n \"SELECT \\*\" src && echo 'ERROR: raw star selects found' && exit 1 || echo 'OK: no raw star selects'",
     "ci:guard-sql": "npm run ci:check-sql-stars && npm run ci:check-raw-stars",
     "ci:contracts": "ENABLE_NETWORK_TESTS=1 jest src/__tests__/integration/summaries/summaries.contract.test.ts --runInBand --testPathIgnorePatterns=\"\""
+    ,
+    "loadtest:sessions": "npx autocannon -d 30 -c 20 -p 10 http://localhost:3000/api/v1/sessions",
+    "loadtest:dashboard": "npx autocannon -d 30 -c 20 -p 10 http://localhost:3000/api/v1/sessions/dashboard-metrics"
   },
   "keywords": [],
   "author": "",

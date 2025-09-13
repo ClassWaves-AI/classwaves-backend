@@ -26,6 +26,14 @@ export class DatabricksAdminRepository implements AdminRepositoryPort {
     return (row as any) || null;
   }
 
+  async findTeacherByEmail(email: string): Promise<{ id: string; school_id: string } | null> {
+    const row = await databricksService.queryOne(
+      `SELECT id, school_id FROM ${databricksConfig.catalog}.users.teachers WHERE lower(email) = lower(?)`,
+      [email]
+    );
+    return (row as any) || null;
+  }
+
   async insertSchool(school: any): Promise<void> {
     const sql = `
       INSERT INTO ${databricksConfig.catalog}.users.schools (
@@ -152,7 +160,103 @@ export class DatabricksAdminRepository implements AdminRepositoryPort {
     const sql = `UPDATE ${databricksConfig.catalog}.users.teachers SET ${set} WHERE id = ?`;
     await databricksService.query(sql, [...values, teacherId]);
   }
+
+  async insertTeacher(teacher: {
+    id: string;
+    email: string;
+    name: string;
+    school_id: string;
+    role: string;
+    status: string;
+    access_level?: string | null;
+    created_at: string;
+    updated_at: string;
+  }): Promise<void> {
+    const sql = `
+      INSERT INTO ${databricksConfig.catalog}.users.teachers (
+        id, email, name, school_id, role, status, access_level, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    await databricksService.query(sql, [
+      teacher.id,
+      teacher.email,
+      teacher.name,
+      teacher.school_id,
+      teacher.role,
+      teacher.status,
+      teacher.access_level ?? null,
+      teacher.created_at,
+      teacher.updated_at,
+    ]);
+  }
+
+  // Districts (admin schema)
+  async listDistricts(filter: { state?: string; q?: string; isActive?: boolean }, limit: number, offset: number): Promise<any[]> {
+    const where: string[] = []
+    const params: any[] = []
+    if (filter.state) { where.push('state = ?'); params.push(filter.state) }
+    if (filter.isActive != null) { where.push('is_active = ?'); params.push(filter.isActive ? true : false) }
+    if (filter.q) { where.push('(lower(name) LIKE lower(?) OR lower(region) LIKE lower(?))'); params.push(`%${filter.q}%`, `%${filter.q}%`) }
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const sql = `
+      SELECT id, name, state, region, superintendent_name, contact_email, contact_phone, website, subscription_tier, is_active, created_at, updated_at
+      FROM ${databricksConfig.catalog}.admin.districts
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `
+    return (await databricksService.query(sql, params)) as any[]
+  }
+
+  async countDistricts(filter: { state?: string; q?: string; isActive?: boolean }): Promise<number> {
+    const where: string[] = []
+    const params: any[] = []
+    if (filter.state) { where.push('state = ?'); params.push(filter.state) }
+    if (filter.isActive != null) { where.push('is_active = ?'); params.push(filter.isActive ? true : false) }
+    if (filter.q) { where.push('(lower(name) LIKE lower(?) OR lower(region) LIKE lower(?))'); params.push(`%${filter.q}%`, `%${filter.q}%`) }
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : ''
+    const row = await databricksService.queryOne(`SELECT COUNT(*) as total FROM ${databricksConfig.catalog}.admin.districts ${whereClause}`, params)
+    return (row?.total as number) ?? 0
+  }
+
+  async getDistrictById(id: string): Promise<any | null> {
+    const sql = `
+      SELECT id, name, state, region, superintendent_name, contact_email, contact_phone, website, subscription_tier, is_active, created_at, updated_at
+      FROM ${databricksConfig.catalog}.admin.districts WHERE id = ?
+    `
+    return (await databricksService.queryOne(sql, [id])) as any
+  }
+
+  async insertDistrict(district: any): Promise<void> {
+    const sql = `
+      INSERT INTO ${databricksConfig.catalog}.admin.districts (
+        id, name, state, region, superintendent_name, contact_email, contact_phone, website, subscription_tier, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+    await databricksService.query(sql, [
+      district.id,
+      district.name,
+      district.state,
+      district.region ?? null,
+      district.superintendent_name ?? null,
+      district.contact_email ?? null,
+      district.contact_phone ?? null,
+      district.website ?? null,
+      district.subscription_tier ?? null,
+      district.is_active ?? true,
+      district.created_at,
+      district.updated_at,
+    ])
+  }
+
+  async updateDistrictById(id: string, fields: Record<string, any>): Promise<void> {
+    const keys = Object.keys(fields)
+    if (keys.length === 0) return
+    const set = keys.map((k) => `${k} = ?`).join(', ')
+    const values = keys.map((k) => fields[k])
+    const sql = `UPDATE ${databricksConfig.catalog}.admin.districts SET ${set} WHERE id = ?`
+    await databricksService.query(sql, [...values, id])
+  }
 }
 
 export const adminRepository: AdminRepositoryPort = new DatabricksAdminRepository();
-

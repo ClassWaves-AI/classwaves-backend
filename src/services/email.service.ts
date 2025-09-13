@@ -16,6 +16,7 @@ import {
   EmailAuditRecord,
   EmailComplianceValidation
 } from '@classwaves/shared';
+import { logger } from '../utils/logger';
 
 export class EmailService {
   private transporter: nodemailer.Transporter | null = null;
@@ -119,7 +120,7 @@ export class EmailService {
       try {
         const compliance = await this.validateEmailConsent(recipient.studentId);
         if (!compliance.canSendEmail) {
-          console.warn(`❌ Cannot send email to ${recipient.email}: ${compliance.consentStatus}`);
+          logger.warn('Cannot send group leader email due to compliance', { recipient: { email: recipient.email }, consentStatus: compliance.consentStatus });
           results.failed.push(recipient.email);
           await this.recordEmailDelivery(
             sessionData.sessionId,
@@ -132,7 +133,7 @@ export class EmailService {
           compliant.push(recipient);
         }
       } catch (error) {
-        console.error(`❌ Compliance check failed for ${recipient.email}:`, error);
+        logger.error('Compliance check failed for recipient', { recipient: { email: recipient.email }, error: error instanceof Error ? error.message : String(error) });
         results.failed.push(recipient.email);
       }
     }
@@ -167,10 +168,10 @@ export class EmailService {
           'sent'
         );
 
-        console.log(`📧 Email sent successfully to group leader: ${recipient.email}`);
+        logger.info('Email sent to group leader', { recipient: { email: recipient.email } });
 
       } catch (error) {
-        console.error(`❌ Failed to send email to group leader ${recipient.email}:`, error);
+        logger.error('Failed to send email to group leader', { recipient: { email: recipient.email }, error: error instanceof Error ? error.message : String(error) });
         results.failed.push(recipient.email);
 
         // Record failed delivery
@@ -184,7 +185,7 @@ export class EmailService {
       }
     }
 
-    console.log(`📊 Email batch completed: ${results.sent.length} sent, ${results.failed.length} failed`);
+    logger.info('Email batch completed', { sent: results.sent.length, failed: results.failed.length });
     return results;
   }
 
@@ -200,12 +201,12 @@ export class EmailService {
       const recipients = await this.buildResendRecipientList(request);
       
       // Log resend reason
-      console.log(`📧 Manual resend requested for session ${request.sessionId}, reason: ${request.reason}`);
+      logger.info('Manual resend requested', { sessionId: request.sessionId, reason: request.reason });
       
       // Send email(s)
       return await this.sendSessionInvitation(recipients, sessionData);
     } catch (error) {
-      console.error('Failed to resend session invitation:', error);
+      logger.error('Failed to resend session invitation', { error: error instanceof Error ? error.message : String(error) });
       throw error;
     }
   }

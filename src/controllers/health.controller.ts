@@ -15,6 +15,8 @@ import { redisService } from '../services/redis.service';
 import { errorLoggingMiddleware } from '../middleware/error-logging.middleware';
 import { getNamespacedWebSocketService } from '../services/websocket';
 import { cacheHealthMonitor } from '../services/cache-health-monitor.service';
+import { ok, fail, ErrorCodes } from '../utils/api-response';
+import { databricksService } from '../services/databricks.service';
 
 interface ServiceHealth {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -273,6 +275,54 @@ class HealthController {
     }
   }
 
+  /**
+   * GET /api/v1/health/redis
+   * Lightweight Redis health probe with ping and short-lived R/W test
+   * Returns standardized ApiResponse with timings
+   */
+  async getRedisHealthDetailed(_req: Request, res: Response): Promise<Response> {
+    const t0 = Date.now();
+    const timings: Record<string, number> = {};
+    const operations: Record<string, 'ok' | 'failed'> = {};
+    try {
+      // PING
+      const tp = Date.now();
+      const pingOk = await redisService.ping();
+      timings.ping = Date.now() - tp;
+      operations.ping = pingOk ? 'ok' : 'failed';
+      if (!pingOk) {
+        return fail(res, ErrorCodes.SERVICE_UNAVAILABLE, 'Redis PING failed', 503, { timings, operations });
+      }
+
+      // Short-lived R/W
+      const key = `health:probe:${Math.random().toString(36).slice(2, 10)}`;
+      const trw = Date.now();
+      const client = redisService.getClient();
+      const setRes = await (client as any).set(key, '1', 'PX', 2000, 'NX');
+      const setOk = setRes === 'OK';
+      operations.set = setOk ? 'ok' : 'failed';
+      let getOk = false;
+      if (setOk) {
+        const v = await client.get(key);
+        getOk = v === '1';
+        operations.get = getOk ? 'ok' : 'failed';
+        try { await client.del(key); } catch {}
+      }
+      timings.rw = Date.now() - trw;
+
+      const overall = setOk && getOk ? 'healthy' : 'degraded';
+      const total = Date.now() - t0;
+      return ok(res, { status: overall, timings: { ...timings, total }, operations });
+    } catch (err: any) {
+      const total = Date.now() - t0;
+      return fail(res, ErrorCodes.SERVICE_UNAVAILABLE, 'Redis health probe failed', 503, {
+        timings: { ...timings, total },
+        operations,
+        error: err?.message || String(err)
+      });
+    }
+  }
+
   async clearErrorLogs(req: Request, res: Response): Promise<Response> {
     try {
       errorLoggingMiddleware.clearLogs();
@@ -289,6 +339,34 @@ class HealthController {
           message: 'Failed to clear error logs',
           details: error instanceof Error ? error.message : String(error)
         }
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/health/databricks
+   * Fast Databricks health probe with strict timeout and circuit-breaker state
+   */
+  async getDatabricksHealthDetailed(_req: Request, res: Response): Promise<Response> {
+    const t0 = Date.now();
+    try {
+      const timeoutMs = Number(process.env.DB_HEALTH_TIMEOUT_MS || 1200);
+      const probe = await databricksService.healthProbe(timeoutMs);
+      const total = Date.now() - t0;
+      const status = probe.ok ? 'healthy' : (probe.breaker.state === 'OPEN' ? 'unhealthy' : 'degraded');
+      if (!probe.ok) {
+        return fail(res, ErrorCodes.SERVICE_UNAVAILABLE, 'Databricks probe failed', 503, {
+          status,
+          timings: { total },
+          breaker: probe.breaker
+        });
+      }
+      return ok(res, { status, timings: { total }, breaker: probe.breaker, serverTime: probe.serverTime });
+    } catch (err: any) {
+      const total = Date.now() - t0;
+      return fail(res, ErrorCodes.SERVICE_UNAVAILABLE, 'Databricks health probe failed', 503, {
+        timings: { total },
+        error: err?.message || String(err)
       });
     }
   }

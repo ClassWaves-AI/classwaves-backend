@@ -505,10 +505,8 @@ describe('Auth Routes Integration Tests', () => {
           if (res.status !== 401) throw new Error(`Unexpected status ${res.status}`);
         });
 
-      expect(response.body).toMatchObject({
-        error: 'UNAUTHORIZED',
-        message: 'No valid authorization token provided',
-      });
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe('AUTH_REQUIRED');
     });
 
     it('should reject invalid tokens', async () => {
@@ -520,10 +518,8 @@ describe('Auth Routes Integration Tests', () => {
           if (res.status !== 401) throw new Error(`Unexpected status ${res.status}`);
         });
 
-      expect(response.body).toMatchObject({
-        error: 'INVALID_TOKEN',
-        message: 'Invalid or expired token',
-      });
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe('INVALID_TOKEN');
     });
   });
 

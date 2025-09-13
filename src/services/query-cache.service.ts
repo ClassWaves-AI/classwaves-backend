@@ -129,12 +129,28 @@ export class QueryCacheService {
       invalidateOnUpdate: false, // Analytics update in background
       compressionEnabled: true
     },
+    // Group status summary for a session (short TTL)
+    'group-status': {
+      ttlSeconds: CacheTTLPolicy.query['group-status'],
+      warmOnMiss: false,
+      preload: false,
+      invalidateOnUpdate: true,
+      compressionEnabled: false
+    },
     'session-analytics': {
       ttlSeconds: CacheTTLPolicy.query['session-analytics'],
       warmOnMiss: true,
       preload: false,
       invalidateOnUpdate: false,
       compressionEnabled: true
+    },
+    // Dashboard metrics per teacher (short TTL)
+    'dashboard-metrics': {
+      ttlSeconds: CacheTTLPolicy.query['dashboard-metrics'],
+      warmOnMiss: false,
+      preload: false,
+      invalidateOnUpdate: true,
+      compressionEnabled: false
     }
   };
 
@@ -505,6 +521,10 @@ export class QueryCacheService {
       case 'session-analytics':
         return context.sessionId ? [`analytics:${context.sessionId}`] : [];
       case 'teacher-analytics':
+        return context.teacherId ? [`teacher:${context.teacherId}`] : [];
+      case 'group-status':
+        return context.sessionId ? [`session:${context.sessionId}`] : [];
+      case 'dashboard-metrics':
         return context.teacherId ? [`teacher:${context.teacherId}`] : [];
       default:
         return [];

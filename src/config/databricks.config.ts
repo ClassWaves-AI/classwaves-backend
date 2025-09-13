@@ -84,5 +84,18 @@ export const databricksConfig = {
   warehouse: process.env.DATABRICKS_WAREHOUSE_ID || '',
   // Catalog default is 'classwaves' unless overridden
   catalog: process.env.DATABRICKS_CATALOG || 'classwaves',
-  schema: 'users' // Default schema, but we'll use fully qualified names
+  schema: 'users', // Default schema, but we'll use fully qualified names
+
+  // Resilience & timeouts (overridable via env)
+  queryTimeoutMs: Number(process.env.DATABRICKS_TIMEOUT_MS || 8000),
+  connectTimeoutMs: Number(process.env.DATABRICKS_CONNECT_TIMEOUT_MS || 8000),
+  maxRetries: Number(process.env.DATABRICKS_MAX_RETRIES || 3),
+  backoffBaseMs: Number(process.env.DATABRICKS_BACKOFF_BASE_MS || 200),
+  backoffMaxMs: Number(process.env.DATABRICKS_BACKOFF_MAX_MS || 2000),
+  jitterRatio: Number(process.env.DATABRICKS_JITTER_RATIO || 0.2), // 20%
+
+  // Circuit breaker
+  breakerFailureThreshold: Number(process.env.DATABRICKS_BREAKER_FAILURE_THRESHOLD || 5),
+  breakerResetTimeoutMs: Number(process.env.DATABRICKS_BREAKER_RESET_TIMEOUT_MS || 60000),
+  breakerMinimumRequests: Number(process.env.DATABRICKS_BREAKER_MIN_REQUESTS || 10),
 };

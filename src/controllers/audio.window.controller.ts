@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import multer from 'multer';
 import * as client from 'prom-client';
 import { AudioWindowUploadSchema, isSupportedAudioMime } from '../utils/zod-schemas/audio-upload.schema';
-import { redisService } from '../services/redis.service';
+import { idempotencyPort } from '../utils/idempotency.port.instance';
 
 // Lazy import bullmq to allow tests to mock easily
 type BullQueue = { add: (name: string, data: any, opts?: any) => Promise<{ id?: string }> };
@@ -20,6 +20,7 @@ function getHistogram(name: string, help: string, buckets: number[], labelNames?
 }
 
 const audioUploadTotal = getCounter('audio_upload_request_total', 'Total audio window upload requests');
+const audioUploadLabeled = getCounter('audio_upload_requests_total', 'Total audio upload requests (labeled)', ['result']);
 const audioDedupHitTotal = getCounter('audio_dedup_hit_total', 'Total dedupe hits for audio windows');
 const sttJobsQueuedTotal = getCounter('stt_jobs_queued_total', 'Total STT jobs queued');
 const uploadBytesHistogram = getHistogram('audio_upload_window_bytes', 'Uploaded window size (bytes)', [8e3, 3.2e4, 1.28e5, 5.12e5, 2.0e6]);
@@ -40,11 +41,15 @@ export async function processAudioWindow(input: { sessionId: string; groupId: st
   const mime = file.mimetype || 'application/octet-stream';
   const bytes = file.buffer.length;
 
-  // Deduplicate by chunkId (24h TTL)
+  // Deduplicate by chunkId (24h TTL) using idempotency wrapper
   const dedupKey = `dedup:audio:chunk:${chunkId}`;
   try {
-    const result = await (redisService.getClient() as any).set(dedupKey, '1', 'EX', 24 * 3600, 'NX');
-    if (result === null) {
+    const { executed } = await idempotencyPort.withIdempotency(
+      dedupKey,
+      24 * 3600 * 1000,
+      async () => true
+    );
+    if (!executed) {
       audioDedupHitTotal.inc();
       return { ok: true, dedup: true, receivedAt, traceId };
     }
@@ -88,6 +93,7 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
     // Validate fields
     const parsed = AudioWindowUploadSchema.safeParse(req.body);
     if (!parsed.success) {
+      audioUploadLabeled.inc({ result: 'invalid' });
       return res.status(400).json({ ok: false, error: 'INVALID_FIELDS' });
     }
     const { sessionId, groupId, chunkId, startTs, endTs } = parsed.data;
@@ -103,10 +109,12 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
     // Validate file
     const file = (req as any).file as Express.Multer.File | undefined;
     if (!file || !file.buffer) {
+      audioUploadLabeled.inc({ result: 'missing' });
       return res.status(400).json({ ok: false, error: 'MISSING_AUDIO' });
     }
     const mime = file.mimetype || 'application/octet-stream';
     if (!isSupportedAudioMime(mime)) {
+      audioUploadLabeled.inc({ result: 'unsupported' });
       return res.status(415).json({ ok: false, error: 'UNSUPPORTED_MEDIA_TYPE', mime });
     }
 
@@ -115,10 +123,12 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
     if (process.env.API_DEBUG === '1') {
       console.log('🎙️ AUDIO WINDOW ACCEPTED', { sessionId, groupId, chunkId, bytes: file.buffer.length, queuedJobId: (result as any)?.queuedJobId, dedup: (result as any)?.dedup });
     }
+    audioUploadLabeled.inc({ result: (result as any)?.dedup ? 'dedup' : 'ok' });
     return res.json(result);
   } catch (err: any) {
     // Multer size error handled here as well
     const code = err?.code === 'LIMIT_FILE_SIZE' ? 413 : 500;
+    audioUploadLabeled.inc({ result: code === 413 ? 'too_large' : 'error' });
     return res.status(code).json({ ok: false, error: err?.message || 'UPLOAD_FAILED' });
   }
 }

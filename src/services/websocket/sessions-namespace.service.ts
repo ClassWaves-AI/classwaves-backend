@@ -8,6 +8,7 @@ import { DedupeWindow, computeGroupBroadcastHash } from './utils/dedupe.util';
 import { RedisRateLimiter } from './utils/rate-limiter.util';
 import { SessionSnapshotCache } from './utils/snapshot-cache.util';
 import { cachePort } from '../../utils/cache.port.instance';
+import { queryCacheService } from '../../services/query-cache.service';
 
 interface SessionSocketData extends NamespaceSocketData {
   sessionId?: string;
@@ -277,11 +278,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     });
 
     socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; mimeType: string }) => {
-      // Phase 1: WS audio ingestion disabled; HTTP uploads are canonical.
       try {
-        this.emitToRoom(`group:${data?.groupId || 'unknown'}`, 'audio:error', { code: 'UNSUPPORTED_OPERATION', message: 'Use HTTP uploads for audio windows' });
+        if (process.env.API_DEBUG === '1') {
+          const bytes = (data as any)?.audioData && Buffer.isBuffer((data as any).audioData) ? (data as any).audioData.length : 0;
+          console.log(JSON.stringify({ event: 'audio_chunk_received', groupId: data?.groupId, bytes, mimeType: (data as any)?.mimeType }));
+        }
       } catch {}
-      return;
+      // Unified path: allow WS audio ingestion when enabled (default on)
+      await this.handleAudioChunk(socket, data as any);
     });
 
     socket.on('audio:end_stream', async (data: { groupId: string }) => {
@@ -486,6 +490,41 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           code: 'SESSION_ACCESS_DENIED', 
           message: 'Student not enrolled in this session' 
         });
+        SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'student:session:join', school: (socket.data as any)?.schoolId || 'unknown' });
+        return;
+      }
+
+      // COPPA/COPPA-like consent check for student
+      try {
+        // Prefer newer teacher-verified/consent fields when available
+        let student: any = null;
+        let coppaOk = false;
+        try {
+          student = await (db as any).databricksService.queryOne(
+            `SELECT id, coppa_compliant, has_parental_consent, teacher_verified_age 
+             FROM classwaves.users.students WHERE id = ?`,
+            [participant.student_id]
+          );
+          coppaOk = !!student && (student.teacher_verified_age === true || student.coppa_compliant === true || student.has_parental_consent === true);
+        } catch (e) {
+          // Fallback to legacy fields (and parent_email heuristic used in roster UI)
+          student = await (db as any).databricksService.queryOne(
+            `SELECT id, has_parental_consent, parent_email 
+             FROM classwaves.users.students WHERE id = ?`,
+            [participant.student_id]
+          );
+          coppaOk = !!student && (student.has_parental_consent === true || student.parent_email == null);
+        }
+        if (!coppaOk) {
+          socket.emit('error', { code: 'COPPA_CONSENT_REQUIRED', message: 'Parental consent required for students under 13' });
+          if (ack) ack({ ok: false, error: 'COPPA_CONSENT_REQUIRED' });
+          SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'student:session:join', school: (socket.data as any)?.schoolId || 'unknown' });
+          return;
+        }
+      } catch {
+        // On any error, fail safe (deny join) to avoid non-compliant access
+        socket.emit('error', { code: 'COPPA_CONSENT_REQUIRED', message: 'Parental consent required' });
+        if (ack) ack({ ok: false, error: 'COPPA_CONSENT_REQUIRED' });
         SessionsNamespaceService.wsErrorCounter.inc({ namespace: this.getNamespaceName(), event: 'student:session:join', school: (socket.data as any)?.schoolId || 'unknown' });
         return;
       }
@@ -804,6 +843,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(data.sessionId);
+      // Bust group-status summary cache for this session
+      try { await queryCacheService.invalidateCache(`group-status:${data.sessionId}`); } catch {}
     } catch (error) {
       console.error('Group status update error:', error);
       socket.emit('error', { 
@@ -886,6 +927,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(sessionId);
+      // Bust group-status summary cache for this session
+      try { await queryCacheService.invalidateCache(`group-status:${sessionId}`); } catch {}
     } catch (error) {
       console.error('Sessions namespace: Group leader ready error:', error);
       socket.emit('error', {
@@ -972,6 +1015,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(data.sessionId);
+      // Bust group-status summary cache for this session
+      try { await queryCacheService.invalidateCache(`group-status:${data.sessionId}`); } catch {}
     } catch (error) {
       console.error('WaveListener issue handling error:', error);
       socket.emit('error', {

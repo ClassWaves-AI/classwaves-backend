@@ -1,4 +1,4 @@
-import { Server as HTTPServer } from 'http';
+import { Server as HTTPServer } from 'http'
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { verifyToken } from '../utils/jwt.utils';
@@ -40,18 +40,25 @@ interface SocketData {
   pendingJoins?: Set<string>;
 }
 
+import type {
+  WsGroupStatusUpdatePayload,
+  WsAudioStreamLifecyclePayload,
+  WsStudentSessionJoinPayload,
+  WsAudioErrorEvent,
+} from '@classwaves/shared'
+
 interface ClientToServerEvents {
   joinSession: (sessionCode: string) => void;
   leaveSession: (sessionCode: string) => void;
   sendMessage: (data: { sessionCode: string; message: string }) => void;
   updatePresence: (data: { sessionCode: string; status: string }) => void;
   'group:join': (data: { groupId: string; sessionId: string }) => void;
-  'group:status_update': (data: { groupId: string; isReady: boolean }) => void;
+  'group:status_update': (data: WsGroupStatusUpdatePayload) => void
   
   // Audio processing events
-  'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void;
-  'audio:stream:start': (data: { groupId: string }) => void;
-  'audio:stream:end': (data: { groupId: string }) => void;
+  'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void
+  'audio:stream:start': (data: WsAudioStreamLifecyclePayload) => void
+  'audio:stream:end': (data: WsAudioStreamLifecyclePayload) => void
   
   // Teacher dashboard session control
   'session:join': (data: { session_id?: string; sessionId?: string }) => void;
@@ -61,7 +68,7 @@ interface ClientToServerEvents {
   'group:leader_ready': (data: { sessionId: string; groupId: string; ready: boolean }) => void;
   
   // Student session control
-  'student:session:join': (data: { sessionId: string }) => void;
+  'student:session:join': (data: WsStudentSessionJoinPayload) => void
   
   // REMOVED: 'session:update_status' - duplicates REST API logic
   // Session status updates should only go through REST endpoints to ensure
@@ -145,9 +152,9 @@ interface ServerToClientEvents {
   'analytics:finalized': (data: { sessionId: string; timestamp: string }) => void;
 
   // Audio streaming events  
-  'audio:stream:start': (data: { groupId: string }) => void;
-  'audio:stream:end': (data: { groupId: string }) => void;
-  'audio:error': (data: { groupId: string; error: string }) => void;
+  'audio:stream:start': (data: WsAudioStreamLifecyclePayload) => void
+  'audio:stream:end': (data: WsAudioStreamLifecyclePayload) => void
+  'audio:error': (data: WsAudioErrorEvent) => void
   
   'error': (data: { code: string; message: string }) => void;
   
@@ -474,9 +481,10 @@ export class WebSocketService {
           // Broadcast group status change to teacher clients
           const broadcastEvent = {
             groupId: data.groupId,
+            sessionId: data.sessionId,
             status: data.ready ? 'ready' : 'waiting',
-            isReady: data.ready
-          };
+            isReady: data.ready,
+          }
           
           console.log(`🎯 [WEBSOCKET DEBUG] Broadcasting group:status_changed to session:${data.sessionId}`);
           console.log(`🎯 [WEBSOCKET DEBUG] Broadcast payload:`, broadcastEvent);
@@ -500,7 +508,7 @@ export class WebSocketService {
           const approxSize = (data as any)?.audioData?.length || 0;
           if (approxSize > 1024 * 1024 * 2) { // >2MB
             console.warn(`⚠️  Dropping oversized audio chunk (~${approxSize} bytes) for group ${data.groupId}`);
-            socket.emit('audio:error', { groupId: data.groupId, error: 'Payload too large' });
+            socket.emit('audio:error', { groupId: data.groupId, error: 'PAYLOAD_TOO_LARGE' });
             return;
           }
 
@@ -512,7 +520,7 @@ export class WebSocketService {
             // We cannot directly access the private counter; instead, trigger backpressure handling which increments it
             try { await (inMemoryAudioProcessor as any).handleBackPressure?.(data.groupId); } catch { /* ignore */ }
             console.warn(`⚠️  Socket backpressure: rejecting audio chunk for group ${data.groupId} (bytes=${windowInfo.bytes}, chunks=${windowInfo.chunks})`);
-            socket.emit('audio:error', { groupId: data.groupId, error: 'Backpressure: please slow down' });
+            socket.emit('audio:error', { groupId: data.groupId, error: 'BACKPRESSURE' });
             return;
           }
 
@@ -580,9 +588,10 @@ export class WebSocketService {
           
         } catch (error) {
           console.error(`❌ Audio processing failed for group ${data.groupId}:`, error);
-          socket.emit('audio:error', { 
-            groupId: data.groupId, 
-            error: error instanceof Error ? error.message : 'Audio processing failed'
+          socket.emit('audio:error', {
+            groupId: data.groupId,
+            error: 'AUDIO_PROCESSING_FAILED',
+            message: error instanceof Error ? error.message : 'Audio processing failed',
           });
         }
       });
@@ -597,7 +606,7 @@ export class WebSocketService {
           
           // Notify teacher dashboard that group is recording
           this.io.to(`session:${socket.data.sessionId}`).emit('audio:stream:start', {
-            groupId: data.groupId
+            groupId: data.groupId,
           });
           
           // Update group status to recording
@@ -610,7 +619,8 @@ export class WebSocketService {
           console.error(`❌ Failed to start audio stream for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
-            error: 'Failed to start audio stream'
+            error: 'AUDIO_PROCESSING_FAILED',
+            message: 'Failed to start audio stream',
           });
         }
       });
@@ -625,7 +635,7 @@ export class WebSocketService {
           
           // Notify teacher dashboard that group stopped recording
           this.io.to(`session:${socket.data.sessionId}`).emit('audio:stream:end', {
-            groupId: data.groupId
+            groupId: data.groupId,
           });
           
           // Update group status
@@ -638,7 +648,8 @@ export class WebSocketService {
           console.error(`❌ Failed to end audio stream for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
-            error: 'Failed to end audio stream'
+            error: 'AUDIO_PROCESSING_FAILED',
+            message: 'Failed to end audio stream',
           });
         }
       });

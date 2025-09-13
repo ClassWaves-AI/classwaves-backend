@@ -35,6 +35,7 @@ export interface AdminRepositoryPort {
   listSchools(limit: number, offset: number): Promise<SchoolSummary[]>;
   countSchools(): Promise<number>;
   findSchoolByDomain(domain: string): Promise<{ id: string } | null>;
+  findTeacherByEmail?(email: string): Promise<{ id: string; school_id: string } | null>;
   insertSchool(school: {
     id: string;
     name: string;
@@ -60,5 +61,28 @@ export interface AdminRepositoryPort {
   countTeachers(filter: { schoolId?: string }): Promise<number>;
   getTeacherSummaryById(teacherId: string): Promise<TeacherSummary | null>;
   updateTeacherById(teacherId: string, fields: Record<string, any>): Promise<void>;
-}
+  insertTeacher?(teacher: {
+    id: string;
+    email: string;
+    name: string;
+    school_id: string;
+    role: string;
+    status: string;
+    access_level?: string | null;
+    created_at: string;
+    updated_at: string;
+  }): Promise<void>;
 
+  // Districts
+  listDistricts(filter: { state?: string; q?: string; isActive?: boolean }, limit: number, offset: number): Promise<{
+    id: string; name: string; state?: string | null; region?: string | null; superintendent_name?: string | null; contact_email?: string | null; contact_phone?: string | null; website?: string | null; subscription_tier?: string | null; is_active?: boolean | null; created_at?: string | Date | null; updated_at?: string | Date | null;
+  }[]>;
+  countDistricts(filter: { state?: string; q?: string; isActive?: boolean }): Promise<number>;
+  getDistrictById(id: string): Promise<{
+    id: string; name: string; state?: string | null; region?: string | null; superintendent_name?: string | null; contact_email?: string | null; contact_phone?: string | null; website?: string | null; subscription_tier?: string | null; is_active?: boolean | null; created_at?: string | Date | null; updated_at?: string | Date | null;
+  } | null>;
+  insertDistrict(district: {
+    id: string; name: string; state: string; region?: string | null; superintendent_name?: string | null; contact_email?: string | null; contact_phone?: string | null; website?: string | null; subscription_tier?: string | null; is_active?: boolean | null; created_at: string; updated_at: string;
+  }): Promise<void>;
+  updateDistrictById(id: string, fields: Record<string, any>): Promise<void>;
+}

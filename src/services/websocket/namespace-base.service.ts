@@ -2,6 +2,7 @@ import { Namespace, Socket } from 'socket.io';
 import * as client from 'prom-client';
 import { verifyToken } from '../../utils/jwt.utils';
 import { webSocketSecurityValidator, type SecurityContext } from './websocket-security-validator.service';
+import { logger } from '../../utils/logger';
 
 export interface NamespaceSocketData {
   userId: string;
@@ -15,6 +16,7 @@ export interface NamespaceSocketData {
 export abstract class NamespaceBaseService {
   protected namespace: Namespace;
   protected connectedUsers: Map<string, Set<Socket>> = new Map();
+  private lastDisconnectAt: Map<string, number> = new Map();
   private roomEmitChains: Map<string, Promise<any>> = new Map();
 
   constructor(namespace: Namespace) {
@@ -90,9 +92,13 @@ export abstract class NamespaceBaseService {
       }
 
       const authDuration = Date.now() - startTime;
-      if (process.env.API_DEBUG === '1') {
-        console.log(`WS ${this.getNamespaceName()}: auth ok for ${userRole} ${decoded.userId} in ${authDuration}ms`);
-      }
+      logger.info('ws:auth_ok', {
+        namespace: this.getNamespaceName(),
+        userId: decoded.userId,
+        role: userRole,
+        durationMs: authDuration,
+        traceId,
+      });
 
       next();
     });
@@ -106,11 +112,32 @@ export abstract class NamespaceBaseService {
           || new client.Counter({ name: 'ws_connections_total', help: 'WebSocket connections', labelNames: ['namespace'] });
         c.inc({ namespace: this.getNamespaceName() });
       } catch {}
+      // Standardized connection metric with result label
+      try {
+        const c2 = (client.register.getSingleMetric('cw_ws_connection_total') as client.Counter<string>)
+          || new client.Counter({ name: 'cw_ws_connection_total', help: 'WS connections (standardized)', labelNames: ['namespace', 'result'] });
+        c2.inc({ namespace: this.getNamespaceName(), result: 'success' });
+      } catch {}
+
+      // Reconnect heuristic: if same user disconnected recently, count as reconnect
+      try {
+        const key = `${this.getNamespaceName()}:${socket.data.userId}`;
+        const last = this.lastDisconnectAt.get(key) || 0;
+        if (last && Date.now() - last < 60_000) {
+          const rc = (client.register.getSingleMetric('cw_ws_reconnect_total') as client.Counter<string>)
+            || new client.Counter({ name: 'cw_ws_reconnect_total', help: 'WS reconnects detected (heuristic)', labelNames: ['namespace', 'result'] });
+          rc.inc({ namespace: this.getNamespaceName(), result: 'success' });
+        }
+      } catch {}
 
       const userId = socket.data.userId;
-      if (process.env.API_DEBUG === '1') {
-        console.log(`${this.getNamespaceName()}: User ${userId} connected (${socket.id})`);
-      }
+      logger.info('ws:connect', {
+        namespace: this.getNamespaceName(),
+        socketId: socket.id,
+        userId,
+        sessionId: (socket.data as any)?.sessionId,
+        traceId: (socket.data as any)?.traceId || undefined,
+      });
       
       // Track multiple connections per user
       if (!this.connectedUsers.has(userId)) {
@@ -137,9 +164,18 @@ export abstract class NamespaceBaseService {
             || new client.Counter({ name: 'ws_disconnects_total', help: 'WebSocket disconnects', labelNames: ['namespace', 'reason'] });
           c.inc({ namespace: this.getNamespaceName(), reason });
         } catch {}
-        if (process.env.API_DEBUG === '1') {
-          console.log(`${this.getNamespaceName()}: User ${userId} disconnected (${socket.id}) - ${reason}`);
-        }
+        try {
+          const key = `${this.getNamespaceName()}:${socket.data.userId}`;
+          this.lastDisconnectAt.set(key, Date.now());
+        } catch {}
+        logger.info('ws:disconnect', {
+          namespace: this.getNamespaceName(),
+          socketId: socket.id,
+          userId,
+          reason,
+          sessionId: (socket.data as any)?.sessionId,
+          traceId: (socket.data as any)?.traceId || undefined,
+        });
         
         const userSockets = this.connectedUsers.get(userId);
         if (userSockets) {
@@ -171,9 +207,13 @@ export abstract class NamespaceBaseService {
       });
 
       socket.on('error', (error) => {
-        if (process.env.API_DEBUG === '1') {
-          console.error(`${this.getNamespaceName()}: Socket error for ${userId}:`, error);
-        }
+        logger.warn('ws:error', {
+          namespace: this.getNamespaceName(),
+          socketId: socket.id,
+          userId,
+          error: error instanceof Error ? error.message : String(error),
+          traceId: (socket.data as any)?.traceId || undefined,
+        });
         this.onError(socket, error);
       });
     });
@@ -206,6 +246,12 @@ export abstract class NamespaceBaseService {
         const c = (client.register.getSingleMetric('ws_messages_emitted_total') as client.Counter<string>)
           || new client.Counter({ name: 'ws_messages_emitted_total', help: 'WebSocket messages emitted', labelNames: ['namespace', 'event'] });
         c.inc({ namespace: this.getNamespaceName(), event });
+      } catch {}
+      // Standardized alias with label 'type'
+      try {
+        const c2 = (client.register.getSingleMetric('cw_ws_messages_total') as client.Counter<string>)
+          || new client.Counter({ name: 'cw_ws_messages_total', help: 'WS messages emitted', labelNames: ['namespace', 'type'] });
+        c2.inc({ namespace: this.getNamespaceName(), type: event });
       } catch {}
 
       // Event versioning: attach schemaVersion to payload if object-like and absent (non-breaking)
