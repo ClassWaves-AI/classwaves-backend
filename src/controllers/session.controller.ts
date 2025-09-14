@@ -2292,15 +2292,19 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
       complianceBasis: 'legitimate_interest',
     }).catch(() => {});
     
-    // Get updated session
+    // Get updated session (basic for response; we'll cache full detail below)
     const updatedSession = await getCompositionRoot().getSessionRepository().getBasic(sessionId);
     
-    // Write-through: upsert minimal session-detail cache for the actor teacher
+    // Write-through: upsert FULL session-detail cache for the actor teacher
     try {
-      const cacheKey = `session_detail:${sessionId}:${teacher.id}`;
-      await queryCacheService.upsertCachedQuery('session-detail', cacheKey, updatedSession, { sessionId, teacherId: teacher.id });
+      const detailRepo = getCompositionRoot().getSessionDetailRepository();
+      const fullRow = await detailRepo.getOwnedSessionDetail(sessionId, teacher.id);
+      if (fullRow) {
+        const cacheKey = `session_detail:${sessionId}:${teacher.id}`;
+        await queryCacheService.upsertCachedQuery('session-detail', cacheKey, fullRow, { sessionId, teacherId: teacher.id });
+      }
     } catch (e) {
-      console.warn('⚠️ Write-through cache upsert failed after updateSession:', e instanceof Error ? e.message : String(e));
+      console.warn('⚠️ Write-through session-detail cache upsert failed after updateSession:', e instanceof Error ? e.message : String(e));
     }
     
     // Emit cache event for invalidation + WS client refresh
