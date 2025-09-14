@@ -762,15 +762,16 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     }
     console.log('🔄 Session created event emitted for cache management');
 
-    // Write-through: upsert minimal session-detail cache for the creator
+    // Write-through: upsert FULL session-detail cache for the creator to avoid incomplete cache entries
     try {
-      const minimalRow = await getCompositionRoot().getSessionRepository().getOwnedSessionBasic(sessionId, teacher.id);
-      if (minimalRow) {
+      const detailRepo = getCompositionRoot().getSessionDetailRepository();
+      const fullRow = await detailRepo.getOwnedSessionDetail(sessionId, teacher.id);
+      if (fullRow) {
         const cacheKey = `session_detail:${sessionId}:${teacher.id}`;
-        await queryCacheService.upsertCachedQuery('session-detail', cacheKey, minimalRow, { sessionId, teacherId: teacher.id });
+        await queryCacheService.upsertCachedQuery('session-detail', cacheKey, fullRow, { sessionId, teacherId: teacher.id });
       }
     } catch (e) {
-      console.warn('⚠️ Write-through cache upsert failed after createSession:', e instanceof Error ? e.message : String(e));
+      console.warn('⚠️ Write-through session-detail cache upsert failed after createSession:', e instanceof Error ? e.message : String(e));
     }
 
     return res.status(201).json({
