@@ -309,6 +309,17 @@ export class QueryCacheService {
     const strategy = this.CACHE_STRATEGIES[queryType];
     if (!strategy) return;
 
+    // Guard against accidental partial write-throughs for session-detail
+    if (queryType === 'session-detail') {
+      const d: any = data as any;
+      const hasCore = d && (d.title != null || d.access_code != null || d.goal != null || d.description != null);
+      if (!hasCore) {
+        // Skip caching incomplete rows to avoid first-load UI gaps
+        console.warn('⚠️ Skipping cache write: session-detail missing core fields (title/goal/description/access_code)');
+        return;
+      }
+    }
+
     const baseKey = isPrefixEnabled() ? keys.prefixedKey : keys.legacyKey;
     const cacheEntry: CacheEntry<T> = {
       data,
