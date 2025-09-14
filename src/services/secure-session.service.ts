@@ -758,8 +758,33 @@ export class SecureSessionService {
   }
   
   // Helper method to remove corrupted sessions
+  // Avoid recursion by directly removing keys instead of calling invalidateSession
   private static async removeCorruptedSession(sessionId: string): Promise<void> {
-    await this.invalidateSession(sessionId, 'Corrupted session data');
+    try {
+      const legacy = `secure_session:${sessionId}`;
+      const prefixed = makeKey('secure_session', sessionId);
+      // Remove encrypted session keys
+      if (isPrefixEnabled()) {
+        await cachePort.del(prefixed);
+        if (isDualWriteEnabled()) {
+          await cachePort.del(legacy);
+        }
+      } else {
+        await cachePort.del(legacy);
+      }
+      // Remove metadata (best-effort)
+      try { await redisService.getClient().del(`session_metadata:${sessionId}`); } catch {}
+      // Record minimal invalidation log (without teacherId)
+      try {
+        await redisService.set(
+          `session_invalidation:${sessionId}`,
+          JSON.stringify({ sessionId, reason: 'Corrupted session data', timestamp: new Date().toISOString() }),
+          86400 * 7
+        );
+      } catch {}
+    } catch (e) {
+      console.error('❌ removeCorruptedSession failed:', e instanceof Error ? e.message : String(e));
+    }
   }
   
   // SECURITY 16: Get security metrics for monitoring

@@ -3,6 +3,8 @@ import multer from 'multer';
 import * as client from 'prom-client';
 import { AudioWindowUploadSchema, isSupportedAudioMime } from '../utils/zod-schemas/audio-upload.schema';
 import { idempotencyPort } from '../utils/idempotency.port.instance';
+import { redisService } from '../services/redis.service';
+import { RedisRateLimiter } from '../services/websocket/utils/rate-limiter.util';
 
 // Lazy import bullmq to allow tests to mock easily
 type BullQueue = { add: (name: string, data: any, opts?: any) => Promise<{ id?: string }> };
@@ -24,6 +26,10 @@ const audioUploadLabeled = getCounter('audio_upload_requests_total', 'Total audi
 const audioDedupHitTotal = getCounter('audio_dedup_hit_total', 'Total dedupe hits for audio windows');
 const sttJobsQueuedTotal = getCounter('stt_jobs_queued_total', 'Total STT jobs queued');
 const uploadBytesHistogram = getHistogram('audio_upload_window_bytes', 'Uploaded window size (bytes)', [8e3, 3.2e4, 1.28e5, 5.12e5, 2.0e6]);
+const audioUploadRateLimitedTotal = getCounter('audio_upload_rate_limited_total', 'Total REST audio uploads rate-limited');
+
+// Simple per-group rate limiter (REST uploads)
+const restLimiter = new RedisRateLimiter(redisService.getClient());
 
 // Multer config (memory storage)
 const upload = multer({
@@ -119,7 +125,53 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
     }
 
     uploadBytesHistogram.observe(file.buffer.length);
+
+    // REST Guardrails — per-group min-interval + optional simple rate cap
+    // Min interval: throttle rapid successive uploads for a group (defaults to ~0.8s)
+    try {
+      const minIntervalMs = parseInt(process.env.AUDIO_WINDOW_MIN_INTERVAL_MS || '800', 10);
+      const minIntervalSec = Math.max(1, Math.ceil(minIntervalMs / 1000));
+      if (minIntervalSec > 0) {
+        const minKey = `rest:minint:audio:window:${groupId}`;
+        // Acquire a short-lived NX lock; if present, we are within the min interval
+        const setRes = await redisService.setWithOptions(minKey, '1', minIntervalSec, 'NX');
+        if (setRes !== 'OK') {
+          audioUploadRateLimitedTotal.inc();
+          res.setHeader('Retry-After', String(minIntervalSec));
+          if (process.env.API_DEBUG === '1') {
+            try { console.warn('🛑 REST upload rate-limited (min-interval)', { groupId, minIntervalMs }); } catch {}
+          }
+          const status = parseInt(process.env.AUDIO_WINDOW_RATE_LIMIT_STATUS || '429', 10);
+          return res.status(status).json({ ok: false, error: 'RATE_LIMITED' });
+        }
+      }
+    } catch {}
+
+    // Optional simple rate cap (legacy config) — keeps compatibility with existing envs
+    try {
+      const maxPerWindow = parseInt(process.env.AUDIO_REST_MAX_PER_SEC || '0', 10);
+      const windowSec = parseInt(process.env.AUDIO_REST_RATE_WINDOW_SEC || '1', 10);
+      if (maxPerWindow > 0) {
+        const key = `rest:rate:audio:window:${groupId}`;
+        const allowed = await restLimiter.allow(key, maxPerWindow, windowSec);
+        if (!allowed) {
+          audioUploadRateLimitedTotal.inc();
+          res.setHeader('Retry-After', String(windowSec));
+          if (process.env.API_DEBUG === '1') {
+            try { console.warn('🛑 REST upload rate-limited (rate-cap)', { groupId, maxPerWindow, windowSec }); } catch {}
+          }
+          const status = parseInt(process.env.AUDIO_WINDOW_RATE_LIMIT_STATUS || '429', 10);
+          return res.status(status).json({ ok: false, error: 'RATE_LIMITED' });
+        }
+      }
+    } catch {}
+
     const result = await processAudioWindow({ sessionId, groupId, chunkId, startTs, endTs, file, traceId });
+    // Update WS namespace ingress timestamp for stall detection (REST path)
+    try {
+      const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+      getNamespacedWebSocketService()?.getSessionsService()?.updateLastIngestAt(sessionId, groupId);
+    } catch {}
     if (process.env.API_DEBUG === '1') {
       console.log('🎙️ AUDIO WINDOW ACCEPTED', { sessionId, groupId, chunkId, bytes: file.buffer.length, queuedJobId: (result as any)?.queuedJobId, dedup: (result as any)?.dedup });
     }

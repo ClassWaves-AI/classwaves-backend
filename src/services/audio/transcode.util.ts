@@ -8,17 +8,23 @@ export interface TranscodeResult {
 
 // Real in-memory transcode to WAV (PCM 16kHz mono) using ffmpeg-static + fluent-ffmpeg
 export async function maybeTranscodeToWav(buf: Buffer, mime: string): Promise<TranscodeResult> {
-  // If already WAV or flag disabled, pass-through
-  if (mime?.toLowerCase().startsWith('audio/wav') || process.env.STT_TRANSCODE_TO_WAV !== '1') {
+  // If already WAV or transcode disabled, pass-through
+  const wavAlready = mime?.toLowerCase().startsWith('audio/wav');
+  const allowTranscode = (process.env.STT_TRANSCODE_TO_WAV === '1') || (process.env.WS_STT_TRANSCODE_TO_WAV === '1');
+  if (wavAlready || !allowTranscode) {
     return { buffer: buf, mime };
   }
 
   // Prefer ffmpeg-static, but fall back to system ffmpeg if available
   const bin = (ffmpegPath as string) || process.env.FFMPEG_PATH || 'ffmpeg';
 
+  // Hint input container to ffmpeg to stabilize fragment decoding
+  const mt = (mime || '').toLowerCase();
+  const inputFormat = mt.includes('webm') ? 'webm' : mt.includes('ogg') ? 'ogg' : '';
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
+    ...(inputFormat ? ['-f', inputFormat] : []),
     '-i', 'pipe:0',           // read input from stdin
     '-ac', '1',               // mono
     '-ar', '16000',           // 16 kHz

@@ -4,11 +4,14 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { redisService } from '../redis.service';
 import { SessionsNamespaceService } from './sessions-namespace.service';
 import { GuidanceNamespaceService } from './guidance-namespace.service';
+import type { Redis } from 'ioredis';
 
 export class NamespacedWebSocketService {
   private io: SocketIOServer;
   private sessionsService!: SessionsNamespaceService;
   private guidanceService!: GuidanceNamespaceService;
+  private pubClient: Redis | null = null;
+  private subClient: Redis | null = null;
 
   constructor(httpServer: HTTPServer) {
     // Initialize Socket.IO server
@@ -58,9 +61,9 @@ export class NamespacedWebSocketService {
     try {
       if (redisService.isConnected()) {
         const redisClient = redisService.getClient();
-        const subClient = redisClient.duplicate();
-        
-        this.io.adapter(createAdapter(redisClient, subClient));
+        this.pubClient = redisClient as unknown as Redis;
+        this.subClient = (redisClient as any).duplicate();
+        this.io.adapter(createAdapter(this.pubClient as any, this.subClient as any));
         console.log('✅ WebSocket Redis adapter configured');
       } else {
         console.warn('⚠️ WebSocket running without Redis adapter (degraded mode)');
@@ -99,6 +102,10 @@ export class NamespacedWebSocketService {
     try {
       await this.io.close();
     } catch {}
+    // Ensure Redis adapter clients are closed to avoid hanging the process
+    try { await (this.subClient as any)?.quit?.(); } catch {}
+    this.subClient = null;
+    // Do not quit pubClient here; it belongs to redisService which handles its own shutdown
   }
 }
 

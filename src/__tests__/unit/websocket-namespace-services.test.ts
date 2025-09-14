@@ -543,11 +543,25 @@ describe('WebSocket Namespace Services', () => {
       const socket: any = createMockSocket({ role: 'student' });
       socket.join = jest.fn();
 
-      // Mock databricksService.queryOne to return a participant with group_id
+      // Mock databricksService.queryOne:
+      //  1) participant row with group assignment
+      //  2) student consent record to satisfy COPPA gate (teacher_verified_age=true)
       const db = require('../../services/databricks.service');
-      jest.spyOn(db.databricksService, 'queryOne').mockResolvedValueOnce({
-        id: 'participant-1', session_id: 'session-1', student_id: 'student-1', group_id: 'group-1', group_name: 'Group 1'
-      });
+      const q1 = jest
+        .spyOn(db.databricksService, 'queryOne')
+        .mockResolvedValueOnce({
+          id: 'participant-1',
+          session_id: 'session-1',
+          student_id: 'student-1',
+          group_id: 'group-1',
+          group_name: 'Group 1',
+        })
+        .mockResolvedValueOnce({
+          id: 'student-1',
+          teacher_verified_age: true,
+          coppa_compliant: true,
+          has_parental_consent: true,
+        });
 
       // Call private method via bracket notation
       await (service as any).handleStudentSessionJoin(socket, { sessionId: 'session-1' });

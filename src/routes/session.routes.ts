@@ -16,7 +16,8 @@ import {
   getCacheHealth,
   getDashboardMetrics,
   getSessionSummaries,
-  getGroupSummary
+  getGroupSummary,
+  consentCheck
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { databricksService } from '../services/databricks.service';
@@ -45,6 +46,8 @@ router.get('/:sessionId/groups/:groupId/summary', authenticate, getGroupSummary)
 // Public student join endpoint (no auth)
 router.post('/join', joinSession);
 router.post('/:sessionId/join', joinSession);
+// Public minimal consent check for student app
+router.get('/:sessionId/consent-check', consentCheck);
 
 // WebSocket connection debug endpoint  
 router.get('/:sessionId/websocket-debug', async (req, res) => {

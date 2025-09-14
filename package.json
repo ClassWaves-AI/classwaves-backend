@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "./scripts/dev-startup.sh",
+    "dev:e2e": "E2E_TEST_SECRET=${E2E_TEST_SECRET:-test} NODE_ENV=test STT_INLINE_WORKER=${STT_INLINE_WORKER:-1} STT_FORCE_MOCK=${STT_FORCE_MOCK:-1} API_DEBUG=${API_DEBUG:-1} WS_AUDIO_FLUSH_CADENCE_MS=${WS_AUDIO_FLUSH_CADENCE_MS:-10000} WS_STALL_CHECK_INTERVAL_MS=${WS_STALL_CHECK_INTERVAL_MS:-10000} WS_STALL_NOTIFY_COOLDOWN_MS=${WS_STALL_NOTIFY_COOLDOWN_MS:-30000} AUDIO_WINDOW_MIN_INTERVAL_MS=${AUDIO_WINDOW_MIN_INTERVAL_MS:-800} npm run dev:server-e2e",
+    "dev:server-e2e": "ts-node src/server.ts",
     "dev:server-only": "nodemon --exec ts-node src/server.ts",
     "dev:redis": "./scripts/apply-redis-config.sh",
     "email:test-group-leader": "ts-node src/scripts/send-test-group-leader-email.ts",

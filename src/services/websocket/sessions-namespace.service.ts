@@ -1,6 +1,7 @@
 import { Socket, Namespace } from 'socket.io';
 import { NamespaceBaseService, NamespaceSocketData } from './namespace-base.service';
 import { databricksService } from '../databricks.service';
+import { getTeacherIdForSessionCached } from '../utils/teacher-id-cache.service';
 import { redisService } from '../redis.service';
 import * as client from 'prom-client';
 import { SessionJoinPayloadSchema, SessionStatusUpdateSchema, GroupJoinLeaveSchema, GroupLeaderReadySchema, WaveListenerIssueSchema, GroupStatusUpdateSchema, AudioChunkPayloadSchema, AudioStreamLifecycleSchema } from '../../utils/validation.schemas';
@@ -116,9 +117,55 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       return client.register.getSingleMetric('ai_triggers_suppressed_total') as client.Counter<string>;
     }
   })();
+  private static sttEmptyTranscriptsDroppedTotal = (() => {
+    try {
+      return new client.Counter({
+        name: 'stt_empty_transcripts_dropped_total',
+        help: 'Total empty transcripts dropped before emission',
+        labelNames: ['path'] // ws|rest
+      });
+    } catch {
+      return client.register.getSingleMetric('stt_empty_transcripts_dropped_total') as client.Counter<string>;
+    }
+  })();
   // Track per-group transcript tails to merge overlapping windows
   private lastTranscriptTailTokens: Map<string, string[]> = new Map();
   private lastTranscriptText: Map<string, string> = new Map();
+  // Server-driven audio window flush schedulers per group
+  private groupFlushTimers: Map<string, NodeJS.Timeout> = new Map();
+  private groupToSessionId: Map<string, string> = new Map();
+  private readonly flushCadenceMs = parseInt(process.env.WS_AUDIO_FLUSH_CADENCE_MS || '10000', 10);
+  // Ingress tracking for stall detection
+  private lastIngestAt: Map<string, number> = new Map(); // key: groupId → timestamp (ms)
+  private lastStallNotifiedAt: Map<string, number> = new Map(); // key: groupId → timestamp (ms)
+  private readonly stallCheckIntervalMs = parseInt(process.env.WS_STALL_CHECK_INTERVAL_MS || '10000', 10);
+  private readonly stallNotifyCooldownMs = parseInt(process.env.WS_STALL_NOTIFY_COOLDOWN_MS || '30000', 10);
+  private stallCheckTimer: NodeJS.Timeout | null = null;
+
+  // Metrics: server-driven flush emissions
+  private static audioWindowFlushSentTotal = (() => {
+    try {
+      return new client.Counter({
+        name: 'audio_window_flush_sent_total',
+        help: 'Total server-driven audio window flush events emitted',
+        labelNames: ['session', 'group']
+      });
+    } catch {
+      return client.register.getSingleMetric('audio_window_flush_sent_total') as client.Counter<string>;
+    }
+  })();
+
+  private static audioIngressStallsTotal = (() => {
+    try {
+      return new client.Counter({
+        name: 'audio_ingress_stalls_total',
+        help: 'Total audio ingress stalls detected',
+        labelNames: ['session', 'group']
+      });
+    } catch {
+      return client.register.getSingleMetric('audio_ingress_stalls_total') as client.Counter<string>;
+    }
+  })();
 
   // Merge helper: compute tokens from text (lowercased alnum words, keep positions for slicing)
   private tokenizeWithPositions(text: string): Array<{ token: string; start: number; end: number }> {
@@ -200,7 +247,16 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       ttlSeconds: parseInt(process.env.WS_SNAPSHOT_TTL || '5', 10),
       build: (sid) => this.buildSessionSnapshot(sid),
     });
+
+    // Start stall detector interval (once per service instance)
+    try {
+      if (!this.stallCheckTimer && this.stallCheckIntervalMs > 0) {
+        this.stallCheckTimer = setInterval(() => this.checkForIngressStalls(), this.stallCheckIntervalMs);
+      }
+    } catch {}
   }
+
+  // teacherId cache handled by shared utility
 
   protected onConnection(socket: Socket): void {
     const socketData = socket.data as SessionSocketData;
@@ -307,6 +363,18 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     if (socketData.joinedRooms) {
       socketData.joinedRooms.forEach(room => {
         this.notifyRoomOfUserStatus(room, socket.data.userId, 'disconnected');
+
+        // If this was a group room and the room is now empty, stop its flush scheduler
+        try {
+          if (room.startsWith('group:')) {
+            const groupId = room.slice('group:'.length);
+            const roomSet = this.namespace.adapter.rooms.get(room);
+            const hasMembers = !!roomSet && roomSet.size > 0;
+            if (!hasMembers) {
+              this.stopGroupFlushScheduler(groupId);
+            }
+          }
+        } catch {}
       });
     }
   }
@@ -1058,6 +1126,17 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           groupId: data.groupId
         });
       }
+      // Start server-driven flush scheduler for this group (REST-first control path)
+      try {
+        const sessionId = sData?.sessionId;
+        if (sessionId) {
+          this.startGroupFlushScheduler(sessionId, data.groupId);
+        }
+      } catch (e) {
+        if (process.env.API_DEBUG === '1') {
+          console.warn('Failed to start group flush scheduler:', e instanceof Error ? e.message : String(e));
+        }
+      }
     } catch (error) {
       console.error('Audio stream start error:', error);
       socket.emit('error', { 
@@ -1095,6 +1174,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'SESSION_NOT_JOINED' });
         return;
       }
+
+      // Update ingress timestamp for stall detection (WS path)
+      try {
+        if (sessionId) this.updateLastIngestAt(sessionId, data.groupId);
+      } catch {}
       try {
         const snapshot = await this.snapshotCache.get(sessionId);
         const status = (snapshot as any)?.status || 'created';
@@ -1285,7 +1369,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         // Merge overlapping content across windows to avoid repeated clauses
         const mergedText = this.mergeOverlappingTranscript(data.groupId, result.text);
         if (!mergedText || mergedText.trim().length === 0) {
-          // Entirely overlapped content; skip emission
+          // Entirely overlapped content; skip emission and count drop
+          try { SessionsNamespaceService.sttEmptyTranscriptsDroppedTotal.inc({ path: 'ws' }); } catch {}
           return;
         }
         // Skip if identical to the last emitted text for this group (case-insensitive)
@@ -1377,7 +1462,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
             const { aiAnalysisBufferService } = await import('../ai-analysis-buffer.service');
             await aiAnalysisBufferService.bufferTranscription(data.groupId, sessionId, result.text);
             const { aiAnalysisTriggerService } = await import('../ai-analysis-trigger.service');
-            await aiAnalysisTriggerService.checkAndTriggerAIAnalysis(data.groupId, sessionId, (socket.data as any).userId);
+            // Resolve teacherId for this session (WS path), fallback to socket userId if unavailable
+            let teacherId: string | null = null;
+            try { teacherId = await getTeacherIdForSessionCached(sessionId); } catch {}
+            await aiAnalysisTriggerService.checkAndTriggerAIAnalysis(
+              data.groupId,
+              sessionId,
+              (teacherId || (socket.data as any).userId)
+            );
           } else if (process.env.API_DEBUG === '1') {
             console.log(JSON.stringify({ event: 'ai_suppressed_ending', sessionId }));
             try { SessionsNamespaceService.aiTriggersSuppressedTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
@@ -1519,6 +1611,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           groupId: data.groupId
         });
       }
+      // Stop server-driven flush scheduler for this group
+      try {
+        this.stopGroupFlushScheduler(data.groupId);
+      } catch {}
       // Reset transcript merge state when stream ends
       try {
         this.lastTranscriptTailTokens.delete(data.groupId);
@@ -1577,6 +1673,13 @@ export class SessionsNamespaceService extends NamespaceBaseService {
   // Public helper for overlap-aware transcript emission used by HTTP STT worker
   public emitMergedGroupTranscript(sessionId: string, groupId: string, text: string, opts?: { traceId?: string; window?: { startTs?: number; endTs?: number; chunkId?: string } }) {
     const mergedText = this.mergeOverlappingTranscript(groupId, text);
+    if (!mergedText || mergedText.trim().length === 0) {
+      try {
+        if (process.env.API_DEBUG === '1') console.log('🧹 Dropping empty transcript (REST path)');
+        SessionsNamespaceService.sttEmptyTranscriptsDroppedTotal.inc({ path: 'rest' });
+      } catch {}
+      return;
+    }
     this.emitToRoom(`session:${sessionId}`, 'transcription:group:new', {
       id: opts?.window?.chunkId, // expose chunkId as stable id for client-side de-duplication
       sessionId,
@@ -1662,6 +1765,101 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       stateVersion,
       timestamp: new Date().toISOString(),
     };
+  }
+
+  // Flush scheduler helpers
+  private startGroupFlushScheduler(sessionId: string, groupId: string) {
+    // Avoid duplicate schedulers per group
+    if (this.groupFlushTimers.has(groupId)) return;
+
+    const jitter = () => Math.floor((Math.random() * 500) - 250); // ±250ms
+    const scheduleNext = () => {
+      const delay = Math.max(1000, this.flushCadenceMs + jitter());
+      const timer = setTimeout(() => {
+        try {
+          const payload = { sessionId, groupId, cadenceMs: this.flushCadenceMs };
+          // Emit to group room; students listen and perform stop→upload→start
+          this.emitToRoom(`group:${groupId}`, 'audio:window:flush', payload);
+          try { SessionsNamespaceService.audioWindowFlushSentTotal.inc({ session: sessionId, group: groupId }); } catch {}
+          if (process.env.API_DEBUG === '1') {
+            console.log(JSON.stringify({ event: 'audio_window_flush_emit', ...payload }));
+          }
+        } catch (e) {
+          if (process.env.API_DEBUG === '1') {
+            console.warn('audio_window_flush_emit_failed', e instanceof Error ? e.message : String(e));
+          }
+        } finally {
+          // Reschedule if still active
+          if (this.groupFlushTimers.has(groupId)) {
+            scheduleNext();
+          }
+        }
+      }, delay);
+      this.groupFlushTimers.set(groupId, timer);
+      this.groupToSessionId.set(groupId, sessionId);
+    };
+
+    scheduleNext();
+  }
+
+  private stopGroupFlushScheduler(groupId: string) {
+    const t = this.groupFlushTimers.get(groupId);
+    if (t) {
+      try { clearTimeout(t); } catch {}
+      this.groupFlushTimers.delete(groupId);
+      this.groupToSessionId.delete(groupId);
+      if (process.env.API_DEBUG === '1') {
+        try { console.log(JSON.stringify({ event: 'audio_window_flush_stopped', groupId })); } catch {}
+      }
+    }
+  }
+
+  // Best-effort stop of all group flush schedulers for a given session
+  public stopFlushSchedulersForSession(sessionId: string) {
+    try {
+      for (const [groupId, sid] of this.groupToSessionId.entries()) {
+        if (sid === sessionId) {
+          this.stopGroupFlushScheduler(groupId);
+        }
+      }
+    } catch {}
+  }
+
+  // Ingress tracking helpers
+  public updateLastIngestAt(sessionId: string, groupId: string) {
+    this.groupToSessionId.set(groupId, sessionId);
+    this.lastIngestAt.set(groupId, Date.now());
+  }
+
+  private checkForIngressStalls() {
+    const now = Date.now();
+    const threshold = this.flushCadenceMs * 2;
+    // Only consider groups that have an active flush scheduler (active windowed REST path)
+    for (const [groupId, timer] of this.groupFlushTimers.entries()) {
+      void timer; // unused var guard
+      const last = this.lastIngestAt.get(groupId) || 0;
+      const overdue = now - last;
+      if (last === 0 || overdue <= threshold) continue;
+      const lastNotified = this.lastStallNotifiedAt.get(groupId) || 0;
+      if (now - lastNotified < this.stallNotifyCooldownMs) continue;
+      const sessionId = this.groupToSessionId.get(groupId);
+      if (!sessionId) continue;
+
+      // Emit stall notification to group room
+      const payload = { sessionId, groupId, lastIngestAt: last, overdueMs: overdue };
+      try {
+        this.emitToRoom(`group:${groupId}`, 'audio:ingress:stalled', payload);
+        SessionsNamespaceService.audioIngressStallsTotal.inc({ session: sessionId, group: groupId });
+        this.lastStallNotifiedAt.set(groupId, now);
+        if (process.env.API_DEBUG === '1') {
+          console.warn(JSON.stringify({ event: 'audio_ingress_stalled', ...payload }));
+        }
+      } catch (e) {
+        if (process.env.API_DEBUG === '1') {
+          console.warn('audio_ingress_stalled_emit_failed', e instanceof Error ? e.message : String(e));
+        }
+      }
+    }
   }
 
   

@@ -4,7 +4,8 @@ import { z } from 'zod'
 const ClaimsSchema = z.object({
   sub: z.string().optional(),
   userId: z.string().optional(),
-  email: z.string().email().optional(),
+  // Accept any string for email when present; upstream edge validation handles email formatting
+  email: z.string().optional(),
   schoolId: z.string().optional(),
   roles: z.array(z.string()).optional(),
   role: z.string().optional(),
@@ -53,4 +54,3 @@ export function hasAnyRole(ctx: AuthContext | undefined, allowed: string[]): boo
 export function isSuperAdmin(ctx: AuthContext | undefined): boolean {
   return !!ctx && ctx.roles.includes('super_admin')
 }
-

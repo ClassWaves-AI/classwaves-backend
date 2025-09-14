@@ -4,6 +4,7 @@ import { redisService } from '../services/redis.service';
 import { openAIWhisperService } from '../services/openai-whisper.service';
 import { maybeTranscodeToWav } from '../services/audio/transcode.util';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
+import { getTeacherIdForSessionCached } from '../services/utils/teacher-id-cache.service';
 
 type AudioJob = {
   chunkId: string;
@@ -36,11 +37,51 @@ const transcriptEmitLatencyMs = getHistogram('transcript_emit_latency_ms', 'Late
 
 export async function processAudioJob(data: AudioJob): Promise<void> {
   const start = Date.now();
-  const buf = Buffer.from(data.audioB64, 'base64');
+  let buf = Buffer.from(data.audioB64, 'base64');
   let mime = data.mime;
 
+  // Minimal container header caches (per group) for REST uploads
+  // Ensures each submitted buffer is a self-contained file for decoder robustness
+  const mt = (mime || '').toLowerCase();
+  try {
+    if (mt.startsWith('audio/webm')) {
+      if (hasWebMHeader(buf)) {
+        const hdr = extractWebMHeader(buf);
+        if (hdr && hdr.length > 0) webmHeaderCache.set(data.groupId, hdr);
+      } else {
+        const hdr = webmHeaderCache.get(data.groupId);
+        if (hdr && hdr.length > 0) {
+          if (process.env.API_DEBUG === '1') {
+            try { console.log(JSON.stringify({ event: 'webm_header_prepended', groupId: data.groupId, header_bytes: hdr.length, window_bytes: buf.length })); } catch {}
+          }
+          buf = Buffer.concat([hdr, buf], hdr.length + buf.length);
+        }
+      }
+    } else if (mt.startsWith('audio/ogg')) {
+      if (hasOggHeader(buf)) {
+        oggHeaderCache.set(data.groupId, buf);
+      } else {
+        const hdr = oggHeaderCache.get(data.groupId);
+        if (hdr && hdr.length > 0) {
+          if (process.env.API_DEBUG === '1') {
+            try { console.log(JSON.stringify({ event: 'ogg_header_prepended', groupId: data.groupId, header_bytes: hdr.length, window_bytes: buf.length })); } catch {}
+          }
+          buf = Buffer.concat([hdr, buf], hdr.length + buf.length);
+        }
+      }
+    }
+  } catch {}
+
+  // Resolve language hint (session-level hook can be added later); fallback to env
+  const languageHint = (() => { try { const v = (process.env.STT_LANGUAGE_HINT || '').trim(); return v || undefined; } catch { return undefined; } })();
+
   const tryTranscribe = async (b: Buffer, m: string) => {
-    return openAIWhisperService.transcribeBuffer(b, m, { durationSeconds: Math.round((data.endTs - data.startTs) / 1000) }, data.schoolId);
+    return openAIWhisperService.transcribeBuffer(
+      b,
+      m,
+      { durationSeconds: Math.round((data.endTs - data.startTs) / 1000), language: languageHint },
+      data.schoolId
+    );
   };
 
   let result;
@@ -67,10 +108,28 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
     endTs: data.endTs,
   };
 
+  // Suppress empty transcripts: skip persistence and WS emission
+  const trimmed = (segment.text || '').trim();
+  if (trimmed.length === 0) {
+    if (process.env.API_DEBUG === '1') {
+      try { console.log('🧹 Dropping empty transcript (REST path)', { chunkId: data.chunkId, groupId: data.groupId }); } catch {}
+    }
+    // Increment global empty transcript drop counter
+    try {
+      const existing = client.register.getSingleMetric('stt_empty_transcripts_dropped_total') as client.Counter<string> | undefined;
+      const counter = existing || new client.Counter({ name: 'stt_empty_transcripts_dropped_total', help: 'Total empty transcripts dropped before emission', labelNames: ['path'] });
+      counter.inc({ path: 'rest' });
+    } catch {}
+    sttJobsSuccessTotal.inc();
+    const base = data.receivedAt || start;
+    transcriptEmitLatencyMs.observe(Date.now() - base);
+    return;
+  }
+
   // Feed AI buffers and trigger insights (namespaced guidance) for REST-first uploads
   // Non-blocking; failures here should not affect transcript emission/persistence
   try {
-    const text = (segment.text || '').trim();
+    const text = trimmed;
     if (text.length > 0) {
       const { aiAnalysisBufferService } = await import('../services/ai-analysis-buffer.service');
       await aiAnalysisBufferService.bufferTranscription(data.groupId, data.sessionId, text);
@@ -141,23 +200,32 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
   transcriptEmitLatencyMs.observe(Date.now() - base);
 }
 
-// Simple in-memory cache for sessionId -> teacherId lookups (worker-lifetime)
-const teacherCache = new Map<string, string | null>();
-async function getTeacherIdForSessionCached(sessionId: string): Promise<string | null> {
-  if (teacherCache.has(sessionId)) return teacherCache.get(sessionId)!;
-  try {
-    const row = await (await import('../services/databricks.service')).databricksService.queryOne<{ teacher_id?: string }>(
-      `SELECT teacher_id FROM classwaves.sessions.classroom_sessions WHERE id = ? LIMIT 1`,
-      [sessionId]
-    );
-    const tid = (row as any)?.teacher_id || null;
-    teacherCache.set(sessionId, tid);
-    return tid;
-  } catch {
-    teacherCache.set(sessionId, null);
-    return null;
-  }
+// --- Minimal container header utilities & caches (scoped to worker module) ---
+const webmHeaderCache = new Map<string, Buffer>();
+const oggHeaderCache = new Map<string, Buffer>();
+
+function hasWebMHeader(b: Buffer): boolean {
+  return !!b && b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3; // EBML
 }
+function findWebMClusterStart(b: Buffer): number {
+  if (!b || b.length < 4) return -1;
+  const pat = Buffer.from([0x1f, 0x43, 0xb6, 0x75]); // Cluster
+  return b.indexOf(pat);
+}
+function extractWebMHeader(b: Buffer): Buffer | null {
+  try {
+    if (!b || b.length < 16) return null;
+    if (!hasWebMHeader(b)) return null;
+    const idx = findWebMClusterStart(b);
+    if (idx > 0) return b.subarray(0, idx);
+    return b; // fallback: cache whole first chunk
+  } catch { return null; }
+}
+function hasOggHeader(b: Buffer): boolean {
+  return !!b && b.length >= 4 && b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53; // OggS
+}
+
+// teacherId cache moved to shared utility
 
 export function startAudioSttWorker(): Worker {
   const concurrency = parseInt(process.env.STT_QUEUE_CONCURRENCY || '10', 10);

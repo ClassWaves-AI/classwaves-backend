@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { openAIWhisperService } from '../openai-whisper.service';
+import { maybeTranscodeToWav } from './transcode.util';
 import * as client from 'prom-client';
 
 interface GroupWindowState {
@@ -171,8 +172,31 @@ export class InMemoryAudioProcessor {
             } else if (mt.startsWith('audio/ogg') && !this.hasOggHeader(audioChunk)) {
               submitBuffer = this.maybePrependOggHeader(groupId, audioChunk);
             }
+            if ((process.env.WS_STT_REPAIR_WEBM_FRAGMENTS || '0') === '1' && mt.startsWith('audio/webm')) {
+              submitBuffer = this.tryRepairWebMFragment(groupId, submitBuffer);
+            }
           } catch {}
-          const transcription = await openAIWhisperService.transcribeBuffer(submitBuffer, mimeType, {}, schoolId);
+          let transcription: any;
+          try {
+            transcription = await openAIWhisperService.transcribeBuffer(submitBuffer, mimeType, {}, schoolId);
+          } catch (e) {
+            if (process.env.WS_STT_TRANSCODE_TO_WAV === '1') {
+              try {
+                if (process.env.API_DEBUG === '1') {
+                  try { console.warn('🎛️  WS Whisper decode error — attempting WAV transcode fallback'); } catch {}
+                }
+                const wav = await maybeTranscodeToWav(submitBuffer, mimeType);
+                transcription = await openAIWhisperService.transcribeBuffer(wav.buffer, wav.mime, {}, schoolId);
+                if (process.env.API_DEBUG === '1') {
+                  try { console.log('✅ WS WAV transcode fallback succeeded'); } catch {}
+                }
+              } catch (e2) {
+                throw e2;
+              }
+            } else {
+              throw e;
+            }
+          }
           // Zero and reset window
           try { this.secureZeroBuffer(audioChunk); } catch {}
           state.chunks = [];
@@ -441,6 +465,77 @@ export class InMemoryAudioProcessor {
       return buf;
     } catch {
       return null;
+    }
+  }
+
+  // --- WebM fragment repair (align + rewrite) ---
+  private ebmlVintLenFromFirstByte(b: number): number {
+    if (b & 0x80) return 1;
+    if (b & 0x40) return 2;
+    if (b & 0x20) return 3;
+    if (b & 0x10) return 4;
+    if (b & 0x08) return 5;
+    if (b & 0x04) return 6;
+    if (b & 0x02) return 7;
+    return 8;
+  }
+  private encodeEbmlVint(value: number, length: number): Buffer {
+    const out = new Uint8Array(length);
+    for (let i = length - 1; i >= 0; i--) {
+      out[i] = value & 0x7f;
+      value >>= 7;
+    }
+    const mask = 1 << (8 - length);
+    out[0] |= mask;
+    return Buffer.from(out);
+  }
+  private tryRepairWebMFragment(groupId: string, buf: Buffer): Buffer {
+    try {
+      if (!buf || buf.length < 16) return buf;
+      // Ensure header present
+      let out = buf;
+      if (!this.hasWebMHeader(out)) {
+        out = this.maybePrependWebMHeader(groupId, out);
+      }
+      const header = this.extractWebMHeader(out);
+      const headerLen = header ? header.length : 0;
+      // Find first Cluster after header
+      const idx = this.findWebMClusterStart(out);
+      if (idx < 0) return out; // no cluster signature present
+      // If cluster starts before or at header end, consider it aligned; else drop junk between header and cluster
+      let aligned = out;
+      if (idx > headerLen) {
+        aligned = Buffer.concat([ out.subarray(0, headerLen), out.subarray(idx) ]);
+      }
+      // Rewrite Cluster size to actual payload length
+      const clusterStart = headerLen; // after possible trim, cluster at header end
+      if (aligned.length < clusterStart + 5) return aligned; // not enough bytes for id+size
+      // Validate cluster id
+      if (!(aligned[clusterStart] === 0x1f && aligned[clusterStart+1] === 0x43 && aligned[clusterStart+2] === 0xb6 && aligned[clusterStart+3] === 0x75)) {
+        return aligned;
+      }
+      const sizeFirst = aligned[clusterStart + 4];
+      const oldL = this.ebmlVintLenFromFirstByte(sizeFirst);
+      const oldPayloadStart = clusterStart + 4 + oldL;
+      if (oldPayloadStart >= aligned.length) return aligned;
+      // Choose minimal L so that payload fits in 7*L bits
+      let chosenL = 1;
+      for (let L = 1; L <= 4; L++) {
+        const payloadLen = aligned.length - (clusterStart + 4 + L);
+        const maxVal = (1 << (7 * L)) - 1; // safe for L<=4
+        if (payloadLen >= 0 && payloadLen < maxVal) { chosenL = L; break; }
+      }
+      const newPayloadLen = aligned.length - (clusterStart + 4 + chosenL);
+      if (newPayloadLen < 0) return aligned;
+      const newSize = this.encodeEbmlVint(newPayloadLen, chosenL);
+      // Assemble: header + clusterID + new size + payload (skip old size bytes)
+      const head = aligned.subarray(0, clusterStart);
+      const clusterId = aligned.subarray(clusterStart, clusterStart + 4);
+      const payload = aligned.subarray(oldPayloadStart);
+      const repaired = Buffer.concat([ head, clusterId, newSize, payload ]);
+      return repaired;
+    } catch {
+      return buf;
     }
   }
   // If buffer lacks EBML header and we have a cached header for the group, prepend it

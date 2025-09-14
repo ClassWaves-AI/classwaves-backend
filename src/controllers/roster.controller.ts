@@ -50,7 +50,7 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
       const firstName = nameParts[0] || '';
       const lastName = nameParts.slice(1).join(' ') || '';
       
-      // Determine consent status
+      // Determine consent status (legacy heuristic remains)
       let consentStatus = 'none';
       if (student.has_parental_consent) {
         consentStatus = 'granted';
@@ -68,7 +68,15 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
         status: student.status,
         consentStatus,
         consentDate: student.consent_date,
-        isUnderConsentAge: student.parent_email ? true : false, // Infer from parent email presence
+        // Prefer explicit teacher verification; otherwise infer from parent email presence
+        isUnderConsentAge: student.teacher_verified_age === true ? false : Boolean(student.parent_email),
+        // New flags for UI transparency
+        emailConsentGiven: Boolean(student.email_consent === true),
+        teacherVerifiedAge: Boolean(student.teacher_verified_age === true),
+        coppaCompliant: Boolean(student.coppa_compliant === true),
+        // Surface additional consent toggles for accurate UI defaults
+        dataConsentGiven: Boolean(student.data_sharing_consent === true),
+        audioConsentGiven: Boolean(student.audio_recording_consent === true),
         createdAt: student.created_at,
         updatedAt: student.updated_at,
       };
@@ -160,6 +168,23 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       created_at: now,
       updated_at: now,
     });
+
+    // Align new consent fields with initial creation state
+    try {
+      const newFields: Record<string, any> = {};
+      if (isUnderConsentAge === false) {
+        newFields.teacher_verified_age = true;
+        newFields.coppa_compliant = true;
+      }
+      if (hasParentalConsent === true) {
+        newFields.email_consent = true;
+        newFields.coppa_compliant = true;
+      }
+      if (Object.keys(newFields).length) {
+        newFields.updated_at = now;
+        await rosterRepo.updateStudentFields(studentId, newFields);
+      }
+    } catch {}
 
     // Best effort: store structured names if columns exist
     try {
@@ -268,7 +293,13 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       parentEmail,
       status,
       dataConsentGiven,
-      audioConsentGiven
+      audioConsentGiven,
+      emailConsentGiven,
+      teacherVerifiedAge,
+      coppaCompliant,
+      // Back-compat aliases from older UI
+      isUnderConsentAge,
+      hasParentalConsent
     } = req.body;
 
     // Build update query dynamically
@@ -309,6 +340,48 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     if (audioConsentGiven !== undefined) {
       updateFields.push('audio_recording_consent = ?');
       updateValues.push(audioConsentGiven);
+    }
+    if (emailConsentGiven !== undefined) {
+      updateFields.push('email_consent = ?');
+      updateValues.push(emailConsentGiven);
+    }
+    if (teacherVerifiedAge !== undefined) {
+      updateFields.push('teacher_verified_age = ?');
+      updateValues.push(teacherVerifiedAge);
+      // If teacher verifies age (>=13), mark COPPA compliant
+      if (teacherVerifiedAge === true) {
+        updateFields.push('coppa_compliant = ?');
+        updateValues.push(true);
+      }
+    }
+    if (coppaCompliant !== undefined) {
+      updateFields.push('coppa_compliant = ?');
+      updateValues.push(coppaCompliant);
+    }
+    // Back-compat support: if UI sends these fields, map to new schema
+    if (isUnderConsentAge !== undefined) {
+      // If not under consent age => teacher verified age
+      if (isUnderConsentAge === false) {
+        updateFields.push('teacher_verified_age = ?');
+        updateValues.push(true);
+        updateFields.push('coppa_compliant = ?');
+        updateValues.push(true);
+      } else {
+        // Under 13 -> ensure teacher_verified_age is false
+        updateFields.push('teacher_verified_age = ?');
+        updateValues.push(false);
+      }
+    }
+    if (hasParentalConsent !== undefined) {
+      // Mirror legacy parental consent to new consent fields where appropriate
+      updateFields.push('has_parental_consent = ?');
+      updateValues.push(hasParentalConsent);
+      updateFields.push('consent_date = ?');
+      updateValues.push(hasParentalConsent ? new Date().toISOString() : null);
+      updateFields.push('coppa_compliant = ?');
+      updateValues.push(!!hasParentalConsent);
+      updateFields.push('email_consent = ?');
+      updateValues.push(!!hasParentalConsent);
     }
 
     if (updateFields.length === 0) {
@@ -481,7 +554,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
-    const { birthDate, parentEmail } = req.body;
+  const { birthDate, parentEmail } = req.body;
 
     // Check if student exists and belongs to teacher's school
     const rosterRepoAge = getCompositionRoot().getRosterRepository();
@@ -524,10 +597,11 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
       updated_at: new Date().toISOString()
     };
 
-    // If over 13, can automatically grant consent
+    // If 13 or older: teacher-verifies age and mark COPPA compliant
     if (!requiresParentalConsent) {
-      updateData.has_parental_consent = true;
-      updateData.consent_date = new Date().toISOString();
+      updateData.teacher_verified_age = true;
+      updateData.coppa_compliant = true;
+      // Do not auto-grant email_consent here; allow explicit toggle on edit modal
     }
 
     const updateFields = Object.keys(updateData);
@@ -612,6 +686,14 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
     // Update consent status
     const now = new Date().toISOString();
     await rosterRepoConsent.updateParentalConsent(studentId, consentGiven, consentDate || now);
+    // Align new schema with parental consent decision
+    try {
+      await rosterRepoConsent.updateStudentFields(studentId, {
+        coppa_compliant: !!consentGiven,
+        email_consent: !!consentGiven,
+        updated_at: now,
+      });
+    } catch {}
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');

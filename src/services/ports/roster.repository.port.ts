@@ -8,6 +8,10 @@ export interface RosterStudent {
   has_parental_consent: boolean | null;
   consent_date: string | null;
   parent_email: string | null;
+  // New consent/age fields used by email + UI transparency
+  email_consent?: boolean | null;
+  coppa_compliant?: boolean | null;
+  teacher_verified_age?: boolean | null;
   data_sharing_consent: boolean | null;
   audio_recording_consent: boolean | null;
   created_at: string | Date | null;

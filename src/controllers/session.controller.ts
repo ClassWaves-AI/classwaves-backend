@@ -978,6 +978,64 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
 }
 
 /**
+ * Public consent-check endpoint for student app
+ * GET /api/v1/sessions/:sessionId/consent-check?email=...
+ * - :sessionId is the access code used by join links
+ * - email is used to find the roster student within the same school as the session
+ * Returns minimal, non-PII flags for client-side flow control (e.g., skip DOB prompt)
+ */
+export async function consentCheck(req: Request, res: Response): Promise<Response> {
+  try {
+    const accessCode = req.params.sessionId;
+    const email = String((req.query.email || '').toString()).trim();
+    if (!accessCode || !email) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_INPUT', message: 'sessionId and email are required' } });
+    }
+
+    // Resolve session by access code (prefer Redis mapping)
+    let session: any = null;
+    const cachedSessionId = await getSessionByAccessCode(accessCode);
+    if (cachedSessionId) {
+      session = await getCompositionRoot().getSessionRepository().getBasic(cachedSessionId);
+    }
+    if (!session) {
+      session = await getCompositionRoot().getSessionRepository().getByAccessCode(accessCode);
+    }
+    if (!session) {
+      return res.status(404).json({ success: false, error: { code: 'SESSION_NOT_FOUND', message: 'Invalid session code' } });
+    }
+
+    // Look up student by email within the same school
+    const student = await databricksService.queryOne<any>(
+      `SELECT id, email_consent, has_parental_consent, coppa_compliant, teacher_verified_age 
+       FROM ${databricksConfig.catalog}.users.students 
+       WHERE lower(email) = lower(?) AND school_id = ?
+       LIMIT 1`,
+      [email, session.school_id]
+    );
+
+    const teacherVerifiedAge = student?.teacher_verified_age === true;
+    const emailConsent = student?.email_consent === true || student?.has_parental_consent === true;
+    const coppaCompliant = teacherVerifiedAge || student?.coppa_compliant === true;
+    const eligibleForEmail = (teacherVerifiedAge || emailConsent) && coppaCompliant;
+
+    return res.json({
+      success: true,
+      data: {
+        eligibleForEmail,
+        teacherVerifiedAge,
+        emailConsent,
+        coppaCompliant,
+        studentId: student?.id || null,
+      }
+    });
+  } catch (error) {
+    console.error('Consent check failed:', error);
+    return res.status(500).json({ success: false, error: { code: 'CONSENT_CHECK_FAILED', message: error instanceof Error ? error.message : String(error) } });
+  }
+}
+
+/**
  * Validate session ownership by teacher
  */
 async function validateSessionOwnership(sessionId: string, teacherId: string): Promise<any> {
@@ -1882,11 +1940,14 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       // Primary: namespaced sessions service emission
       try {
         const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
-        getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+        const ns = getNamespacedWebSocketService()?.getSessionsService();
+        ns?.emitToSession(sessionId, 'session:status_changed', {
           sessionId,
           status: 'ended',
           traceId: (res.locals as any)?.traceId || (req as any)?.traceId
         });
+        // Ensure any active flush schedulers are stopped on session end
+        try { ns?.stopFlushSchedulersForSession(sessionId); } catch {}
       } catch (e) {
         console.warn('Failed to emit namespaced session end (non-blocking):', e instanceof Error ? e.message : String(e));
       }
@@ -2384,11 +2445,14 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
     // Broadcast session status change to WebSocket clients (notify-only)
     try {
       const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
-      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+      const ns = getNamespacedWebSocketService()?.getSessionsService();
+      ns?.emitToSession(sessionId, 'session:status_changed', {
         sessionId,
         status: 'paused',
         traceId: (res.locals as any)?.traceId || (req as any)?.traceId
       });
+      // Stop server-driven flush timers for this session to avoid orphan emissions
+      try { ns?.stopFlushSchedulersForSession(sessionId); } catch {}
     } catch (e) {
       console.warn('⚠️ WebSocket broadcast failed during session pause (non-critical):', e instanceof Error ? e.message : String(e));
     }

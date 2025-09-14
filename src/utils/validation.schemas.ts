@@ -155,6 +155,13 @@ export const updateStudentSchema = z.object({
   status: z.enum(['active', 'inactive', 'deactivated']).optional(),
   dataConsentGiven: z.boolean().optional(),
   audioConsentGiven: z.boolean().optional(),
+  // New consent/age fields for alignment with DB
+  emailConsentGiven: z.boolean().optional(),
+  teacherVerifiedAge: z.boolean().optional(),
+  coppaCompliant: z.boolean().optional(),
+  // Back-compat aliases from older UI (if present)
+  isUnderConsentAge: z.boolean().optional(),
+  hasParentalConsent: z.boolean().optional(),
 }).passthrough();
 
 export const inviteTeacherSchema = z.object({

@@ -22,11 +22,18 @@ export class EmailComplianceService {
       if (!student) {
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
       }
+      if (process.env.NODE_ENV !== 'production') {
+        try { console.log('[EmailComplianceService.validateEmailConsent] student new', { studentId, student }); } catch {}
+      }
 
-      if (!(student as any).coppa_compliant) {
+      // Teacher verified age allows sending regardless of parental consent
+      if ((student as any).teacher_verified_age === true) {
+        return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+      }
+      if ((student as any).coppa_compliant !== true) {
         return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'coppa_verification_required_by_teacher' };
       }
-      if (!(student as any).email_consent) {
+      if ((student as any).email_consent !== true) {
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'email_consent_required' };
       }
 
@@ -37,6 +44,9 @@ export class EmailComplianceService {
          FROM classwaves.users.students WHERE id = ?`,
         [studentId]
       );
+      if (process.env.NODE_ENV !== 'production') {
+        try { console.log('[EmailComplianceService.validateEmailConsent] student legacy', { studentId, legacy }); } catch {}
+      }
 
       if (!legacy) {
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
