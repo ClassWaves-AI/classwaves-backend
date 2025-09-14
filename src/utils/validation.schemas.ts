@@ -344,7 +344,17 @@ export const transcriptsQuerySchema = z.object({
 });
 
 // Session lifecycle bodies with optional notes
+// Accept both snake_case and camelCase notes, and an optional reason to align with UI
 export const sessionLifecycleNotesSchema = z.object({
+  reason: z.enum([
+    'planned_completion',
+    'early_completion',
+    'time_constraint',
+    'technical_issue',
+    'student_behavior',
+    'other',
+  ]).optional(),
+  teacherNotes: z.string().max(1000).optional(),
   teacher_notes: z.string().max(1000).optional(),
 });
 

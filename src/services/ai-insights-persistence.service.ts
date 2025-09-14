@@ -27,12 +27,13 @@ export class AIInsightsPersistenceService {
     );
     if (exists?.id) return false;
 
+    const processingMs = Number(insights?.metadata?.processingTimeMs ?? 0);
     await databricksService.insert('analysis_results', {
       id: key,
       session_id: sessionId,
       analysis_type: 'tier1',
       analysis_timestamp: new Date(insights.analysisTimestamp),
-      processing_time_ms: insights?.metadata?.processingTimeMs || null,
+      processing_time_ms: Number.isFinite(processingMs) && processingMs >= 0 ? Math.floor(processingMs) : 0,
       result_data: JSON.stringify({ ...insights, groupId }),
       confidence_score: insights.confidence,
       model_version: insights?.metadata?.modelVersion || 'databricks',
@@ -57,12 +58,13 @@ export class AIInsightsPersistenceService {
     );
     if (exists?.id) return false;
 
+    const processingMs = Number(insights?.metadata?.processingTimeMs ?? 0);
     await databricksService.insert('analysis_results', {
       id: key,
       session_id: sessionId,
       analysis_type: 'tier2',
       analysis_timestamp: new Date(insights.analysisTimestamp),
-      processing_time_ms: insights?.metadata?.processingTimeMs || null,
+      processing_time_ms: Number.isFinite(processingMs) && processingMs >= 0 ? Math.floor(processingMs) : 0,
       result_data: JSON.stringify(insights),
       confidence_score: insights.confidence,
       model_version: insights?.metadata?.modelVersion || 'databricks',
@@ -89,4 +91,3 @@ export class AIInsightsPersistenceService {
 }
 
 export const aiInsightsPersistenceService = new AIInsightsPersistenceService();
-

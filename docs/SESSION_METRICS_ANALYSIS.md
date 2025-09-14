@@ -1,6 +1,6 @@
 # Session Metrics Data Flow Analysis
 
-**Generated:** 2025-09-07T14:20:23.406Z
+**Generated:** 2025-09-14T20:03:36.667Z
 **Purpose:** Analyze how session metrics should flow across different tables
 
 ## Key Tables for Session Data
@@ -588,6 +588,8 @@
 - `teacher_notes` (string)
 - `engagement_score` (decimal(5,2))
 - `participation_rate` (decimal(5,2))
+- `goal` (string)
+- `subject` (string)
 
 ---
 

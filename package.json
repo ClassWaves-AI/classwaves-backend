@@ -44,6 +44,7 @@
     "db:performance-baseline": "ts-node src/scripts/performance-baseline.ts",
     "db:schema-sot": "npx ts-node scripts/comprehensive-schema-audit.ts",
     "db:create-summaries": "ts-node src/scripts/create-summaries-tables.ts",
+    "db:create-guidance": "ts-node src/scripts/create-guidance-schema.ts",
     "validate-test-schema": "ts-node src/scripts/database-schema-validator.ts",
     "validate-integration-infrastructure": "ts-node src/scripts/validate-integration-infrastructure.ts",
     "validate-env-parity": "ts-node src/scripts/environment-parity-validator.ts",

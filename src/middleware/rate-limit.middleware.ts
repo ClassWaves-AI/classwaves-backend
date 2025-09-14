@@ -20,6 +20,9 @@ let authRateLimiterInitialized = false;
 // Initialize rate limiter with Redis or memory fallback
 async function initializeRateLimiter() {
   try {
+    if (process.env.CW_RL_FORCE_MEMORY === '1') {
+      throw new Error('CW_RL_FORCE_MEMORY=1 (dev override)');
+    }
     if (redisService.isConnected()) {
       const redisClient = redisService.getClient();
       
@@ -56,6 +59,9 @@ async function initializeRateLimiter() {
 
 async function initializeAuthRateLimiter() {
   try {
+    if (process.env.CW_RL_FORCE_MEMORY === '1') {
+      throw new Error('CW_RL_FORCE_MEMORY=1 (dev override)');
+    }
     if (redisService.isConnected()) {
       const redisClient = redisService.getClient();
       
@@ -109,7 +115,8 @@ export const rateLimitMiddleware = async (req: Request, res: Response, next: Fun
   }
   // If rate limiter hasn't been initialized yet, allow the request but log warning
   if (!rateLimiterInitialized) {
-    if (process.env.API_DEBUG === '1') logger.warn('Rate limiter not initialized, allowing request');
+    if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Rate limiter not initialized, allowing request');
+    else logger.warn('Rate limiter not initialized, allowing request');
     return next();
   }
 
@@ -118,19 +125,23 @@ export const rateLimitMiddleware = async (req: Request, res: Response, next: Fun
     
     // Add timeout and ensure any late rejection is handled to avoid unhandled promise noise
     const rateLimitPromise = (rateLimiter as any).consume(key).catch((e: any) => {
-      if (process.env.API_DEBUG === '1') logger.warn('Rate limiter consume error (deferred)', { error: e?.message || e });
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Rate limiter consume error (deferred)', { error: e?.message || e });
+      else logger.warn('Rate limiter consume error (deferred)', { error: e?.message || e });
       return null;
     });
-    const timeoutPromise = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 2000));
+    const timeoutMs = process.env.NODE_ENV === 'development' ? 500 : 2000;
+    const timeoutPromise = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), timeoutMs));
     const outcome = await Promise.race([rateLimitPromise, timeoutPromise]);
     if (outcome === 'timeout' || outcome === null) {
-      logger.warn('Rate limiter timeout/deferred error, allowing request');
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Rate limiter timeout/deferred error, allowing request');
+      else logger.warn('Rate limiter timeout/deferred error, allowing request');
       return next();
     }
     next();
   } catch (rejRes: any) {
     if (rejRes.message === 'Rate limit timeout') {
-      logger.warn('Rate limiter timeout, allowing request');
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Rate limiter timeout, allowing request');
+      else logger.warn('Rate limiter timeout, allowing request');
       return next();
     }
 
@@ -154,7 +165,8 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
   }
   // If auth rate limiter hasn't been initialized yet, allow the request but log warning
   if (!authRateLimiterInitialized) {
-    if (process.env.API_DEBUG === '1') logger.warn('Auth rate limiter not initialized, allowing request');
+    if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Auth rate limiter not initialized, allowing request');
+    else logger.warn('Auth rate limiter not initialized, allowing request');
     return next();
   }
 
@@ -164,15 +176,18 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
     
     // Add timeout and ensure late rejections are handled
     const rateLimitPromise = (authRateLimiter as any).consume(key).catch((e: any) => {
-      if (process.env.API_DEBUG === '1') logger.warn('Auth rate limiter consume error (deferred)', { error: e?.message || e });
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Auth rate limiter consume error (deferred)', { error: e?.message || e });
+      else logger.warn('Auth rate limiter consume error (deferred)', { error: e?.message || e });
       return null;
     });
-    const timeoutPromise = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 2000));
+    const timeoutMs = process.env.NODE_ENV === 'development' ? 500 : 2000;
+    const timeoutPromise = new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), timeoutMs));
     
     if (process.env.API_DEBUG === '1') logger.debug('About to check auth rate limit');
     const outcome = await Promise.race([rateLimitPromise, timeoutPromise]);
     if (outcome === 'timeout' || outcome === null) {
-      logger.warn('Auth rate limiter timeout/deferred error, allowing request');
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Auth rate limiter timeout/deferred error, allowing request');
+      else logger.warn('Auth rate limiter timeout/deferred error, allowing request');
       return next();
     }
     if (process.env.API_DEBUG === '1') logger.debug('Auth rate limit check passed');
@@ -181,12 +196,14 @@ export const authRateLimitMiddleware = async (req: Request, res: Response, next:
     logger.error('Auth rate limiter error', { error: rejRes?.message || rejRes });
     
     if (rejRes.message === 'Auth rate limit timeout') {
-      logger.warn('Auth rate limiter timeout, allowing request');
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Auth rate limiter timeout, allowing request');
+      else logger.warn('Auth rate limiter timeout, allowing request');
       return next();
     }
     
     if (rejRes.message && rejRes.message.includes('timeout')) {
-      logger.warn('Auth rate limiter general timeout, allowing request');
+      if (process.env.NODE_ENV === 'development' && process.env.API_DEBUG !== '1') logger.debug('Auth rate limiter general timeout, allowing request');
+      else logger.warn('Auth rate limiter general timeout, allowing request');
       return next();
     }
     

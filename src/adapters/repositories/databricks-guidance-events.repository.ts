@@ -4,13 +4,14 @@ import type { GuidanceEventsRepositoryPort, GuidanceEventRecord } from '../../se
 class DatabricksGuidanceEventsRepository implements GuidanceEventsRepositoryPort {
   async insert(event: GuidanceEventRecord): Promise<void> {
     try {
+      // Align with live schema: event_type, event_time, payload
       await databricksService.insert('guidance_events', {
         id: event.id,
         session_id: event.sessionId,
         group_id: event.groupId ?? null,
-        type: event.type,
-        payload_json: event.payloadJson,
-        timestamp: event.timestamp,
+        event_type: event.type,
+        payload: event.payloadJson,
+        event_timestamp: event.timestamp,
         created_at: new Date(),
       });
     } catch (e) {
@@ -21,4 +22,3 @@ class DatabricksGuidanceEventsRepository implements GuidanceEventsRepositoryPort
 }
 
 export const guidanceEventsRepository: GuidanceEventsRepositoryPort = new DatabricksGuidanceEventsRepository();
-

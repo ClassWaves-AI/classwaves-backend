@@ -95,6 +95,30 @@ async function createTeacherGuidanceTables(): Promise<void> {
   console.log('📋 Creating teacher guidance tables...');
   
   const tables: TableDefinition[] = [
+    // Event stream for guidance system (WS emits, prompts, insights)
+    {
+      name: 'guidance_events',
+      catalog: databricksConfig.catalog,
+      schema: 'ai_insights',
+      description: 'Event stream for guidance (tier1, tier2, prompt) with JSON payloads',
+      partitioning: 'session_id',
+      ddl: `CREATE TABLE IF NOT EXISTS ${databricksConfig.catalog}.ai_insights.guidance_events (
+        id STRING NOT NULL COMMENT 'Event id (UUID)',
+        session_id STRING NOT NULL COMMENT 'Session id',
+        group_id STRING COMMENT 'Group id when applicable',
+        teacher_id STRING COMMENT 'Teacher id when applicable',
+        event_type STRING NOT NULL COMMENT 'Event type: tier1|tier2|prompt',
+        event_timestamp TIMESTAMP NOT NULL COMMENT 'Event timestamp',
+        payload STRING COMMENT 'JSON payload as string',
+        created_at TIMESTAMP NOT NULL COMMENT 'Created timestamp'
+      ) USING DELTA
+      PARTITIONED BY (session_id)
+      TBLPROPERTIES (
+        'delta.autoOptimize.optimizeWrite' = 'true',
+        'delta.autoOptimize.autoCompact' = 'true'
+      )
+      COMMENT 'Guidance event stream (WS) with JSON payloads'`
+    },
     // Core teacher guidance metrics table
     {
       name: 'teacher_guidance_metrics',
