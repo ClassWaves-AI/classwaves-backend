@@ -697,7 +697,9 @@ export class DatabricksService {
     const placeholdersArr: string[] = [];
     const params: any[] = [];
     for (const col of columns) {
-      const val = (data as any)[col];
+      let val = (data as any)[col];
+      // Normalize undefined → null to avoid unbound parameter errors in Databricks
+      if (typeof val === 'undefined') val = null;
       if (isRawSql(val)) {
         placeholdersArr.push(val.__rawSql);
       } else {
@@ -776,7 +778,7 @@ export class DatabricksService {
    */
   async update(table: string, id: string, data: Record<string, any>): Promise<void> {
     const columns = Object.keys(data);
-    const values = Object.values(data);
+    const values = Object.values(data).map(v => (typeof v === 'undefined' ? null : v));
     const setClause = columns.map(col => `${col} = ?`).join(', ');
     
     const { schema, table: tbl } = this.parseTable(table);
@@ -795,9 +797,9 @@ export class DatabricksService {
   async updateWhere(table: string, where: Record<string, any>, data: Record<string, any>): Promise<void> {
     const { schema, table: tbl } = this.parseTable(table);
     const dataCols = Object.keys(data);
-    const dataVals = Object.values(data);
+    const dataVals = Object.values(data).map(v => (typeof v === 'undefined' ? null : v));
     const whereCols = Object.keys(where);
-    const whereVals = Object.values(where);
+    const whereVals = Object.values(where).map(v => (typeof v === 'undefined' ? null : v));
 
     const hasUpdatedAt = await this.tableHasColumns(schema, table, ['updated_at']);
     const assignments: string[] = dataCols.map(c => `${c} = ?`);
@@ -821,7 +823,7 @@ export class DatabricksService {
 
     // Build WHERE clause for existence check
     const whereKeys = Object.keys(whereCondition);
-    const whereValues = Object.values(whereCondition);
+    const whereValues = Object.values(whereCondition).map(v => (typeof v === 'undefined' ? null : v));
     const whereClause = whereKeys.map(key => `${key} = ?`).join(' AND ');
 
     // Determine schema columns once
@@ -840,7 +842,7 @@ export class DatabricksService {
     if (existing) {
       // Update existing record
       const updateColumns = Object.keys(data);
-      const updateValues = Object.values(data);
+      const updateValues = Object.values(data).map(v => (typeof v === 'undefined' ? null : v));
       const assignments: string[] = updateColumns.map(col => `${col} = ?`);
       if (hasUpdatedAt) assignments.push('updated_at = CURRENT_TIMESTAMP');
       const setClause = assignments.join(', ');
