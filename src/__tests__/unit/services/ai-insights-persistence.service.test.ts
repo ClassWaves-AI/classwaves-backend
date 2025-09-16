@@ -54,8 +54,9 @@ describe('AIInsightsPersistenceService (idempotency)', () => {
     expect(databricksService.insert).toHaveBeenCalledTimes(1); // still only once
   });
 
-  it('persists Tier2 once and skips duplicates by idempotency key', async () => {
+  it('persists Tier2 once and skips duplicates by idempotency key (group-scoped)', async () => {
     const sessionId = 'sess-456';
+    const groupId = 'group-xyz';
     const insights: any = {
       argumentationQuality: { score: 0.6, claimEvidence: 0.5, logicalFlow: 0.7, counterarguments: 0.4, synthesis: 0.6 },
       collectiveEmotionalArc: { trajectory: 'stable', averageEngagement: 0.5, energyPeaks: [], sentimentFlow: [] },
@@ -73,15 +74,14 @@ describe('AIInsightsPersistenceService (idempotency)', () => {
 
     // First call: no existing row
     (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(null);
-    const persisted1 = await aiInsightsPersistenceService.persistTier2(sessionId, insights);
+    const persisted1 = await aiInsightsPersistenceService.persistTier2(sessionId, insights, groupId);
     expect(persisted1).toBe(true);
     expect(databricksService.insert).toHaveBeenCalledTimes(1);
 
     // Second call with same params: simulate existing row
     (databricksService.queryOne as jest.Mock).mockResolvedValueOnce({ id: 'exists' });
-    const persisted2 = await aiInsightsPersistenceService.persistTier2(sessionId, insights);
+    const persisted2 = await aiInsightsPersistenceService.persistTier2(sessionId, insights, groupId);
     expect(persisted2).toBe(false);
     expect(databricksService.insert).toHaveBeenCalledTimes(1);
   });
 });
-

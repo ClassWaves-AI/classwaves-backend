@@ -461,33 +461,57 @@ export class DatabricksService {
         const session = await this.getSession();
         console.log(`⏱️  Session acquisition took ${(performance.now() - sessionStart).toFixed(2)}ms`);
         
-        // Build query with parameters
+        // Build query with parameters (hardened against '?' inside values)
         const paramStart = performance.now();
+        const formatParam = (param: any): string => {
+          if (param === null || param === undefined) return 'NULL';
+          if (typeof param === 'string') return `'${param.replace(/'/g, "''")}'`;
+          if (param instanceof Date) return `'${param.toISOString()}'`;
+          if (typeof param === 'boolean') return param ? 'true' : 'false';
+          if (typeof param === 'number') return param.toString();
+          if (typeof param === 'object') {
+            // Allow raw SQL passthrough objects from helpers like toMapStringString
+            if ('__rawSql' in (param as any) && typeof (param as any).__rawSql === 'string') {
+              return (param as any).__rawSql as string;
+            }
+            // Future-proof accidental object pass-through
+            try {
+              const json = JSON.stringify(param);
+              return `'${(json || '').replace(/'/g, "''")}'`;
+            } catch {
+              return `'${String(param).replace(/'/g, "''")}'`;
+            }
+          }
+          return `'${String(param).replace(/'/g, "''")}'`;
+        };
+
         let finalSql = sql;
         if (params && params.length > 0) {
-          // Simple parameter replacement for ? placeholders
-          params.forEach((param) => {
-            let formattedParam: string;
-            
-            if (param === null || param === undefined) {
-              formattedParam = 'NULL';
-            } else if (typeof param === 'string') {
-              // Escape single quotes in strings
-              formattedParam = `'${param.replace(/'/g, "''")}'`;
-            } else if (param instanceof Date) {
-              // Format dates as ISO strings for Databricks
-              formattedParam = `'${param.toISOString()}'`;
-            } else if (typeof param === 'boolean') {
-              formattedParam = param ? 'true' : 'false';
-            } else if (typeof param === 'number') {
-              formattedParam = param.toString();
-            } else {
-              // For other types, convert to string
-              formattedParam = `'${String(param)}'`;
-            }
-            
-            finalSql = finalSql.replace('?', formattedParam);
-          });
+          const parts = sql.split('?');
+          const expected = parts.length - 1;
+          const used = Math.min(expected, params.length);
+
+          if (expected !== params.length) {
+            const tableMatch = /(insert\s+into|update|from)\s+([a-zA-Z0-9_\.]+)/i.exec(sql);
+            const tableRef = tableMatch?.[2] || 'unknown';
+            const preview = sql.replace(/\s+/g, ' ').slice(0, 120);
+            console.warn('⚠️ Databricks param count mismatch', {
+              table: tableRef,
+              placeholders: expected,
+              params: params.length,
+              used,
+              sqlPreview: preview + (sql.length > 120 ? '...' : ''),
+            });
+          }
+
+          let built = '';
+          for (let i = 0; i < used; i++) {
+            built += parts[i] + formatParam(params[i]);
+          }
+          // Append the remaining tail unchanged (if any). If there are more
+          // placeholders than params, the remaining '?' are preserved.
+          built += parts.slice(used).join('?');
+          finalSql = built;
         }
         console.log(`⏱️  Parameter formatting took ${(performance.now() - paramStart).toFixed(2)}ms`);
         

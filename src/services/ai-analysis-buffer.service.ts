@@ -56,14 +56,14 @@ interface CurrentInsights {
       lastAnalysis?: Date;
     };
   }>;
-  tier2Insights?: {
+  tier2ByGroup?: Record<string, {
     insights: Tier2Insights;
     bufferInfo: {
-      totalGroups: number;
-      totalTranscripts: number;
+      transcriptCount: number;
+      windowStart: Date;
       lastAnalysis?: Date;
     };
-  };
+  }>;
   summary: {
     overallConfidence: number;
     averageTopicalCohesion: number;
@@ -420,49 +420,39 @@ export class AIAnalysisBufferService {
       }
     }
 
-    // Step 2: Gather Tier 2 insights for the session
-    let tier2Insights: CurrentInsights['tier2Insights'];
-    let tier2TotalGroups = 0;
-    let tier2TotalTranscripts = 0;
-
+    // Step 2: Gather latest per-group Tier2 (best-effort)
+    const tier2ByGroup: NonNullable<CurrentInsights['tier2ByGroup']> = {};
     try {
-      attempts++;
-      const latestTier2 = await this.getLatestTier2AnalysisFromDB(sessionId);
-      if (latestTier2) {
-        // Count groups and transcripts in tier2 buffers for this session
-        for (const [, buffer] of Array.from(this.tier2Buffers.entries())) {
-          if (buffer.sessionId === sessionId) {
-            tier2TotalGroups++;
-            tier2TotalTranscripts += buffer.transcripts.length;
-          }
+      for (const [, buffer] of Array.from(this.tier2Buffers.entries())) {
+        if (buffer.sessionId !== sessionId) continue;
+        const latest = await this.getLatestTier2AnalysisForGroupFromDB(buffer.groupId, sessionId);
+        if (latest) {
+          tier2ByGroup[buffer.groupId] = {
+            insights: latest,
+            bufferInfo: {
+              transcriptCount: buffer.transcripts.length,
+              windowStart: buffer.windowStart,
+              lastAnalysis: buffer.lastAnalysis
+            }
+          };
         }
-
-        tier2Insights = {
-          insights: latestTier2,
-          bufferInfo: {
-            totalGroups: tier2TotalGroups,
-            totalTranscripts: tier2TotalTranscripts,
-            lastAnalysis: this.getLatestTier2Analysis(sessionId)
-          }
-        };
       }
-    } catch (error) {
-      console.warn(`⚠️ Failed to load Tier 2 analysis for session ${sessionId}:`, (error as Error)?.message || error);
-      errors.push(error as Error);
-      failures++;
+    } catch (e) {
+      console.warn('⚠️ Failed to load per-group Tier 2 insights:', (e as Error)?.message || e);
     }
 
     // Step 3: Build summary metrics
     const averageTopicalCohesion = validTier1Count > 0 ? totalTopicalCohesion / validTier1Count : 0;
     const averageConceptualDensity = validTier1Count > 0 ? totalConceptualDensity / validTier1Count : 0;
-    const overallConfidence = this.calculateOverallConfidence(tier1Insights, tier2Insights);
+    const overallConfidence = this.calculateOverallConfidence(tier1Insights, tier2ByGroup);
     
     // Identify critical alerts
     const criticalAlerts: string[] = [];
     let alertCount = 0;
 
     tier1Insights.forEach(group => {
-      group.insights.insights.forEach(insight => {
+      const arr = Array.isArray(group?.insights?.insights) ? group.insights.insights : [];
+      arr.forEach(insight => {
         alertCount++;
         if (insight.severity === 'warning') {
           criticalAlerts.push(`Group ${group.groupId}: ${insight.message}`);
@@ -470,17 +460,18 @@ export class AIAnalysisBufferService {
       });
     });
 
-    if (tier2Insights) {
-      // Count all recommendations; mark only 'high' as critical
-      alertCount += tier2Insights.insights.recommendations.length;
-      tier2Insights.insights.recommendations.forEach(rec => {
+    // Per-group Tier2 high priority recs as critical
+    for (const [gId, obj] of Object.entries(tier2ByGroup)) {
+      const recs = obj.insights?.recommendations || [];
+      alertCount += recs.length;
+      recs.forEach(rec => {
         if (rec.priority === 'high') {
-          criticalAlerts.push(`Session: ${rec.message}`);
+          criticalAlerts.push(`Group ${gId}: ${rec.message}`);
         }
       });
     }
 
-    const hasAnyInsights = tier1Insights.length > 0 || !!tier2Insights;
+    const hasAnyInsights = tier1Insights.length > 0 || Object.keys(tier2ByGroup).length > 0;
     const allAttemptsFailed = attempts > 0 && failures >= attempts;
     if (!hasAnyInsights && allAttemptsFailed) {
       // If every attempted DB call failed, bubble up a representative error
@@ -491,7 +482,7 @@ export class AIAnalysisBufferService {
       sessionId,
       lastUpdated: now,
       tier1Insights,
-      tier2Insights,
+      tier2ByGroup: Object.keys(tier2ByGroup).length ? tier2ByGroup : undefined,
       summary: {
         overallConfidence,
         averageTopicalCohesion,
@@ -536,15 +527,19 @@ export class AIAnalysisBufferService {
   /**
    * Get latest Tier 2 analysis from database
    */
-  private async getLatestTier2AnalysisFromDB(
+  /**
+   * Get latest Tier 2 analysis for a specific group within a session
+   */
+  private async getLatestTier2AnalysisForGroupFromDB(
+    groupId: string,
     sessionId: string
   ): Promise<Tier2Insights | null> {
     const query = `SELECT result_data FROM classwaves.ai_insights.analysis_results 
        WHERE analysis_type = 'tier2' 
        AND session_id = ? 
+       AND (group_id = ? OR get_json_object(result_data, '$.groupId') = ?)
        ORDER BY analysis_timestamp DESC LIMIT 1`;
-
-    const result = await databricksService.queryOne(query, [sessionId]);
+    const result = await databricksService.queryOne(query, [sessionId, groupId, groupId]);
     if (result && result.result_data) {
       return JSON.parse(result.result_data) as Tier2Insights;
     }
@@ -552,37 +547,31 @@ export class AIAnalysisBufferService {
   }
 
   /**
-   * Get latest Tier 2 analysis timestamp for session
-   */
-  private getLatestTier2Analysis(sessionId: string): Date | undefined {
-    for (const [bufferKey, buffer] of Array.from(this.tier2Buffers.entries())) {
-      if (buffer.sessionId === sessionId && buffer.lastAnalysis) {
-        return buffer.lastAnalysis;
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Calculate overall confidence score from available insights
    */
   private calculateOverallConfidence(
-    tier1Insights: CurrentInsights['tier1Insights'], 
-    tier2Insights?: CurrentInsights['tier2Insights']
+    tier1Insights: CurrentInsights['tier1Insights'],
+    tier2ByGroup?: CurrentInsights['tier2ByGroup']
   ): number {
     let totalConfidence = 0;
     let count = 0;
 
     // Weight Tier 1 insights
     tier1Insights.forEach(group => {
-      totalConfidence += group.insights.confidence * 0.6; // Lower weight for real-time
-      count++;
+      const conf = group?.insights?.confidence;
+      if (typeof conf === 'number') {
+        totalConfidence += conf * 0.6; // Lower weight for real-time
+        count++;
+      }
     });
 
-    // Weight Tier 2 insights higher if available
-    if (tier2Insights) {
-      totalConfidence += tier2Insights.insights.confidence * 0.8; // Higher weight for deep analysis
-      count++;
+    if (tier2ByGroup && Object.keys(tier2ByGroup).length) {
+      for (const obj of Object.values(tier2ByGroup)) {
+        if (obj?.insights?.confidence != null) {
+          totalConfidence += obj.insights.confidence * 0.8;
+          count++;
+        }
+      }
     }
 
     return count > 0 ? totalConfidence / count : 0;

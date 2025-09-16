@@ -272,14 +272,26 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
       analysis_timestamp: new Date(insights.analysisTimestamp)
     });
 
-    // Broadcast to guidance namespace only (canonical)
+    // Broadcast to guidance namespace (group scope only). If multiple groups provided,
+    // skip session-scope emit per Phase 3 removal.
     try {
       const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
-      getNamespacedWebSocketService()?.getGuidanceService().emitTier2Insight(sessionId, {
-        sessionId,
-        insights,
-        timestamp: insights.analysisTimestamp,
-      });
+      const ns = getNamespacedWebSocketService()?.getGuidanceService();
+      const uniqueGroups = Array.from(new Set((groupTranscripts || []).map(gt => gt.groupId).filter(Boolean)));
+      if (uniqueGroups.length === 1) {
+        ns?.emitTier2Insight(sessionId, {
+          scope: 'group',
+          sessionId,
+          groupId: uniqueGroups[0],
+          insights,
+          timestamp: insights.analysisTimestamp,
+        });
+      } else {
+        console.warn('⚠️ Dropping session-scope Tier2 emit (multi-group analysis); group-only is supported', {
+          sessionId,
+          groupCount: uniqueGroups.length,
+        });
+      }
     } catch (e) {
       console.warn('⚠️ Failed to emit Tier2 to guidance namespace:', e instanceof Error ? e.message : String(e));
     }

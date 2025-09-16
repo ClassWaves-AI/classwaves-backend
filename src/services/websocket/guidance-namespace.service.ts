@@ -448,11 +448,15 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         }
       }
 
+      // Refactored current_state payload: expose tier1 and tier2ByGroup at top-level
+      const tier1 = Array.isArray((insights as any)?.tier1Insights) ? (insights as any).tier1Insights : undefined;
+      const tier2ByGroup = (insights as any)?.tier2ByGroup || undefined;
       socket.emit('guidance:current_state', {
-        prompts,
-        insights,
         sessionId: data.sessionId,
-        timestamp: new Date()
+        prompts,
+        tier1,
+        tier2ByGroup,
+        timestamp: new Date(),
       });
     } catch (error) {
       console.error('Get current state error:', error);
@@ -647,6 +651,10 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
   }
 
   public emitTier2Insight(sessionId: string, insight: any): void {
+    if (!insight || !insight.groupId) {
+      console.warn('⚠️ Guidance: Dropping Tier2 emit without groupId (session-scope no longer supported)', { sessionId });
+      return;
+    }
     const room = `guidance:session:${sessionId}`;
     const ok = this.emitToRoom(room, 'ai:tier2:insight', insight);
     try { GuidanceNamespaceService.tier2Emits.inc({ namespace: this.getNamespaceName() }); } catch {}
@@ -667,7 +675,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     (async () => {
       try {
         const { guidanceEventsService } = await import('../guidance-events.service');
-        await guidanceEventsService.record({ sessionId, type: 'tier2', payload: insight, timestamp: new Date() });
+        await guidanceEventsService.record({ sessionId, groupId: insight?.groupId, type: 'tier2', payload: insight, timestamp: new Date() });
       } catch {}
     })();
   }

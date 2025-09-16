@@ -1864,11 +1864,16 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     // Broadcast 'ending' state early for UI gating
     try {
       const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
-      getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', {
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
+      nsSessions?.emitToSession(sessionId, 'session:status_changed', {
         sessionId,
         status: 'ending',
         traceId: (res.locals as any)?.traceId || (req as any)?.traceId
       });
+      // Coordinated shutdown signal to clients to stop capture
+      try {
+        nsSessions?.emitToSession(sessionId, 'audio:capture:stop', { sessionId, reason: 'session_ending' });
+      } catch {}
     } catch {}
     // Set ending flag for gating
     try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ending', 3600); } catch {}
@@ -1960,6 +1965,14 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         const groups = await getCompositionRoot().getGroupRepository().getGroupsBasic(sessionId);
         if (Array.isArray(groups) && groups.length > 0) {
           const ids = (groups as any[]).map(g => g.id);
+          // Also emit per-group coordinated shutdown (best-effort)
+          try {
+            const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
+            const ns = getNamespacedWebSocketService()?.getSessionsService();
+            for (const gid of ids) {
+              ns?.emitToGroup(gid, 'audio:capture:stop', { sessionId, reason: 'session_ending' });
+            }
+          } catch {}
           // Best-effort drain of pending audio windows
           try {
             const { inMemoryAudioProcessor } = await import('../services/audio/InMemoryAudioProcessor');
@@ -2083,9 +2096,25 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     }
     
     
-    // Get final session stats
+    // Get final session stats (guarded to prevent 500s on failure)
     const statsRepo = getCompositionRoot().getSessionStatsRepository();
-    const stats = await statsRepo.getEndSessionStats(sessionId);
+    let stats: any = null;
+    try {
+      // Optional timebox via env if introduced later (kept simple here)
+      stats = await statsRepo.getEndSessionStats(sessionId);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('⚠️ Final session stats failed, using fallback zeros:', msg);
+      // Observability: count fallback usage
+      try {
+        const client = await import('prom-client');
+        const name = 'session_end_stats_failed_total';
+        const existing = (client.register.getSingleMetric(name) as any);
+        const counter = existing || new (client as any).Counter({ name, help: 'Total times end-session stats fallback was used' });
+        counter.inc();
+      } catch {}
+      stats = { total_groups: 0, total_students: 0, total_transcriptions: 0 };
+    }
     
     // Calculate duration
     const startBase: Date = (session.actual_start ?? session.created_at) ?? new Date();

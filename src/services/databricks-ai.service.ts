@@ -108,14 +108,17 @@ export class DatabricksAIService {
    */
   private buildTier1Prompt(transcripts: string[], options: Tier1Options): string {
     const combinedTranscript = transcripts.join(' ').trim();
-    
-    return `You are an expert educational AI analyzing group discussion transcripts in real-time. 
+    const ctx = this.sanitizeSessionContext(options.sessionContext);
+    // Avoid including raw IDs or long numeric sequences in the prompt to prevent input guardrails
+    // Context lines keep only non-PII operational info
+    return `You are an expert educational AI analyzing group discussion transcripts in real-time.
 
 **ANALYSIS CONTEXT:**
-- Group ID: ${options.groupId}
-- Session ID: ${options.sessionId}
 - Window Size: ${options.windowSize || 30} seconds
 - Transcript Length: ${combinedTranscript.length} characters
+
+**INTENDED SESSION CONTEXT (sanitized JSON):**
+${JSON.stringify(ctx)}
 
 **TRANSCRIPT TO ANALYZE:**
 ${combinedTranscript}
@@ -155,10 +158,12 @@ Provide a JSON response with exactly this structure:
   - <0.4: Simple language, surface-level discussion
 
 **INSIGHT GUIDELINES:**
-- Generate 1-3 actionable insights only
+- Generate 1 actionable insights only
 - Focus on immediate, practical teacher interventions
-- Use clear, non-judgmental language
+- Use clear yet helpful, non-judgmental language
 - Prioritize insights that can improve current discussion
+- Focus on providing reasons why the insight is important and how the teacher can help the students improve their discussion
+
 
 Return only valid JSON with no additional text.`;
   }
@@ -229,14 +234,21 @@ Return only valid JSON with no additional text.`;
    */
   private buildTier2Prompt(transcripts: string[], options: Tier2Options): string {
     const combinedTranscript = transcripts.join('\n\n').trim();
+    const ctx = this.sanitizeSessionContext(options.sessionContext);
+    const scope = options.groupId ? 'group' : 'session';
     
     return `You are an expert educational AI conducting deep analysis of classroom group discussions.
 
 **ANALYSIS CONTEXT:**
 - Session ID: ${options.sessionId}
 - Analysis Depth: ${options.analysisDepth}
-- Groups Analyzed: ${options.groupIds?.length || 'All groups'}
+- Scope: ${scope}
+- Target Group: ${options.groupId || 'N/A'}
+- Groups Analyzed: ${options.groupIds?.length || (options.groupId ? 1 : 'All groups')}
 - Total Transcript Length: ${combinedTranscript.length} characters
+
+**INTENDED SESSION CONTEXT (sanitized JSON):**
+${JSON.stringify(ctx)}
 
 **TRANSCRIPT TO ANALYZE:**
 ${combinedTranscript}
@@ -252,7 +264,7 @@ Provide a comprehensive JSON response with exactly this structure:
     "counterarguments": <0-1>,
     "synthesis": <0-1>
   },
-  "collectiveEmotionalArc": {
+  "${options.groupId ? 'groupEmotionalArc' : 'collectiveEmotionalArc'}": {
     "trajectory": "ascending" | "descending" | "stable" | "volatile",
     "averageEngagement": <0-1>,
     "energyPeaks": [<timestamps>],
@@ -280,11 +292,11 @@ Provide a comprehensive JSON response with exactly this structure:
   "sessionStartTime": "<ISO timestamp>",
   "analysisEndTime": "<ISO timestamp>",
   "totalTranscriptLength": <number>,
-  "groupsAnalyzed": [<group IDs>],
+  "groupsAnalyzed": ${options.groupId ? '["' + options.groupId + '"]' : '[<group IDs>]'},
   "confidence": <0-1>,
   "recommendations": [
     {
-      "type": "intervention" | "praise" | "redirect" | "deepen",
+      "type": "intervention" | "redirect" | "deepen",
       "priority": "low" | "medium" | "high",
       "message": "<teacher-facing message>",
       "suggestedAction": "<specific action>",
@@ -461,12 +473,10 @@ Return only valid JSON with no additional text.`;
 
   private async callInsightsEndpoint<T>(tier: AnalysisTier, prompt: string, transcripts: string[], options: Tier1Options | Tier2Options): Promise<T> {
     const raw = await this.callDatabricksEndpoint(tier, prompt);
-    if (raw && raw.choices && raw.choices[0]?.message?.content) {
-      const content = raw.choices[0].message.content;
-      const parsed = JSON.parse(content);
-      return parsed as T;
+    if (tier === 'tier1') {
+      return await this.parseTier1Response(raw as DatabricksAIResponse, transcripts, options as Tier1Options) as unknown as T;
     }
-    return raw as T;
+    return await this.parseTier2Response(raw as DatabricksAIResponse, transcripts, options as Tier2Options) as unknown as T;
   }
 
   // ============================================================================
@@ -540,7 +550,7 @@ Return only valid JSON with no additional text.`;
       const parsed = JSON.parse(content);
       
       // Validate required fields
-      const required = ['argumentationQuality', 'collectiveEmotionalArc', 'collaborationPatterns', 'learningSignals', 'confidence', 'recommendations'];
+      const required = ['argumentationQuality', 'collaborationPatterns', 'learningSignals', 'confidence', 'recommendations'];
       for (const field of required) {
         if (!(field in parsed)) {
           throw new Error(`Missing required field: ${field}`);
@@ -550,17 +560,24 @@ Return only valid JSON with no additional text.`;
       // Ensure proper timestamp formatting
       const now = new Date().toISOString();
       const sessionStart = new Date(Date.now() - (options.sessionId ? 10 * 60 * 1000 : 0)).toISOString(); // Estimate session start
-      
-      return {
-        ...parsed,
+      // Normalize groupEmotionalArc -> collectiveEmotionalArc for downstream compatibility
+      const collectiveArc = parsed.collectiveEmotionalArc || parsed.groupEmotionalArc;
+      const insights: Tier2Insights = {
+        ...(parsed as any),
+        collectiveEmotionalArc: collectiveArc,
         analysisTimestamp: now,
         sessionStartTime: sessionStart,
         analysisEndTime: now,
         totalTranscriptLength: transcripts.join('\n\n').length,
-        groupsAnalyzed: options.groupIds || ['all'],
-        // Ensure arrays
-        recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : []
-      };
+        groupsAnalyzed: options.groupIds || (options.groupId ? [options.groupId] : ['all']),
+        recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
+        metadata: {
+          ...(parsed.metadata || {}),
+          scope: options.groupId ? 'group' : 'session',
+          groupId: options.groupId || (parsed.metadata?.groupId as any),
+        }
+      } as Tier2Insights;
+      return insights;
       
     } catch (error) {
       console.error('Failed to parse Tier 2 response:', error);
@@ -791,6 +808,26 @@ Return only valid JSON with no additional text.`;
       } as any,
       retries: cfg.retries
     };
+  }
+
+  // --------------------------------------------------------------------------
+  // Helpers
+  // --------------------------------------------------------------------------
+  private sanitizeSessionContext(context?: Tier2Options['sessionContext'] | Tier1Options['sessionContext']): Required<{ subject?: string; topic?: string; goals?: string[]; description?: string }> {
+    const maxLen = 300; // conservative cap per field
+    const scrub = (s?: string) => {
+      if (!s || typeof s !== 'string') return undefined as any;
+      let v = s
+        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+        .replace(/\b\d{3}[-.\s]?\d{2}[-.\s]?\d{4}\b/g, '[id]');
+      if (v.length > maxLen) v = v.slice(0, maxLen) + '…';
+      return v;
+    };
+    const goals = Array.isArray(context?.goals) ? context!.goals.map(g => scrub(g)!).filter(Boolean) : undefined;
+    const subject = scrub(context?.subject);
+    const topic = scrub(context?.topic);
+    const description = scrub(context?.description);
+    return { subject, topic, goals: goals as any, description } as any;
   }
 }
 

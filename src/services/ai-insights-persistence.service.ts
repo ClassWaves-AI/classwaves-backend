@@ -48,9 +48,10 @@ export class AIInsightsPersistenceService {
    */
   async persistTier2(
     sessionId: string,
-    insights: Tier2Insights
+    insights: Tier2Insights,
+    groupId: string
   ): Promise<boolean> {
-    const key = this.buildIdempotencyKey('tier2', sessionId, undefined, insights.analysisTimestamp);
+    const key = this.buildIdempotencyKey('tier2', sessionId, groupId, insights.analysisTimestamp);
 
     const exists = await databricksService.queryOne<{ id: string }>(
       `SELECT id FROM ${this.tablePath()} WHERE id = ? LIMIT 1`,
@@ -65,9 +66,10 @@ export class AIInsightsPersistenceService {
       analysis_type: 'tier2',
       analysis_timestamp: new Date(insights.analysisTimestamp),
       processing_time_ms: Number.isFinite(processingMs) && processingMs >= 0 ? Math.floor(processingMs) : 0,
-      result_data: JSON.stringify(insights),
+      result_data: JSON.stringify({ ...insights, groupId }),
       confidence_score: insights.confidence,
       model_version: insights?.metadata?.modelVersion || 'databricks',
+      group_id: groupId,
       created_at: new Date(),
     });
     return true;

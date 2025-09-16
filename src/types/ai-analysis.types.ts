@@ -16,6 +16,13 @@ export interface Tier1Options {
   focusAreas?: ('topical_cohesion' | 'conceptual_density')[];
   windowSize?: number; // seconds, default 30
   includeMetadata?: boolean;
+  // Injected teacher-provided context for anchoring analysis
+  sessionContext?: {
+    subject?: string;
+    topic?: string;
+    goals?: string[];
+    description?: string;
+  };
 }
 
 export interface Tier1Insights {
@@ -56,6 +63,15 @@ export interface Tier2Options {
   analysisDepth: 'standard' | 'comprehensive';
   includeComparative?: boolean; // Cross-group comparisons
   includeMetadata?: boolean;
+  // Optional explicit per-group scope (preferred over groupIds for live triggers)
+  groupId?: string;
+  // Injected teacher-provided context for anchoring analysis
+  sessionContext?: {
+    subject?: string;
+    topic?: string;
+    goals?: string[];
+    description?: string;
+  };
 }
 
 export interface Tier2Insights {
@@ -67,7 +83,8 @@ export interface Tier2Insights {
     counterarguments: number; // Consideration of alternatives
     synthesis: number; // Integration of multiple perspectives
   };
-  
+
+  // Emotional Arc (session- or group-level depending on metadata.scope)
   collectiveEmotionalArc: {
     trajectory: 'ascending' | 'descending' | 'stable' | 'volatile';
     averageEngagement: number; // 0-1 engagement level
@@ -78,6 +95,9 @@ export interface Tier2Insights {
       confidence: number;
     }[];
   };
+  // Optional alias when provider responds with group-scoped field name
+  // This field may be normalized into collectiveEmotionalArc by parsers
+  groupEmotionalArc?: Tier2Insights['collectiveEmotionalArc'];
   
   // Group dynamics
   collaborationPatterns: {
@@ -128,6 +148,9 @@ export interface Tier2Insights {
     modelVersion: string;
     analysisModules: string[];
     rawScores?: Record<string, any>;
+    // Added to clarify scope and origin for Tier2
+    scope?: 'group' | 'session';
+    groupId?: string;
   };
 }
 

@@ -34,6 +34,7 @@ function getHistogram(name: string, help: string, buckets: number[], labelNames?
 const sttJobsSuccessTotal = getCounter('stt_jobs_success_total', 'Total STT jobs processed successfully');
 const sttJobsFailedTotal = getCounter('stt_jobs_failed_total', 'Total STT jobs failed');
 const transcriptEmitLatencyMs = getHistogram('transcript_emit_latency_ms', 'Latency from upload to WS emit', [50,100,200,500,1000,2000,5000,10000]);
+const aiTriggersSuppressedEndingTotal = getCounter('ai_triggers_suppressed_ending_total', 'AI triggers suppressed due to session ending/ended');
 
 export async function processAudioJob(data: AudioJob): Promise<void> {
   const start = Date.now();
@@ -131,6 +132,26 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
   try {
     const text = trimmed;
     if (text.length > 0) {
+      // Gate AI buffering/triggers when session is ending or ended
+      try {
+        const clientR = redisService.getClient();
+        const ending = await clientR.get(`ws:session:ending:${data.sessionId}`);
+        const status = await clientR.get(`ws:session:status:${data.sessionId}`);
+        if (ending === '1' || status === 'ended') {
+          aiTriggersSuppressedEndingTotal.inc();
+          if (process.env.API_DEBUG === '1') {
+            try { console.log('🛑 Suppressing AI buffer/trigger due to session end flags', { sessionId: data.sessionId, groupId: data.groupId }); } catch {}
+          }
+          // Do not buffer or trigger AI for post-end jobs
+          sttJobsSuccessTotal.inc();
+          const base = data.receivedAt || start;
+          transcriptEmitLatencyMs.observe(Date.now() - base);
+          return;
+        }
+      } catch {
+        // If gating check itself failed (Redis issue), continue best-effort
+      }
+      // Only reached when not suppressed
       const { aiAnalysisBufferService } = await import('../services/ai-analysis-buffer.service');
       await aiAnalysisBufferService.bufferTranscription(data.groupId, data.sessionId, text);
 
@@ -142,9 +163,11 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
       }
     }
   } catch (e) {
-    if (process.env.API_DEBUG === '1') {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn('⚠️ AI buffer/trigger failed (non-blocking):', msg);
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg !== 'AI_SUPPRESSED_DUE_TO_END') {
+      if (process.env.API_DEBUG === '1') {
+        console.warn('⚠️ AI buffer/trigger failed (non-blocking):', msg);
+      }
     }
   }
 

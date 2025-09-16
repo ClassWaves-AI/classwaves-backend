@@ -3,6 +3,27 @@ import { eventBusPort } from '../utils/event-bus.port.instance';
 import { aiAnalysisPort } from '../utils/ai-analysis.port.instance';
 import { guidanceSystemHealthService } from './guidance-system-health.service';
 import * as client from 'prom-client';
+import { redisService } from './redis.service';
+import type { SubjectArea } from '../types/teacher-guidance.types';
+
+// Normalize arbitrary session subject strings to the limited SubjectArea union used by
+// the Teacher Prompt service. Defaults to 'general' when unknown.
+function toSubjectArea(input?: string): SubjectArea {
+  if (!input) return 'general';
+  const s = String(input).trim().toLowerCase();
+  // Exact matches first
+  if (s === 'math') return 'math';
+  if (s === 'science') return 'science';
+  if (s === 'literature') return 'literature';
+  if (s === 'history') return 'history';
+  if (s === 'general') return 'general';
+  // Common aliases
+  if (s === 'mathematics' || s === 'algebra' || s === 'geometry' || s === 'calculus') return 'math';
+  if (s === 'english' || s === 'ela' || s === 'language arts') return 'literature';
+  if (s === 'physics' || s === 'chemistry' || s === 'biology' || s === 'earth science') return 'science';
+  if (s === 'social studies' || s === 'civics' || s === 'world history' || s === 'us history') return 'history';
+  return 'general';
+}
 
 /**
  * AI Analysis Trigger Service
@@ -105,8 +126,50 @@ class AIAnalysisTriggerService {
    */
   async checkAndTriggerAIAnalysis(groupId: string, sessionId: string, teacherId: string): Promise<void> {
     try {
+      // Fast gate: if session is ending/ended, skip all triggers immediately
+      try {
+        const r = redisService.getClient();
+        const ending = await r.get(`ws:session:ending:${sessionId}`);
+        const status = await r.get(`ws:session:status:${sessionId}`);
+        if (ending === '1' || status === 'ended') {
+          // Count suppressions for observability (reuse or create counter)
+          try {
+            const name = 'ai_triggers_suppressed_ending_total';
+            const existing = client.register.getSingleMetric(name) as client.Counter<string> | undefined;
+            const ctr = existing || new client.Counter({ name, help: 'AI triggers suppressed due to session ending/ended' });
+            ctr.inc();
+          } catch {}
+          if (process.env.API_DEBUG === '1') {
+            try { console.log('🛑 Skipping AI analysis triggers (ending/ended)', { sessionId, groupId }); } catch {}
+          }
+          return; // Hard stop
+        }
+      } catch {
+        // If gating check fails, continue best-effort
+      }
+
       const tier1Transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
       const tier2Transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier2', groupId, sessionId);
+
+      // Build session context for prompt anchoring (best-effort)
+      let sessionContext: { subject?: string; topic?: string; goals?: string[]; description?: string } | undefined;
+      try {
+        const { getCompositionRoot } = await import('../app/composition-root');
+        const detailRepo = getCompositionRoot().getSessionDetailRepository();
+        const detail = await detailRepo.getOwnedSessionDetail(sessionId, teacherId);
+        const subject = (detail as any)?.subject || undefined;
+        const goal = (detail as any)?.goal || undefined;
+        const title = (detail as any)?.title || undefined;
+        const description = (detail as any)?.description || undefined;
+        sessionContext = {
+          subject: typeof subject === 'string' ? subject : undefined,
+          topic: typeof title === 'string' ? title : undefined,
+          goals: goal ? [String(goal)] : [],
+          description: typeof description === 'string' ? description : undefined,
+        };
+      } catch {
+        // Fallback: keep undefined; prompt builders tolerate missing context
+      }
 
       // Warm-up suppression for Tier1 (recording + buffering continue)
       let withinWarmup = false;
@@ -134,11 +197,11 @@ class AIAnalysisTriggerService {
         try { this.tier1SuppressedWarmup.inc(); } catch {}
       }
       if (!withinWarmup && eligibleForTier1) {
-        await this.triggerTier1Analysis(groupId, sessionId, teacherId, tier1Transcripts);
+        await this.triggerTier1Analysis(groupId, sessionId, teacherId, tier1Transcripts, sessionContext);
       }
 
-      if (tier2Transcripts.length >= 8 && this.shouldTriggerTier2Analysis(tier2Transcripts)) {
-        await this.triggerTier2Analysis(sessionId, teacherId, tier2Transcripts);
+      if (this.shouldTriggerTier2Analysis(tier2Transcripts)) {
+        await this.triggerTier2Analysis(groupId, sessionId, teacherId, tier2Transcripts, sessionContext);
       }
     } catch (error) {
       console.error(`❌ AI analysis check failed for group ${groupId}:`, error);
@@ -155,7 +218,9 @@ class AIAnalysisTriggerService {
 
   private shouldTriggerTier2Analysis(transcripts: string[]): boolean {
     const combinedLength = transcripts.join(' ').length;
-    return combinedLength > 500;
+    const minChars = parseInt(process.env.AI_TIER2_GROUP_MIN_CHARS || '400', 10);
+    const minTranscripts = parseInt(process.env.AI_TIER2_GROUP_MIN_TRANSCRIPTS || '6', 10);
+    return transcripts.length >= minTranscripts && combinedLength > minChars;
   }
 
   /**
@@ -165,7 +230,8 @@ class AIAnalysisTriggerService {
     groupId: string,
     sessionId: string,
     teacherId: string,
-    transcripts: string[]
+    transcripts: string[],
+    sessionContext?: { subject?: string; topic?: string; goals?: string[]; description?: string }
   ): Promise<void> {
     const startTime = Date.now();
     try {
@@ -174,7 +240,13 @@ class AIAnalysisTriggerService {
       const firstWindowSec = parseInt(process.env.GUIDANCE_TIER1_FIRST_WINDOW_SECONDS || '60', 10);
       const firstKey = `${sessionId}:${groupId}`;
       const isFirstTier1 = !this.firstTier1Completed.has(firstKey) && firstWindowSec > 0;
-      const windowSize = isFirstTier1 ? firstWindowSec : 30;
+      // Default Tier1 window seconds derived from AI_TIER1_WINDOW_MS to keep prompt label/env in sync
+      const defaultWindowSec = (() => {
+        const ms = parseInt(process.env.AI_TIER1_WINDOW_MS || '30000', 10);
+        const sec = Math.floor((Number.isFinite(ms) ? ms : 30000) / 1000);
+        return Math.max(5, sec); // clamp to sensible lower bound
+      })();
+      const windowSize = isFirstTier1 ? firstWindowSec : defaultWindowSec;
 
       const insights = await aiAnalysisPort.analyzeTier1(transcripts, {
         groupId,
@@ -182,6 +254,7 @@ class AIAnalysisTriggerService {
         focusAreas: ['topical_cohesion', 'conceptual_density'],
         windowSize,
         includeMetadata: true,
+        sessionContext,
       });
 
       if (isFirstTier1) {
@@ -266,8 +339,8 @@ class AIAnalysisTriggerService {
                 groupId,
                 teacherId,
                 sessionPhase: 'development',
-                subject: 'general',
-                learningObjectives: [],
+                subject: toSubjectArea(sessionContext?.subject),
+                learningObjectives: sessionContext?.goals || [],
                 groupSize: 4,
                 sessionDuration: 45,
               }).catch(() => []);
@@ -291,8 +364,11 @@ class AIAnalysisTriggerService {
         console.warn('Auto-prompt generation (Tier1) failed:', msg);
       }
 
-      // Emit lightweight analytics when on-track is suppressed (power the on-track bar)
-      if (shouldSuppress && hasMetrics) {
+      // Emit lightweight analytics for the on‑track bar on every Tier1 result
+      // Previously this only emitted when prompts were suppressed, causing the
+      // on‑track UI to never update during normal operation. We now emit
+      // consistently whenever metrics are available.
+      if (hasMetrics) {
         try {
           const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
           const onTrackScore = Math.min(tc, cd);
@@ -338,19 +414,35 @@ class AIAnalysisTriggerService {
   /**
    * Trigger Tier 2 analysis and broadcast insights via namespaced sessions service
    */
+  // Simple in-process concurrency guard for per-group Tier2
+  private static tier2GroupRunning = 0;
+
   public async triggerTier2Analysis(
+    groupId: string,
     sessionId: string,
     teacherId: string,
-    transcripts: string[]
+    transcripts: string[],
+    sessionContext?: { subject?: string; topic?: string; goals?: string[]; description?: string }
   ): Promise<void> {
     const startTime = Date.now();
     try {
-      console.log(`🧠 Triggering Tier 2 analysis for session ${sessionId}`);
+      const maxConc = parseInt(process.env.AI_TIER2_GROUP_MAX_CONCURRENCY || '2', 10);
+      if (AIAnalysisTriggerService.tier2GroupRunning >= Math.max(1, maxConc)) {
+        if (process.env.API_DEBUG === '1') {
+          console.log('⏳ Skipping Tier2 (group) due to concurrency cap', { sessionId, groupId });
+        }
+        return;
+      }
+      AIAnalysisTriggerService.tier2GroupRunning++;
+
+      console.log(`🧠 Triggering Tier 2 analysis for session ${sessionId}, group ${groupId}`);
       const insights = await aiAnalysisPort.analyzeTier2(transcripts, {
         sessionId,
-        groupIds: [],
+        groupId,
+        groupIds: [groupId],
         analysisDepth: 'standard',
         includeMetadata: true,
+        sessionContext,
       });
 
       // Session-level tier events removed (guidance namespace is canonical)
@@ -360,7 +452,9 @@ class AIAnalysisTriggerService {
         try {
           const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
           getNamespacedWebSocketService()?.getGuidanceService().emitTier2Insight(sessionId, {
+            scope: 'group',
             sessionId,
+            groupId,
             insights,
             timestamp: (insights as any)?.analysisTimestamp,
           });
@@ -372,7 +466,7 @@ class AIAnalysisTriggerService {
       // Persist insights idempotently (non-blocking)
       try {
         const { aiInsightsPersistenceService } = await import('./ai-insights-persistence.service');
-        await aiInsightsPersistenceService.persistTier2(sessionId, insights).catch(() => undefined);
+        await aiInsightsPersistenceService.persistTier2(sessionId, insights, groupId).catch(() => undefined);
       } catch (_) {
         // swallow persistence issues; emission already happened
       }
@@ -387,26 +481,16 @@ class AIAnalysisTriggerService {
           }
         } else {
           const isUuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
-          if (isUuid(sessionId) && isUuid(teacherId)) {
-            let anyGroupId: string | null = null;
-            try {
-              const row = await (await import('./databricks.service')).databricksService.queryOne(
-                `SELECT id FROM classwaves.sessions.student_groups WHERE session_id = ? LIMIT 1`,
-                [sessionId]
-              );
-              anyGroupId = (row as any)?.id || null;
-            } catch {}
-
-            if (anyGroupId && isUuid(anyGroupId)) {
+          if (isUuid(sessionId) && isUuid(teacherId) && isUuid(groupId)) {
               const { teacherPromptService } = await import('./teacher-prompt.service');
               const promptStart = Date.now();
               const prompts = await teacherPromptService.generatePrompts(insights, {
                 sessionId,
-                groupId: anyGroupId,
+                groupId,
                 teacherId,
                 sessionPhase: 'development',
-                subject: 'general',
-                learningObjectives: [],
+                subject: toSubjectArea(sessionContext?.subject),
+                learningObjectives: sessionContext?.goals || [],
                 groupSize: 4,
                 sessionDuration: 45,
               }).catch(() => []);
@@ -418,7 +502,6 @@ class AIAnalysisTriggerService {
                 const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
                 getNamespacedWebSocketService()?.getGuidanceService().emitTeacherRecommendations(sessionId, prompts, { generatedAt: promptStart, tier: 'tier2' });
               }
-            }
           }
         }
       } catch (e) {
@@ -427,8 +510,7 @@ class AIAnalysisTriggerService {
         try { guidanceSystemHealthService.recordFailure('promptGeneration', 'autoprompt_tier2', 0, msg); } catch {}
         console.warn('Auto-prompt generation (Tier2) failed:', msg);
       }
-
-      await aiAnalysisBufferService.markBufferAnalyzed('tier2', '', sessionId).catch(() => undefined);
+      await aiAnalysisBufferService.markBufferAnalyzed('tier2', groupId, sessionId).catch(() => undefined);
 
       const duration = Date.now() - startTime;
       guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier2_analysis', duration);
@@ -446,11 +528,13 @@ class AIAnalysisTriggerService {
         try { this.tier2EmitCounter.inc({ school }); } catch {}
         if (lastTs) this.tier2TimeToInsight.observe({ school }, Date.now() - lastTs.getTime());
       } catch {}
-      console.log(`✅ Tier 2 analysis completed and broadcasted for session ${sessionId}`);
+      console.log(`✅ Tier 2 (group) analysis completed and broadcasted for session ${sessionId} group ${groupId}`);
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(`❌ Tier 2 analysis failed for session ${sessionId}:`, error);
+      console.error(`❌ Tier 2 (group) analysis failed for session ${sessionId} group ${groupId}:`, error);
       guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier2_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      if (AIAnalysisTriggerService.tier2GroupRunning > 0) AIAnalysisTriggerService.tier2GroupRunning--;
     }
   }
 
