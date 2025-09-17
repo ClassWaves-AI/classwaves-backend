@@ -6,10 +6,12 @@ import { teacherPromptService } from '../teacher-prompt.service';
 import { aiAnalysisBufferService } from '../ai-analysis-buffer.service';
 import { alertPrioritizationService } from '../alert-prioritization.service';
 import * as client from 'prom-client';
+import type { WsGuidanceAnalyticsEvent } from '@classwaves/shared';
 
 interface GuidanceSocketData extends NamespaceSocketData {
   subscribedSessions: Set<string>;
   subscriptions: Set<string>;
+  analyticsSubscriptions: Map<string, Set<string>>;
 }
 
 interface SubscriptionData {
@@ -107,6 +109,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     const socketData = socket.data as GuidanceSocketData;
     socketData.subscribedSessions = new Set();
     socketData.subscriptions = new Set();
+    socketData.analyticsSubscriptions = new Map();
 
     // Only allow teachers and super_admin in guidance namespace
     if (socket.data.role !== 'teacher' && socket.data.role !== 'super_admin') {
@@ -149,6 +152,10 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     // Analytics subscription
     socket.on('analytics:subscribe', async (data: { sessionId?: string; metrics?: string[] }) => {
       await this.handleAnalyticsSubscription(socket, data);
+    });
+
+    socket.on('analytics:unsubscribe', async (data: { sessionId?: string; metrics?: string[] }) => {
+      await this.handleAnalyticsUnsubscription(socket, data);
     });
 
     console.log(`Guidance namespace: Teacher ${socket.data.userId} connected for guidance`);
@@ -469,24 +476,100 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
 
   private async handleAnalyticsSubscription(socket: Socket, data: { sessionId?: string; metrics?: string[] }) {
     try {
-      const roomName = data.sessionId 
-        ? `analytics:session:${data.sessionId}`
-        : 'analytics:global';
+      const socketData = socket.data as GuidanceSocketData;
+      const allowedMetrics = new Set(['attention', 'tier2-shift']);
+      const sessionKey = data.sessionId ?? 'global';
+      const normalized = Array.isArray(data.metrics) && data.metrics.length > 0
+        ? data.metrics
+            .map((metric) => String(metric).toLowerCase())
+            .filter((metric) => allowedMetrics.has(metric))
+        : [];
 
-      await socket.join(roomName);
+      const requestedMetrics = normalized.length > 0 ? normalized : ['attention'];
+      const requestedSet = new Set(requestedMetrics);
+
+      const existing = socketData.analyticsSubscriptions.get(sessionKey) || new Set<string>();
+      const toJoin = requestedMetrics.filter((metric) => !existing.has(metric));
+      const toLeave = Array.from(existing).filter((metric) => !requestedSet.has(metric));
+
+      for (const metric of toJoin) {
+        const room = data.sessionId
+          ? `analytics:session:${data.sessionId}:${metric}`
+          : `analytics:global:${metric}`;
+        await socket.join(room);
+      }
+
+      for (const metric of toLeave) {
+        const room = data.sessionId
+          ? `analytics:session:${data.sessionId}:${metric}`
+          : `analytics:global:${metric}`;
+        await socket.leave(room);
+      }
+
+      socketData.analyticsSubscriptions.set(sessionKey, new Set(requestedSet));
 
       socket.emit('analytics:subscribed', {
         sessionId: data.sessionId,
-        metrics: data.metrics || ['all'],
+        metrics: Array.from(requestedSet),
         timestamp: new Date()
       });
 
-      console.log(`Guidance namespace: Teacher ${socket.data.userId} subscribed to analytics`);
+      console.log(`Guidance namespace: Teacher ${socket.data.userId} subscribed to analytics`, {
+        sessionId: data.sessionId || 'global',
+        metrics: Array.from(requestedSet)
+      });
     } catch (error) {
       console.error('Analytics subscription error:', error);
       socket.emit('error', {
         code: 'ANALYTICS_SUBSCRIPTION_FAILED',
         message: 'Failed to subscribe to analytics'
+      });
+    }
+  }
+
+  private async handleAnalyticsUnsubscription(socket: Socket, data: { sessionId?: string; metrics?: string[] }) {
+    try {
+      const socketData = socket.data as GuidanceSocketData;
+      const sessionKey = data.sessionId ?? 'global';
+      const existing = socketData.analyticsSubscriptions.get(sessionKey);
+      if (!existing || existing.size === 0) {
+        socket.emit('analytics:subscribed', {
+          sessionId: data.sessionId,
+          metrics: [],
+          timestamp: new Date()
+        });
+        return;
+      }
+
+      const allowedMetrics = new Set(['attention', 'tier2-shift']);
+      const metricsToRemove = Array.isArray(data.metrics) && data.metrics.length > 0
+        ? data.metrics.map((metric) => String(metric).toLowerCase()).filter((metric) => allowedMetrics.has(metric))
+        : Array.from(existing);
+
+      for (const metric of metricsToRemove) {
+        existing.delete(metric);
+        const room = data.sessionId
+          ? `analytics:session:${data.sessionId}:${metric}`
+          : `analytics:global:${metric}`;
+        await socket.leave(room);
+      }
+
+      if (existing.size === 0) {
+        socketData.analyticsSubscriptions.delete(sessionKey);
+      } else {
+        socketData.analyticsSubscriptions.set(sessionKey, existing);
+      }
+
+      socket.emit('analytics:subscribed', {
+        sessionId: data.sessionId,
+        metrics: existing ? Array.from(existing) : [],
+        timestamp: new Date()
+      });
+    } catch (error) {
+      console.error('Analytics unsubscription error:', error);
+      socket.emit('error', {
+        code: 'ANALYTICS_UNSUBSCRIPTION_FAILED',
+        message: 'Failed to unsubscribe from analytics'
       });
     }
   }
@@ -680,9 +763,17 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     })();
   }
 
-  public emitGuidanceAnalytics(sessionId: string, analytics: any): void {
-    this.emitToRoom(`analytics:session:${sessionId}`, 'guidance:analytics', analytics);
-    this.emitToRoom('analytics:global', 'guidance:analytics', analytics);
+  public emitGuidanceAnalytics(event: WsGuidanceAnalyticsEvent): void {
+    const category = event.category;
+    const sessionRoom = `analytics:session:${event.sessionId}:${category}`;
+    const globalRoom = `analytics:global:${category}`;
+
+    const deliveredSession = this.emitToRoom(sessionRoom, 'guidance:analytics', event);
+    const deliveredGlobal = this.emitToRoom(globalRoom, 'guidance:analytics', event);
+
+    if (!deliveredSession && !deliveredGlobal) {
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: `analytics_${category}` }); } catch {}
+    }
   }
 
   // Generic cache update emission for clients subscribed to guidance namespace

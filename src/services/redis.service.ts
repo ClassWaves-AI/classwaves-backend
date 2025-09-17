@@ -1,6 +1,7 @@
 import Redis from 'ioredis';
 import { LRUCache } from 'lru-cache';
 import { Teacher, School } from '../types/auth.types';
+import { createGuidanceRedisScriptRunner, GuidanceRedisScriptRunner } from '../redis-scripts';
 
 interface SessionData {
   teacherId: string;
@@ -38,6 +39,7 @@ class RedisService {
   private cleanupInterval: NodeJS.Timeout | null = null;
   private clientConfig: any;
   private readonly useMock: boolean = process.env.REDIS_USE_MOCK === '1';
+  private guidanceScripts?: GuidanceRedisScriptRunner;
 
   // Lightweight in-memory Redis mock for tests/local when REDIS_USE_MOCK=1
   private createInMemoryRedisMock(): any {
@@ -82,6 +84,7 @@ class RedisService {
       async del(key: string) { const had = kv.delete(key) || sets.delete(key) || hashes.delete(key); return had ? 1 : 0; },
       async exists(key: string) { ensureAlive(key); return kv.has(key) ? 1 : 0; },
       async expire(key: string, seconds: number) { const e = kv.get(key); if (!e) return 0; e.expireAt = now() + seconds * 1000; return 1; },
+      async pexpire(key: string, milliseconds: number) { const e = kv.get(key); if (!e) return 0; e.expireAt = now() + Number(milliseconds); return 1; },
       async ttl(key: string) { const e = kv.get(key); if (!e || !e.expireAt) return -1; const t = Math.ceil((e.expireAt - now()) / 1000); return t < 0 ? -2 : t; },
       async incrby(key: string, by: number) { ensureAlive(key); const v = Number(kv.get(key)?.value ?? '0') + by; kv.set(key, { value: String(v) }); return v; },
       async incr(key: string) { return client.incrby(key, 1); },
@@ -583,6 +586,13 @@ class RedisService {
     return this.client;
   }
 
+  getGuidanceScripts(): GuidanceRedisScriptRunner {
+    if (!this.guidanceScripts) {
+      this.guidanceScripts = createGuidanceRedisScriptRunner(this.getClient());
+    }
+    return this.guidanceScripts;
+  }
+
   /**
    * Get cache statistics for monitoring
    */
@@ -635,6 +645,7 @@ export const redisService = {
   disconnect: () => getRedisService().disconnect(),
   waitForConnection: (timeout?: number) => getRedisService().waitForConnection(timeout),
   getClient: () => getRedisService().getClient(),
+  getGuidanceScripts: () => getRedisService().getGuidanceScripts(),
   
   // New optimized methods
   getSessionOptimized: (sessionId: string) => getRedisService().getSessionOptimized(sessionId),

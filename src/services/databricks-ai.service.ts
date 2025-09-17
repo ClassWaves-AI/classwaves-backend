@@ -108,7 +108,10 @@ export class DatabricksAIService {
    */
   private buildTier1Prompt(transcripts: string[], options: Tier1Options): string {
     const combinedTranscript = transcripts.join(' ').trim();
+    const escapedTranscript = combinedTranscript.replace(/`/g, '\`');
     const ctx = this.sanitizeSessionContext(options.sessionContext);
+    const ctxJson = JSON.stringify(ctx);
+    const escapedCtx = ctxJson.replace(/`/g, '\`');
     // Avoid including raw IDs or long numeric sequences in the prompt to prevent input guardrails
     // Context lines keep only non-PII operational info
     return `You are an expert educational AI analyzing group discussion transcripts in real-time.
@@ -118,17 +121,21 @@ export class DatabricksAIService {
 - Transcript Length: ${combinedTranscript.length} characters
 
 **INTENDED SESSION CONTEXT (sanitized JSON):**
-${JSON.stringify(ctx)}
+${escapedCtx}
 
 **TRANSCRIPT TO ANALYZE:**
-${combinedTranscript}
+${escapedTranscript}
 
 **ANALYSIS REQUIREMENTS:**
-Provide a JSON response with exactly this structure:
+Provide a JSON response with exactly this structure (omit optional fields when you cannot estimate them confidently):
 
 {
   "topicalCohesion": <0-1 score>,
   "conceptualDensity": <0-1 score>,
+  "offTopicHeat": <0-1 score or null>,
+  "discussionMomentum": <-1 to 1 slope or null>,
+  "confusionRisk": <0-1 probability or null>,
+  "energyLevel": <0-1 relative energy score or null>,
   "analysisTimestamp": "<ISO timestamp>",
   "windowStartTime": "<ISO timestamp>",
   "windowEndTime": "<ISO timestamp>",
@@ -156,6 +163,12 @@ Provide a JSON response with exactly this structure:
   - 0.6-0.8: Good use of subject-specific terms, clear reasoning
   - 0.4-0.6: Basic concepts with some complexity
   - <0.4: Simple language, surface-level discussion
+
+**METRIC NOTES:**
+- **offTopicHeat**: distance from being on-track. If that cannot be computed directly, return the JSON literal null.
+- **discussionMomentum**: short-term trend of topical cohesion using an EMA (\u03b1 = 0.6). If history is unavailable, return the JSON literal null.
+- **confusionRisk**: probability that the group is confused/misconstruing concepts. Return the JSON literal null if unsure.
+- **energyLevel**: relative energy of discussion based on participation and vocal activity. Return the JSON literal null if not inferable.
 
 **INSIGHT GUIDELINES:**
 - Generate 1 actionable insights only
@@ -234,7 +247,10 @@ Return only valid JSON with no additional text.`;
    */
   private buildTier2Prompt(transcripts: string[], options: Tier2Options): string {
     const combinedTranscript = transcripts.join('\n\n').trim();
+    const escapedTranscript = combinedTranscript.replace(/`/g, '\`');
     const ctx = this.sanitizeSessionContext(options.sessionContext);
+    const ctxJson = JSON.stringify(ctx);
+    const escapedCtx = ctxJson.replace(/`/g, '\`');
     const scope = options.groupId ? 'group' : 'session';
     
     return `You are an expert educational AI conducting deep analysis of classroom group discussions.
@@ -248,10 +264,10 @@ Return only valid JSON with no additional text.`;
 - Total Transcript Length: ${combinedTranscript.length} characters
 
 **INTENDED SESSION CONTEXT (sanitized JSON):**
-${JSON.stringify(ctx)}
+${escapedCtx}
 
 **TRANSCRIPT TO ANALYZE:**
-${combinedTranscript}
+${escapedTranscript}
 
 **ANALYSIS REQUIREMENTS:**
 Provide a comprehensive JSON response with exactly this structure:
@@ -507,19 +523,45 @@ Return only valid JSON with no additional text.`;
         }
       }
 
-      // Ensure proper timestamp formatting
+      const clamp01 = (value: number): number => {
+        if (Number.isNaN(value)) return 0;
+        if (value < 0) return 0;
+        if (value > 1) return 1;
+        return value;
+      };
+
       const now = new Date().toISOString();
       const windowStart = new Date(Date.now() - (options.windowSize || 30) * 1000).toISOString();
-      
-      return {
+      const transcriptLength = transcripts.join(' ').length;
+
+      const topical = Number(parsed.topicalCohesion);
+      const conceptual = Number(parsed.conceptualDensity);
+      const offTopic = Number(parsed.offTopicHeat);
+      const discussionMomentum = typeof parsed.discussionMomentum === 'number' ? parsed.discussionMomentum : undefined;
+      const confusionRisk = typeof parsed.confusionRisk === 'number' ? clamp01(parsed.confusionRisk) : 0;
+      const energyLevel = typeof parsed.energyLevel === 'number' ? clamp01(parsed.energyLevel) : undefined;
+
+      const result: Tier1Insights = {
         ...parsed,
+        topicalCohesion: clamp01(topical),
+        conceptualDensity: clamp01(conceptual),
+        offTopicHeat: Number.isFinite(offTopic) ? clamp01(offTopic) : undefined,
+        discussionMomentum,
+        confusionRisk,
+        energyLevel,
         analysisTimestamp: now,
         windowStartTime: windowStart,
         windowEndTime: now,
-        transcriptLength: transcripts.join(' ').length,
-        // Ensure insights is an array
+        transcriptLength,
         insights: Array.isArray(parsed.insights) ? parsed.insights : []
       };
+
+      if (typeof result.offTopicHeat !== 'number' || Number.isNaN(result.offTopicHeat)) {
+        const minScore = Math.min(result.topicalCohesion ?? 0, result.conceptualDensity ?? 0);
+        result.offTopicHeat = clamp01(1 - minScore);
+      }
+
+      return result;
       
     } catch (error) {
       console.error('Failed to parse Tier 1 response:', error);

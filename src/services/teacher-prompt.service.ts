@@ -8,7 +8,9 @@
  * - Comprehensive audit logging
  */
 
+import crypto from 'crypto';
 import { databricksService } from './databricks.service';
+import { redisService } from './redis.service';
 import * as client from 'prom-client';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 import type { TeacherPrompt, PromptCategory, PromptPriority, PromptTiming, SessionPhase, SubjectArea } from '../types/teacher-guidance.types';
@@ -53,6 +55,7 @@ export class TeacherPromptService {
 
   private promptCache = new Map<string, TeacherPrompt[]>();
   private sessionMetrics = new Map<string, PromptMetrics>();
+  private teacherGuidanceMetricsImpactConfidenceSupport: boolean | null = null;
 
   // Observability metrics
   private readonly promptLatency = (() => {
@@ -78,6 +81,41 @@ export class TeacherPromptService {
       return client.register.getSingleMetric('teacher_prompt_generation_total') as client.Counter<string>;
     }
   })();
+  private readonly promptCooldownRedisUnavailable = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_autoprompt_redis_unavailable_total', help: 'Autoprompt cooldown/dedupe skipped due to Redis unavailable' });
+    } catch {
+      return client.register.getSingleMetric('guidance_autoprompt_redis_unavailable_total') as client.Counter<string>;
+    }
+  })();
+  private readonly promptStatsRedisUnavailable = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_prompt_stats_redis_unavailable_total', help: 'Prompt learning stats updates skipped due to Redis unavailable' });
+    } catch {
+      return client.register.getSingleMetric('guidance_prompt_stats_redis_unavailable_total') as client.Counter<string>;
+    }
+  })();
+  private readonly promptLearningUpdates = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_prompt_learning_updates_total', help: 'Total prompt learning loop updates', labelNames: ['category'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_prompt_learning_updates_total') as client.Counter<string>;
+    }
+  })();
+  private readonly promptLearningLatency = (() => {
+    try {
+      return new client.Histogram({ name: 'guidance_prompt_learning_update_latency_ms', help: 'Latency between prompt generation and learning update', buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000] });
+    } catch {
+      return client.register.getSingleMetric('guidance_prompt_learning_update_latency_ms') as client.Histogram<string>;
+    }
+  })();
+  private readonly promptEffectivenessWeightedSuccess = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_prompt_effectiveness_weighted_success_total', help: 'Weighted success contributions from prompt interactions', labelNames: ['category'] });
+    } catch {
+      return client.register.getSingleMetric('guidance_prompt_effectiveness_weighted_success_total') as client.Counter<string>;
+    }
+  })();
 
   constructor() {
     console.log('🧠 Teacher Prompt Service initialized', {
@@ -85,6 +123,26 @@ export class TeacherPromptService {
       subjectAware: this.config.subjectAware,
       effectivenessScoreWeight: this.config.effectivenessScoreWeight
     });
+  }
+
+  private async supportsImpactConfidenceColumn(): Promise<boolean> {
+    if (this.teacherGuidanceMetricsImpactConfidenceSupport != null) {
+      return this.teacherGuidanceMetricsImpactConfidenceSupport;
+    }
+
+    try {
+      const supported = await databricksService.tableHasColumns(
+        'ai_insights',
+        'teacher_guidance_metrics',
+        ['impact_confidence']
+      );
+      this.teacherGuidanceMetricsImpactConfidenceSupport = supported;
+      return supported;
+    } catch (error) {
+      console.warn('TeacherPromptService: failed to detect impact_confidence column; defaulting to disabled', error);
+      this.teacherGuidanceMetricsImpactConfidenceSupport = false;
+      return false;
+    }
   }
 
   // ============================================================================
@@ -105,6 +163,7 @@ export class TeacherPromptService {
     options?: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
   ): Promise<TeacherPrompt[]> {
     const startTime = Date.now();
+    const cooldownTimestamp = Date.now();
 
     try {
       // Normalize options (defaults and clamping) without Zod in domain
@@ -143,6 +202,24 @@ export class TeacherPromptService {
       // Apply filters and limits
       prompts = this.applyFilters(prompts, validatedOptions || {});
       prompts = prompts.slice(0, (validatedOptions && validatedOptions.maxPrompts) || 5);
+
+      prompts = await this.applyPromptDedupe(prompts, validatedContext);
+
+      if (prompts.length === 0) {
+        try { this.promptResultCounter.inc({ result: 'deduped' }); } catch {}
+        return [];
+      }
+
+      if (!(await this.isAutopromptCooldownSatisfied(validatedContext, cooldownTimestamp))) {
+        console.log('⏳ Auto prompts in cooldown window; skipping generation for', {
+          sessionId: validatedContext.sessionId,
+          groupId: validatedContext.groupId
+        });
+        try { this.promptResultCounter.inc({ result: 'cooldown' }); } catch {}
+        return [];
+      }
+
+      await this.enrichPromptImpact(prompts, insights);
 
       // ✅ DATABASE: Store generated prompts in database
       await this.storePromptsInDatabase(prompts, validatedContext);
@@ -785,6 +862,205 @@ export class TeacherPromptService {
     this.sessionMetrics.set(sessionId, metrics);
   }
 
+  private clamp01(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+  }
+
+  private getSessionTtlSeconds(): number {
+    const parsed = Number(process.env.SLI_SESSION_TTL_SECONDS);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.floor(parsed);
+    }
+    return 3600;
+  }
+
+  private getAutopromptCooldownMs(): number {
+    const parsed = Number(process.env.GUIDANCE_AUTOPROMPT_COOLDOWN_MS);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.floor(parsed);
+    }
+    return 90000;
+  }
+
+  private normalizePromptMessage(message: string): string {
+    return message
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private buildTemplateKey(category: PromptCategory, message: string): string {
+    const normalized = this.normalizePromptMessage(message);
+    return `${category}|${normalized}`;
+  }
+
+  private buildTemplateHash(category: PromptCategory, message: string): string {
+    const key = this.buildTemplateKey(category, message);
+    return crypto.createHash('sha1').update(key).digest('hex');
+  }
+
+  private getCooldownKey(sessionId: string, groupId?: string): string {
+    return `guidance:autoprompt:last:${sessionId}:${groupId ?? 'session'}`;
+  }
+
+  private getDedupeKey(sessionId: string, groupId?: string): string {
+    return `guidance:autoprompt:hashes:${sessionId}:${groupId ?? 'session'}`;
+  }
+
+  private computeImpactConfidence(confusionRisk: number, offTopicHeat: number, historicalSuccess: number): number {
+    const value = 0.5 * confusionRisk + 0.3 * offTopicHeat + 0.2 * historicalSuccess;
+    return this.clamp01(value);
+  }
+
+  private async isAutopromptCooldownSatisfied(context: PromptGenerationContext, timestampMs: number): Promise<boolean> {
+    const cooldownMs = this.getAutopromptCooldownMs();
+    if (cooldownMs <= 0) {
+      return true;
+    }
+    const ttlSeconds = this.getSessionTtlSeconds() + 3600;
+    const ttlMs = ttlSeconds > 0 ? ttlSeconds * 1000 : 0;
+    try {
+      const scripts = redisService.getGuidanceScripts();
+      return await scripts.autopromptCooldown({
+        key: this.getCooldownKey(context.sessionId, context.groupId),
+        timestampMs,
+        cooldownMs,
+        ttlMs,
+      });
+    } catch (error) {
+      try { this.promptCooldownRedisUnavailable.inc(); } catch {}
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Autoprompt cooldown fail-open', error instanceof Error ? error.message : error);
+      }
+      return true;
+    }
+  }
+
+  private async applyPromptDedupe(prompts: TeacherPrompt[], context: PromptGenerationContext): Promise<TeacherPrompt[]> {
+    if (prompts.length === 0) {
+      return prompts;
+    }
+    const dedupeKey = this.getDedupeKey(context.sessionId, context.groupId);
+    const ttlSeconds = this.getSessionTtlSeconds() + 3600;
+    try {
+      const client = redisService.getClient();
+      const filtered: TeacherPrompt[] = [];
+      for (const prompt of prompts) {
+        const hash = this.buildTemplateHash(prompt.category, prompt.message);
+        const existsRaw = await client.sismember(dedupeKey, hash);
+        const exists = typeof existsRaw === 'number' ? existsRaw : Number(existsRaw);
+        if (exists === 1) {
+          continue;
+        }
+        filtered.push(prompt);
+        await client.sadd(dedupeKey, hash);
+      }
+      if (ttlSeconds > 0) {
+        await client.expire(dedupeKey, ttlSeconds);
+      }
+      if (filtered.length < prompts.length) {
+        console.log(`♻️ Deduped ${prompts.length - filtered.length} prompts for session ${context.sessionId}`);
+      }
+      return filtered;
+    } catch (error) {
+      try { this.promptCooldownRedisUnavailable.inc(); } catch {}
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Prompt dedupe fail-open', error instanceof Error ? error.message : error);
+      }
+      return prompts;
+    }
+  }
+
+  private async enrichPromptImpact(prompts: TeacherPrompt[], insights: Tier1Insights | Tier2Insights): Promise<void> {
+    if (prompts.length === 0) {
+      return;
+    }
+    const isTier1 = this.isTier1Insights(insights);
+    const confusion = isTier1 ? this.clamp01(insights.confusionRisk ?? 0) : 0;
+    const offTopic = isTier1
+      ? this.clamp01(
+          typeof insights.offTopicHeat === 'number'
+            ? insights.offTopicHeat
+            : 1 - Math.min(this.clamp01(insights.topicalCohesion ?? 0), this.clamp01(insights.conceptualDensity ?? 0))
+        )
+      : 0;
+    const historicalCache = new Map<string, number>();
+    for (const prompt of prompts) {
+      const templateKey = this.buildTemplateKey(prompt.category, prompt.message);
+      let historical = historicalCache.get(templateKey);
+      if (historical === undefined) {
+        historical = await this.getHistoricalSuccessRate(templateKey);
+        historicalCache.set(templateKey, historical);
+      }
+      prompt.impactConfidence = this.computeImpactConfidence(confusion, offTopic, historical);
+    }
+  }
+
+  private async getHistoricalSuccessRate(templateKey: string): Promise<number> {
+    try {
+      const client = redisService.getClient();
+      const stats = await client.hgetall(`guidance:prompt:template_stats:${templateKey}`);
+      if (!stats || Object.keys(stats).length === 0) {
+        return 0.5;
+      }
+      const successSum = Number(stats.success_sum);
+      const weightSum = Number(stats.weight_sum);
+      const observationCount = Number(stats.observation_count);
+      if (!Number.isFinite(successSum) || !Number.isFinite(weightSum) || weightSum <= 0) {
+        return 0.5;
+      }
+      if (!Number.isFinite(observationCount) || observationCount < 10) {
+        return 0.5;
+      }
+      return this.clamp01(successSum / weightSum);
+    } catch (error) {
+      try { this.promptStatsRedisUnavailable.inc(); } catch {}
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Historical success lookup failed', error instanceof Error ? error.message : error);
+      }
+      return 0.5;
+    }
+  }
+
+  private async updatePromptTemplateStats(
+    category: PromptCategory,
+    message: string,
+    interactionType: string,
+    responseTimeMs?: number
+  ): Promise<void> {
+    const templateKey = this.buildTemplateKey(category, message);
+    const outcome = interactionType === 'used' ? 1 : 0;
+    const halfLifeMs = 14 * 24 * 60 * 60 * 1000;
+    const ttlSeconds = 30 * 24 * 60 * 60;
+    try {
+      const scripts = redisService.getGuidanceScripts();
+      const result = await scripts.promptStats({
+        key: `guidance:prompt:template_stats:${templateKey}`,
+        outcome,
+        timestampMs: Date.now(),
+        halfLifeMs,
+        ttlSeconds,
+      });
+      const successRate = this.clamp01(result?.successRate ?? 0.5);
+      const categoryLabel = category || 'unknown';
+      try { this.promptLearningUpdates.inc({ category: categoryLabel }); } catch {}
+      try { this.promptEffectivenessWeightedSuccess.inc({ category: categoryLabel }, successRate); } catch {}
+      if (typeof responseTimeMs === 'number' && responseTimeMs >= 0) {
+        try { this.promptLearningLatency.observe(responseTimeMs); } catch {}
+      }
+    } catch (error) {
+      try { this.promptStatsRedisUnavailable.inc(); } catch {}
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Prompt learning update failed', error instanceof Error ? error.message : error);
+      }
+    }
+  }
+
   private async recordPromptInteractionToDB(
     promptId: string,
     sessionId: string,
@@ -836,9 +1112,11 @@ export class TeacherPromptService {
         // Skip DB writes in test to avoid long I/O
         return;
       }
+      const supportsImpactConfidence = await this.supportsImpactConfidenceColumn();
+
       for (const prompt of prompts) {
         // ✅ DATABASE: Store prompt in teacher_guidance_metrics table
-        const promptData = {
+        const promptData: Record<string, any> = {
           id: prompt.id,
           session_id: context.sessionId,
           teacher_id: context.teacherId,
@@ -862,6 +1140,12 @@ export class TeacherPromptService {
           created_at: new Date(),
           updated_at: new Date()
         };
+
+        if (supportsImpactConfidence) {
+          promptData.impact_confidence = typeof prompt.impactConfidence === 'number'
+            ? prompt.impactConfidence
+            : null;
+        }
 
         await databricksService.insert('teacher_guidance_metrics', promptData);
       }
@@ -902,13 +1186,12 @@ export class TeacherPromptService {
         updateData.feedback_text = feedback.text;
       }
 
-      // Calculate response time if acknowledged
-      if (interactionType === 'acknowledged') {
-        const promptRecord = await this.getPromptFromDatabase(promptId);
-        if (promptRecord && promptRecord.generated_at) {
-          const responseTime = (Date.now() - new Date(promptRecord.generated_at).getTime()) / 1000;
-          updateData.response_time_seconds = Math.round(responseTime);
-        }
+      const promptRecord = await this.getPromptFromDatabase(promptId);
+      let responseTimeMs: number | undefined;
+      if (promptRecord && promptRecord.generated_at) {
+        const responseTimeSeconds = (Date.now() - new Date(promptRecord.generated_at).getTime()) / 1000;
+        updateData.response_time_seconds = Math.round(responseTimeSeconds);
+        responseTimeMs = Math.max(0, responseTimeSeconds * 1000);
       }
 
       // Update the record
@@ -916,6 +1199,12 @@ export class TeacherPromptService {
 
       // Update aggregated effectiveness metrics
       await this.updatePromptEffectivenessTable(promptId, sessionId, teacherId, interactionType, feedback);
+
+      if (promptRecord) {
+        const category = (promptRecord.prompt_category || 'unknown') as PromptCategory;
+        const message = typeof promptRecord.prompt_message === 'string' ? promptRecord.prompt_message : '';
+        await this.updatePromptTemplateStats(category, message, interactionType, responseTimeMs);
+      }
 
       console.log(`✅ Updated effectiveness metrics for prompt ${promptId}`);
 
@@ -930,7 +1219,7 @@ export class TeacherPromptService {
         return null;
       }
       const query = `
-        SELECT generated_at, prompt_category, priority_level, subject_area, session_phase
+        SELECT generated_at, prompt_category, prompt_message, priority_level, subject_area, session_phase
         FROM classwaves.ai_insights.teacher_guidance_metrics
         WHERE id = ?
         LIMIT 1

@@ -12,6 +12,7 @@
     "email:test-group-leader": "ts-node src/scripts/send-test-group-leader-email.ts",
     "health:check": "curl -f http://localhost:3000/api/v1/health || exit 1",
     "build": "tsc -p tsconfig.prod.json",
+    "postbuild": "node scripts/copy-redis-scripts.js",
     "start": "node dist/server.js",
     "test": "jest",
     "test:e2e:audio-insights-summaries": "ENABLE_NETWORK_TESTS=1 STT_FORCE_MOCK=1 jest src/__tests__/e2e/audio-to-insights-summaries.e2e.test.ts --runInBand",

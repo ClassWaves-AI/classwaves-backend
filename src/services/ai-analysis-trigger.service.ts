@@ -5,6 +5,8 @@ import { guidanceSystemHealthService } from './guidance-system-health.service';
 import * as client from 'prom-client';
 import { redisService } from './redis.service';
 import type { SubjectArea } from '../types/teacher-guidance.types';
+import type { Tier2Insights } from '../types/ai-analysis.types';
+import type { WsGuidanceAnalyticsEvent } from '@classwaves/shared';
 
 // Normalize arbitrary session subject strings to the limited SubjectArea union used by
 // the Teacher Prompt service. Defaults to 'general' when unknown.
@@ -36,6 +38,8 @@ class AIAnalysisTriggerService {
   private firstTier1Completed: Set<string> = new Set();
   // Track last on-track state per sessionId:groupId to support optional return threshold
   private lastOnTrackState: Map<string, boolean> = new Map();
+  // Maintain EMA state for discussion momentum calculations
+  private discussionMomentumState: Map<string, { ema: number; count: number }> = new Map();
   private readonly tier1TimeToInsight = (() => {
     try {
       return new client.Histogram({
@@ -121,6 +125,255 @@ class AIAnalysisTriggerService {
       return client.register.getSingleMetric('guidance_analytics_emits_total') as client.Counter<string>;
     }
   })();
+  private readonly attentionRedisUnavailable = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_attention_redis_unavailable_total', help: 'Attention analytics fail-open due to Redis unavailable' });
+    } catch {
+      return client.register.getSingleMetric('guidance_attention_redis_unavailable_total') as client.Counter<string>;
+    }
+  })();
+  private readonly energyStatsRedisUnavailable = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_energy_stats_redis_unavailable_total', help: 'Energy baseline updates skipped due to Redis unavailable' });
+    } catch {
+      return client.register.getSingleMetric('guidance_energy_stats_redis_unavailable_total') as client.Counter<string>;
+    }
+  })();
+
+  private clamp01(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+  }
+
+  private logistic(z: number): number {
+    if (!Number.isFinite(z)) return 0.5;
+    const clipped = Math.max(-10, Math.min(10, z));
+    return 1 / (1 + Math.exp(-clipped));
+  }
+
+  private computeLexicalDiversity(transcripts: string[]): number {
+    const combined = transcripts.join(' ').trim();
+    if (!combined) return 0;
+    const tokens = combined
+      .toLowerCase()
+      .split(/\s+/)
+      .map((token) => token.replace(/[^a-z0-9'\-]/gi, ''))
+      .filter((token) => token.length > 0);
+    if (tokens.length === 0) {
+      return 0;
+    }
+    const unique = new Set(tokens).size;
+    return this.clamp01(unique / tokens.length);
+  }
+
+  private async computePromptPressure(sessionId: string, groupId: string, referenceTimestampMs: number): Promise<number> {
+    try {
+      const client = redisService.getClient();
+      const key = `guidance:prompt:acks:${sessionId}:${groupId}`;
+      const hash = await client.hgetall(key);
+      const ackCountRaw = hash?.ackCount;
+      const lastAckRaw = hash?.lastAckTimestamp;
+      const ackCount = Number(ackCountRaw);
+      if (!Number.isFinite(ackCount) || ackCount <= 0) {
+        return 1;
+      }
+      const halfLifeMs = parseInt(process.env.GUIDANCE_ATTN_HALF_LIFE_MS || '300000', 10);
+      if (!Number.isFinite(halfLifeMs) || halfLifeMs <= 0) {
+        return this.clamp01(1 - ackCount / 5);
+      }
+      const lastAckTimestamp = Number(lastAckRaw);
+      const delta = Number.isFinite(lastAckTimestamp) && lastAckTimestamp > 0 ? Math.max(0, referenceTimestampMs - lastAckTimestamp) : 0;
+      const decay = Math.pow(0.5, halfLifeMs > 0 ? delta / halfLifeMs : 0);
+      const decayedSuccess = ackCount * decay;
+      return this.clamp01(1 - decayedSuccess / 5);
+    } catch (error) {
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Prompt pressure fallback (Redis unavailable)', error instanceof Error ? error.message : error);
+      }
+      return 1;
+    }
+  }
+
+  private resolveAttentionWeights(): { offTopic: number; confusion: number; momentum: number } {
+    const defaults = { offTopic: 0.45, confusion: 0.35, momentum: 0.2 };
+    const off = Number(process.env.GUIDANCE_ATTN_W_OFFTOPIC);
+    const conf = Number(process.env.GUIDANCE_ATTN_W_CONFUSION);
+    const momentum = Number(process.env.GUIDANCE_ATTN_W_MOMENTUM);
+    const weights = {
+      offTopic: Number.isFinite(off) && off >= 0 ? off : defaults.offTopic,
+      confusion: Number.isFinite(conf) && conf >= 0 ? conf : defaults.confusion,
+      momentum: Number.isFinite(momentum) && momentum >= 0 ? momentum : defaults.momentum,
+    };
+    const sum = weights.offTopic + weights.confusion + weights.momentum;
+    if (!Number.isFinite(sum) || sum <= 0 || sum > 1) {
+      return defaults;
+    }
+    return weights;
+  }
+
+  private computeAverage(values: Array<number | undefined | null>): number | undefined {
+    const numericValues = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    if (numericValues.length === 0) {
+      return undefined;
+    }
+    const total = numericValues.reduce((acc, val) => acc + val, 0);
+    return this.clamp01(total / numericValues.length);
+  }
+
+  private async maybeEmitTier2ShiftAnalytics(sessionId: string, groupId: string, insights: Tier2Insights): Promise<void> {
+    if (process.env.GUIDANCE_TIER2_SHIFT_ENABLED !== '1') {
+      return;
+    }
+
+    const client = redisService.getClient();
+    const snapshotKey = `guidance:tier2:last:${sessionId}:${groupId}`;
+    const ttlSeconds = (() => {
+      const parsed = Number(process.env.SLI_SESSION_TTL_SECONDS);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+      }
+      return 3600;
+    })();
+
+    const collaborationScore = this.computeAverage([
+      insights.collaborationPatterns?.turnTaking,
+      insights.collaborationPatterns?.buildingOnIdeas,
+      insights.collaborationPatterns?.conflictResolution,
+      insights.collaborationPatterns?.inclusivity,
+    ]);
+    const learningScore = this.computeAverage([
+      insights.learningSignals?.conceptualGrowth,
+      insights.learningSignals?.questionQuality,
+      insights.learningSignals?.metacognition,
+      insights.learningSignals?.knowledgeApplication,
+    ]);
+    const emotionalTrajectory = insights.collectiveEmotionalArc?.trajectory
+      || insights.groupEmotionalArc?.trajectory
+      || null;
+
+    const currentSnapshot = {
+      timestamp: Date.now(),
+      collaborationScore,
+      learningScore,
+      emotionalTrajectory,
+    };
+
+    let previousSnapshot: typeof currentSnapshot | null = null;
+    try {
+      const raw = await client.get(snapshotKey);
+      if (raw) {
+        previousSnapshot = JSON.parse(raw);
+      }
+    } catch (error) {
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Tier2 shift snapshot load failed (fail-closed)', error instanceof Error ? error.message : error);
+      }
+      // Fail-closed: skip emit but attempt to refresh snapshot below
+      previousSnapshot = null;
+    }
+
+    try {
+      if (ttlSeconds > 0) {
+        await client.set(snapshotKey, JSON.stringify(currentSnapshot), 'EX', ttlSeconds);
+      } else {
+        await client.set(snapshotKey, JSON.stringify(currentSnapshot));
+      }
+    } catch (error) {
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Tier2 shift snapshot store failed', error instanceof Error ? error.message : error);
+      }
+    }
+
+    if (!previousSnapshot) {
+      return; // warm-up: require at least one prior window
+    }
+
+    const analyticsEvents: WsGuidanceAnalyticsEvent[] = [];
+
+    if (typeof collaborationScore === 'number' && typeof previousSnapshot.collaborationScore === 'number') {
+      const delta = collaborationScore - previousSnapshot.collaborationScore;
+      if (delta <= -0.15) {
+        analyticsEvents.push({
+          category: 'tier2-shift',
+          sessionId,
+          metrics: {
+            groupId,
+            metric: 'collaborationPatterns',
+            previous: Number(previousSnapshot.collaborationScore.toFixed(3)),
+            current: Number(collaborationScore.toFixed(3)),
+            delta: Number(delta.toFixed(3)),
+            threshold: -0.15,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    if (typeof learningScore === 'number' && typeof previousSnapshot.learningScore === 'number') {
+      const delta = learningScore - previousSnapshot.learningScore;
+      if (delta >= 0.2) {
+        analyticsEvents.push({
+          category: 'tier2-shift',
+          sessionId,
+          metrics: {
+            groupId,
+            metric: 'learningSignals',
+            previous: Number(previousSnapshot.learningScore.toFixed(3)),
+            current: Number(learningScore.toFixed(3)),
+            delta: Number(delta.toFixed(3)),
+            threshold: 0.2,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    if (previousSnapshot.emotionalTrajectory && emotionalTrajectory && previousSnapshot.emotionalTrajectory !== emotionalTrajectory) {
+      analyticsEvents.push({
+        category: 'tier2-shift',
+        sessionId,
+        metrics: {
+          groupId,
+          metric: 'emotionalTrajectory',
+          previous: previousSnapshot.emotionalTrajectory,
+          current: emotionalTrajectory,
+          threshold: 1,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    if (analyticsEvents.length === 0) {
+      return;
+    }
+
+    const throttleKey = `guidance:tier2:shift:last_emit:${sessionId}:${groupId}`;
+    try {
+      const throttleResult = await client.set(throttleKey, '1', 'PX', 600000, 'NX');
+      if (throttleResult !== 'OK') {
+        return; // throttled; do not emit
+      }
+    } catch (error) {
+      if (process.env.API_DEBUG === '1') {
+        console.warn('Tier2 shift throttle failed (fail-closed)', error instanceof Error ? error.message : error);
+      }
+      return; // fail-closed per requirements
+    }
+
+    try {
+      const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+      const guidanceService = getNamespacedWebSocketService()?.getGuidanceService();
+      if (!guidanceService) {
+        return;
+      }
+      analyticsEvents.forEach((event) => guidanceService.emitGuidanceAnalytics(event));
+    } catch (error) {
+      console.warn('Tier2 shift analytics emit failed:', error instanceof Error ? error.message : error);
+    }
+  }
+
   /**
    * Check if AI analysis should be triggered and execute if ready
    */
@@ -261,7 +514,103 @@ class AIAnalysisTriggerService {
         this.firstTier1Completed.add(firstKey);
       }
 
-      // Tier1 gating: suppress on-track emits/prompts (env-controlled) and emit lightweight analytics instead
+      const combinedTranscript = transcripts.join(' ');
+      const charCount = combinedTranscript.length;
+      const lexicalDiversity = this.computeLexicalDiversity(transcripts);
+      const effectiveWindowSeconds = Math.max(1, windowSize);
+      const cps = charCount / effectiveWindowSeconds;
+      const analysisTimestampMs = (() => {
+        if (insights?.analysisTimestamp) {
+          const parsed = Date.parse(insights.analysisTimestamp);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+        return Date.now();
+      })();
+      const sessionTtlSeconds = (() => {
+        const raw = Number(process.env.SLI_SESSION_TTL_SECONDS);
+        if (Number.isFinite(raw) && raw > 0) {
+          return Math.floor(raw);
+        }
+        return 3600;
+      })();
+
+      let energyLevel = this.clamp01((0.5 + lexicalDiversity) / 2);
+      try {
+        const scripts = redisService.getGuidanceScripts();
+        const energyStats = await scripts.energyWelford({
+          key: `guidance:energy:stats:${sessionId}:${groupId}`,
+          sample: cps,
+          ttlSeconds: sessionTtlSeconds,
+        });
+        let energyZ = 0;
+        if (energyStats.count >= 3 && charCount >= 200) {
+          const sigma = energyStats.variance > 0 ? Math.sqrt(energyStats.variance) : 0;
+          if (sigma > 0.01) {
+            energyZ = (cps - energyStats.mean) / sigma;
+          }
+        }
+        const logistic = this.logistic(energyZ);
+        energyLevel = this.clamp01((logistic + lexicalDiversity) / 2);
+      } catch (error) {
+        try { this.energyStatsRedisUnavailable.inc(); } catch {}
+        if (process.env.API_DEBUG === '1') {
+          console.warn('Energy baseline update failed; using fallback', error instanceof Error ? error.message : error);
+        }
+        const logistic = this.logistic(0);
+        energyLevel = this.clamp01((logistic + lexicalDiversity) / 2);
+      }
+      insights.energyLevel = energyLevel;
+      const existingMetadata = { ...(insights.metadata || {}) } as any;
+      const rawScores = { ...(existingMetadata.rawScores ?? {}) } as Record<string, number>;
+      rawScores.lexicalDiversity = lexicalDiversity;
+      insights.metadata = {
+        ...existingMetadata,
+        rawScores,
+      };
+
+      const topicalCohesion = typeof insights.topicalCohesion === 'number' ? this.clamp01(insights.topicalCohesion) : undefined;
+      const conceptualDensity = typeof insights.conceptualDensity === 'number' ? this.clamp01(insights.conceptualDensity) : undefined;
+      if (typeof topicalCohesion === 'number') {
+        insights.topicalCohesion = topicalCohesion;
+      }
+      if (typeof conceptualDensity === 'number') {
+        insights.conceptualDensity = conceptualDensity;
+      }
+      const onTrackScore = typeof topicalCohesion === 'number' && typeof conceptualDensity === 'number'
+        ? this.clamp01(Math.min(topicalCohesion, conceptualDensity))
+        : undefined;
+      const offTopicHeat = this.clamp01(
+        typeof insights.offTopicHeat === 'number'
+          ? insights.offTopicHeat
+          : typeof onTrackScore === 'number'
+            ? 1 - onTrackScore
+            : 0
+      );
+      insights.offTopicHeat = offTopicHeat;
+      const confusionRisk = this.clamp01(typeof insights.confusionRisk === 'number' ? insights.confusionRisk : 0);
+      insights.confusionRisk = confusionRisk;
+
+      let discussionMomentum = 0;
+      if (typeof topicalCohesion === 'number') {
+        const alpha = 0.6;
+        const state = this.discussionMomentumState.get(firstKey) || { ema: topicalCohesion, count: 0 };
+        const previousEma = state.count === 0 ? topicalCohesion : state.ema;
+        const newEma = state.count === 0 ? topicalCohesion : alpha * topicalCohesion + (1 - alpha) * state.ema;
+        if (state.count >= 2) {
+          discussionMomentum = Math.max(-1, Math.min(1, newEma - previousEma));
+        } else {
+          discussionMomentum = 0;
+        }
+        this.discussionMomentumState.set(firstKey, { ema: newEma, count: state.count + 1 });
+      } else {
+        this.discussionMomentumState.delete(firstKey);
+        discussionMomentum = 0;
+      }
+      insights.discussionMomentum = discussionMomentum;
+
+      // Tier1 gating: suppress on-track emits/prompts (env-controlled) and emit analytics instead
       const suppressOnTrack = process.env.GUIDANCE_TIER1_SUPPRESS_ONTRACK === '1';
       const threshold = Number.isFinite(Number(process.env.GUIDANCE_TIER1_ONTRACK_THRESHOLD))
         ? parseFloat(process.env.GUIDANCE_TIER1_ONTRACK_THRESHOLD as string)
@@ -271,21 +620,16 @@ class AIAnalysisTriggerService {
         ? parseFloat(process.env.GUIDANCE_TIER1_CONF_MIN as string)
         : 0.5;
 
-      const tc = (insights as any)?.topicalCohesion;
-      const cd = (insights as any)?.conceptualDensity;
-      const conf = (insights as any)?.confidence;
-
-      // Only consider gating when metrics are present and confidence meets minimum
-      const hasMetrics = typeof tc === 'number' && typeof cd === 'number';
-      const meetsConfidence = typeof conf === 'number' ? conf >= confMin : true; // if missing, don't block
+      const confidence = typeof insights.confidence === 'number' ? insights.confidence : undefined;
+      const hasMetrics = typeof onTrackScore === 'number';
+      const meetsConfidence = typeof confidence === 'number' ? confidence >= confMin : true;
       let onTrack = false;
-      if (hasMetrics) {
-        onTrack = tc >= threshold && cd >= threshold;
-        // Optional return threshold (reduce flicker returning to on-track)
+      if (hasMetrics && typeof topicalCohesion === 'number' && typeof conceptualDensity === 'number') {
+        onTrack = topicalCohesion >= threshold && conceptualDensity >= threshold;
         if (onTrack && typeof returnThreshold === 'number') {
           const last = this.lastOnTrackState.get(firstKey);
           if (last === false) {
-            onTrack = tc >= returnThreshold && cd >= returnThreshold;
+            onTrack = topicalCohesion >= returnThreshold && conceptualDensity >= returnThreshold;
           }
         }
       }
@@ -364,24 +708,68 @@ class AIAnalysisTriggerService {
         console.warn('Auto-prompt generation (Tier1) failed:', msg);
       }
 
-      // Emit lightweight analytics for the on‑track bar on every Tier1 result
-      // Previously this only emitted when prompts were suppressed, causing the
-      // on‑track UI to never update during normal operation. We now emit
-      // consistently whenever metrics are available.
-      if (hasMetrics) {
+      if (hasMetrics && typeof onTrackScore === 'number' && typeof topicalCohesion === 'number' && typeof conceptualDensity === 'number') {
         try {
-          const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
-          const onTrackScore = Math.min(tc, cd);
-          getNamespacedWebSocketService()?.getGuidanceService().emitGuidanceAnalytics(sessionId, {
-            groupId,
-            topicalCohesion: tc,
-            conceptualDensity: cd,
-            onTrackScore,
-            timestamp: (insights as any)?.analysisTimestamp,
-          });
-          try { this.guidanceAnalyticsEmits.inc(); } catch {}
-        } catch (e) {
-          console.warn('Failed to emit guidance analytics:', e instanceof Error ? e.message : String(e));
+          const weights = this.resolveAttentionWeights();
+          const promptPressure = await this.computePromptPressure(sessionId, groupId, analysisTimestampMs);
+          const momentumPenalty = typeof discussionMomentum === 'number'
+            ? Math.max(0, -discussionMomentum)
+            : 0;
+          const baseScore = weights.offTopic * offTopicHeat + weights.confusion * confusionRisk + weights.momentum * momentumPenalty;
+          const rawAttention = baseScore * promptPressure;
+          const attentionScore = Math.round(this.clamp01(rawAttention) * 100);
+          const deltaScoreEnv = Number(process.env.GUIDANCE_ATTENTION_DELTA_SCORE);
+          const deltaMsEnv = Number(process.env.GUIDANCE_ATTENTION_DELTA_MS);
+          const minScoreDelta = Number.isFinite(deltaScoreEnv) ? deltaScoreEnv : 5;
+          const minTimeDeltaMs = Number.isFinite(deltaMsEnv) ? Math.floor(deltaMsEnv) : 30000;
+
+          let allowAttentionEmit = true;
+          try {
+            const scripts = redisService.getGuidanceScripts();
+            allowAttentionEmit = await scripts.attentionGate({
+              key: `guidance:attention:last:${sessionId}:${groupId}`,
+              score: attentionScore,
+              timestampMs: analysisTimestampMs,
+              minScoreDelta,
+              minTimeDeltaMs,
+              ttlSeconds: sessionTtlSeconds,
+            });
+          } catch (error) {
+            allowAttentionEmit = true;
+            try { this.attentionRedisUnavailable.inc(); } catch {}
+            if (process.env.API_DEBUG === '1') {
+              console.warn('Attention gate fail-open (Redis unavailable)', error instanceof Error ? error.message : error);
+            }
+          }
+
+          if (allowAttentionEmit) {
+            try {
+              const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
+              const timestampIso = new Date(analysisTimestampMs).toISOString();
+              const analyticsPayload = {
+                category: 'attention' as const,
+                sessionId,
+                metrics: {
+                  groupId,
+                  onTrackScore,
+                  topicalCohesion,
+                  conceptualDensity,
+                  offTopicHeat,
+                  discussionMomentum,
+                  confusionRisk,
+                  energyLevel,
+                  attentionScore,
+                },
+                timestamp: timestampIso,
+              };
+              getNamespacedWebSocketService()?.getGuidanceService().emitGuidanceAnalytics(analyticsPayload);
+              try { this.guidanceAnalyticsEmits.inc(); } catch {}
+            } catch (emitError) {
+              console.warn('Failed to emit guidance analytics:', emitError instanceof Error ? emitError.message : String(emitError));
+            }
+          }
+        } catch (attentionError) {
+          console.warn('Attention analytics computation failed:', attentionError instanceof Error ? attentionError.message : String(attentionError));
         }
       }
 
@@ -469,6 +857,14 @@ class AIAnalysisTriggerService {
         await aiInsightsPersistenceService.persistTier2(sessionId, insights, groupId).catch(() => undefined);
       } catch (_) {
         // swallow persistence issues; emission already happened
+      }
+
+      try {
+        await this.maybeEmitTier2ShiftAnalytics(sessionId, groupId, insights);
+      } catch (error) {
+        if (process.env.API_DEBUG === '1') {
+          console.warn('Tier2 shift analytics handling failed', error instanceof Error ? error.message : error);
+        }
       }
 
       // Auto-generate teacher prompts at session level (best-effort; flag-controlled)

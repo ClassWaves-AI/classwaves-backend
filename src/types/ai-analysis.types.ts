@@ -29,6 +29,10 @@ export interface Tier1Insights {
   // Core metrics
   topicalCohesion: number; // 0-1 score: how well group stays on topic
   conceptualDensity: number; // 0-1 score: sophistication of language/concepts
+  offTopicHeat?: number; // 0-1: inverted on-track heat (computed when missing)
+  discussionMomentum?: number; // -1 to 1: slope of topical cohesion EMA
+  confusionRisk?: number; // 0-1 probability of misconceptions
+  energyLevel?: number; // 0-1 blended lexical & energy baseline
   
   // Contextual data
   analysisTimestamp: string;

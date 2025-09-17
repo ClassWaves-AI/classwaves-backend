@@ -1,5 +1,7 @@
 import { TeacherPromptService } from '../../../services/teacher-prompt.service';
 import { Tier1Insights, Tier2Insights } from '../../../types/ai-analysis.types';
+import { redisService } from '../../../services/redis.service';
+import { databricksService } from '../../../services/databricks.service';
 
 describe('TeacherPromptService', () => {
   let service: TeacherPromptService;
@@ -19,6 +21,46 @@ describe('TeacherPromptService', () => {
       groupSize: 4,
       sessionDuration: 60
     };
+
+    let mockGuidanceScripts: any;
+    let mockRedisClient: any;
+
+    beforeEach(() => {
+      process.env.GUIDANCE_AUTOPROMPT_COOLDOWN_MS = '90000';
+      process.env.SLI_SESSION_TTL_SECONDS = '3600';
+      mockGuidanceScripts = {
+        autopromptCooldown: jest.fn().mockResolvedValue(true),
+        promptStats: jest.fn().mockResolvedValue({ successRate: 0.5, observationCount: 10 }),
+      };
+      mockRedisClient = {
+        sismember: jest.fn().mockResolvedValue(0),
+        sadd: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(1),
+        hgetall: jest.fn().mockResolvedValue({}),
+      };
+
+      jest.spyOn(redisService, 'getGuidanceScripts').mockReturnValue(mockGuidanceScripts);
+      jest.spyOn(redisService, 'getClient').mockReturnValue(mockRedisClient);
+      jest.spyOn(databricksService, 'insert').mockResolvedValue(undefined as any);
+      jest.spyOn(databricksService, 'update').mockResolvedValue(undefined as any);
+      jest.spyOn(databricksService, 'tableHasColumns').mockResolvedValue(true);
+      jest.spyOn(databricksService, 'query').mockResolvedValue([
+        {
+          generated_at: new Date().toISOString(),
+          prompt_category: 'redirection',
+          prompt_message: 'Encourage deeper thinking. Try asking: "Why do you think that?"',
+          priority_level: 'high',
+          subject_area: 'science',
+          session_phase: 'development',
+        },
+      ]);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      delete process.env.GUIDANCE_AUTOPROMPT_COOLDOWN_MS;
+      delete process.env.SLI_SESSION_TTL_SECONDS;
+    });
 
     it('should generate prompts from Tier 1 insights', async () => {
       const tier1Insights: Tier1Insights = {
@@ -195,6 +237,81 @@ describe('TeacherPromptService', () => {
 
       expect(prompts).toBeInstanceOf(Array);
       expect(prompts.length).toBeLessThanOrEqual(2); // Should respect maxPrompts
+    });
+
+    it('should respect autoprompt cooldown gate', async () => {
+      const tier1Insights: Tier1Insights = {
+        topicalCohesion: 0.3,
+        conceptualDensity: 0.6,
+        analysisTimestamp: new Date().toISOString(),
+        windowStartTime: new Date().toISOString(),
+        windowEndTime: new Date().toISOString(),
+        transcriptLength: 200,
+        confidence: 0.9,
+        insights: [],
+      };
+
+      mockGuidanceScripts.autopromptCooldown.mockResolvedValueOnce(false);
+
+      const prompts = await service.generatePrompts(tier1Insights, mockContext);
+
+      expect(mockGuidanceScripts.autopromptCooldown).toHaveBeenCalled();
+      expect(prompts).toEqual([]);
+    });
+
+    it('should dedupe prompts when template hash already seen', async () => {
+      const tier1Insights: Tier1Insights = {
+        topicalCohesion: 0.3,
+        conceptualDensity: 0.5,
+        analysisTimestamp: new Date().toISOString(),
+        windowStartTime: new Date().toISOString(),
+        windowEndTime: new Date().toISOString(),
+        transcriptLength: 150,
+        confidence: 0.8,
+        insights: [],
+      };
+
+      mockGuidanceScripts.autopromptCooldown.mockResolvedValue(true);
+      mockRedisClient.sismember.mockResolvedValueOnce(0);
+
+      const firstBatch = await service.generatePrompts(tier1Insights, mockContext);
+      expect(firstBatch.length).toBeGreaterThanOrEqual(0);
+
+      mockRedisClient.sismember.mockResolvedValue(1);
+
+      const secondBatch = await service.generatePrompts(tier1Insights, mockContext);
+      expect(secondBatch).toEqual([]);
+    });
+
+    it('should attach impact confidence and update learning stats on interaction', async () => {
+      const tier1Insights: Tier1Insights = {
+        topicalCohesion: 0.3,
+        conceptualDensity: 0.5,
+        analysisTimestamp: new Date().toISOString(),
+        windowStartTime: new Date().toISOString(),
+        windowEndTime: new Date().toISOString(),
+        transcriptLength: 200,
+        confidence: 0.85,
+        confusionRisk: 0.6,
+        offTopicHeat: 0.7,
+        insights: [],
+      };
+
+      const prompts = await service.generatePrompts(tier1Insights, mockContext);
+
+      if (prompts.length === 0) {
+        return fail('Expected at least one prompt for impact confidence test');
+      }
+
+      expect(prompts[0]).toHaveProperty('impactConfidence');
+      expect(typeof prompts[0].impactConfidence).toBe('number');
+
+      const originalEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'development';
+      await service.recordPromptInteraction(prompts[0].id, mockContext.sessionId, mockContext.teacherId, 'used');
+      process.env.NODE_ENV = originalEnv;
+
+      expect(mockGuidanceScripts.promptStats).toHaveBeenCalled();
     });
   });
 

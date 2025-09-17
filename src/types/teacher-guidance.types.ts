@@ -42,6 +42,7 @@ export interface TeacherPrompt {
   effectivenessScore?: number;
   feedbackRating?: number; // 1-5 scale
   feedbackText?: string;
+  impactConfidence?: number;
   
   // System tracking
   createdAt: Date;
@@ -66,6 +67,7 @@ export interface TeacherGuidanceMetrics {
   feedbackRating?: number; // 1-5 scale
   feedbackText?: string;
   effectivenessScore?: number;
+  impactConfidence?: number;
   
   // Educational impact
   learningOutcomeImprovement?: number; // Measured impact on student engagement/learning
