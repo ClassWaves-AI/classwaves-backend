@@ -3,7 +3,7 @@ import path from 'path';
 import type { Application } from 'express';
 import { FeatureFlags } from '@classwaves/shared';
 
-const backendRoot = path.resolve(__dirname, '../../..');
+const backendRoot = path.resolve(__dirname, '../../../..');
 const DEFAULT_DATABASE_URL = 'postgres://classwaves:classwaves@localhost:5433/classwaves_dev';
 const DB_LOCAL_USE_EXISTING = process.env.DB_LOCAL_USE_EXISTING === '1';
 
