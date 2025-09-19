@@ -32,7 +32,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ClassWaves-AI/classwaves-shared
-          path: ../classwaves-shared
+          path: classwaves-shared
+
+      - name: Move shared package alongside backend
+        run: mv classwaves-shared ../classwaves-shared
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
