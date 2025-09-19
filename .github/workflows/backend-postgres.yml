@@ -28,6 +28,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Checkout shared package
+        uses: actions/checkout@v4
+        with:
+          repository: ClassWaves-AI/classwaves-shared
+          path: classwaves-shared
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
