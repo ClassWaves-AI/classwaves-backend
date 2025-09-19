@@ -62,7 +62,7 @@ jobs:
           ENABLE_LOCAL_DB_TESTS: '1'
           DB_LOCAL_USE_EXISTING: '1'
           CW_DB_USE_LOCAL_POSTGRES: '1'
-        run: npx jest src/__tests__/integration/local-postgres.integration.test.ts --runInBand --detectOpenHandles
+        run: npx jest --runTestsByPath src/__tests__/integration/local-postgres.integration.test.ts --runInBand --detectOpenHandles
 
       - name: Upload Jest results (if present)
         if: always()
