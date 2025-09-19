@@ -59,6 +59,7 @@ jobs:
         env:
           DATABASE_URL: postgres://classwaves:classwaves@127.0.0.1:5432/classwaves_dev
           DB_PROVIDER: postgres
+          ENABLE_NETWORK_TESTS: '1'
           ENABLE_LOCAL_DB_TESTS: '1'
           DB_LOCAL_USE_EXISTING: '1'
           CW_DB_USE_LOCAL_POSTGRES: '1'
