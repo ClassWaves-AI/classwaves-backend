@@ -1,7 +1,5 @@
 import request from 'supertest';
 import type { Application } from 'express';
-import path from 'path';
-import { execSync } from 'child_process';
 import {
   createPostgresDbAdapter,
   PostgresAdapterError,
@@ -12,9 +10,8 @@ import {
   maybeDescribe,
   ensureLocalPostgresReset,
   loadPostgresApp,
+  ensureLocalPostgresInit,
 } from './utils/postgres-test-helpers';
-
-const backendRoot = path.resolve(__dirname, '../../..');
 
 maybeDescribe('Local Postgres provider – end-to-end integration', () => {
   let app: Application;
@@ -164,7 +161,7 @@ maybeDescribe('Local Postgres provider – end-to-end integration', () => {
   });
 
   it('supports reseeding via helper script mid-test', async () => {
-    execSync('npm run db:local:init', { cwd: backendRoot, stdio: 'inherit' });
+    ensureLocalPostgresInit();
     const seededSession = await adapter.queryOne<{ title: string }>(
       'SELECT title FROM sessions.classroom_sessions WHERE id = ?',
       ['00000000-0000-0000-0000-000000010000']
