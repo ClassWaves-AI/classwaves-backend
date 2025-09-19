@@ -39,7 +39,7 @@ jobs:
 
       - name: Install shared package dependencies
         working-directory: ../classwaves-shared
-        run: npm ci
+        run: npm install --legacy-peer-deps
 
       - name: Build shared package
         working-directory: ../classwaves-shared
