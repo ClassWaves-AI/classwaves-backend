@@ -41,7 +41,7 @@ export const getAnalyticsPerformance = async (req: Request, res: Response): Prom
       }
     });
   } catch (error) {
-    console.error('Failed to get analytics performance:', error);
+    logger.error('Failed to get analytics performance:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -96,7 +96,7 @@ export const getAnalyticsLogs = async (req: Request, res: Response): Promise<Res
       }
     });
   } catch (error) {
-    console.error('Failed to get analytics logs:', error);
+    logger.error('Failed to get analytics logs:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -169,7 +169,7 @@ export const getAnalyticsHealth = async (req: Request, res: Response): Promise<R
       }
     });
   } catch (error) {
-    console.error('Failed to get analytics health:', error);
+    logger.error('Failed to get analytics health:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -219,7 +219,7 @@ export const updateSampleRate = async (req: Request, res: Response): Promise<Res
       }
     });
   } catch (error) {
-    console.error('Failed to update sample rate:', error);
+    logger.error('Failed to update sample rate:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -262,7 +262,7 @@ export const triggerCleanup = async (req: Request, res: Response): Promise<Respo
       }
     });
   } catch (error) {
-    console.error('Failed to trigger cleanup:', error);
+    logger.error('Failed to trigger cleanup:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -316,7 +316,7 @@ export const getCostAnalysis = async (req: Request, res: Response): Promise<Resp
       }
     });
   } catch (error) {
-    console.error('Failed to get cost analysis:', error);
+    logger.error('Failed to get cost analysis:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -351,7 +351,7 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
       });
     }
 
-    console.log('🔧 Setting up pre-aggregated tables...');
+    logger.debug('🔧 Setting up pre-aggregated tables...');
     
     // Import databricks here to ensure environment is loaded
     const { databricksService } = await import('../services/databricks.service');
@@ -359,7 +359,7 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
     // Test connection first
     try {
       await databricksService.connect();
-      console.log('✅ Databricks connection successful');
+      logger.debug('✅ Databricks connection successful');
     } catch (error) {
       return res.status(500).json({
         success: false,
@@ -504,11 +504,11 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
 
     for (const table of tables) {
       try {
-        console.log(`🔄 Creating table: ${table.name}...`);
+        logger.debug(`🔄 Creating table: ${table.name}...`);
         await getCompositionRoot().getMonitoringRepository().executeSql(table.sql);
         
         // Verify table exists
-        const verification = await getCompositionRoot().getMonitoringRepository().describeTable(table.name);
+        await getCompositionRoot().getMonitoringRepository().describeTable(table.name);
         
         results.push({
           table: table.name,
@@ -516,7 +516,7 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
           message: 'Table created and verified successfully'
         });
         successCount++;
-        console.log(`✅ Table ${table.name} created successfully`);
+        logger.debug(`✅ Table ${table.name} created successfully`);
         
       } catch (error) {
         results.push({
@@ -525,7 +525,7 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
           message: error instanceof Error ? error.message : 'Unknown error'
         });
         errorCount++;
-        console.log(`❌ Failed to create table ${table.name}: ${error instanceof Error ? error.message : error}`);
+        logger.debug(`❌ Failed to create table ${table.name}: ${error instanceof Error ? error.message : error}`);
       }
     }
 
@@ -545,7 +545,7 @@ export const setupPreAggregatedTables = async (req: Request, res: Response): Pro
     });
     
   } catch (error) {
-    console.error('Failed to setup tables:', error);
+    logger.error('Failed to setup tables:', error);
     return res.status(500).json({
       success: false,
       error: 'SETUP_FAILED',
@@ -579,7 +579,7 @@ export const triggerCacheSync = async (req: Request, res: Response): Promise<Res
     // Import the service dynamically to avoid circular dependencies
     const { realTimeAnalyticsCacheService } = await import('../services/real-time-analytics-cache.service');
     
-    console.log(`🚀 Admin ${user.id} triggered manual cache sync (force: ${force || false})`);
+    logger.debug(`🚀 Admin ${user.id} triggered manual cache sync (force: ${force || false})`);
     
     // Trigger the cache sync
     const result = await realTimeAnalyticsCacheService.triggerManualCacheSync();
@@ -616,7 +616,7 @@ export const triggerCacheSync = async (req: Request, res: Response): Promise<Res
     });
     
   } catch (error) {
-    console.error('Failed to trigger cache sync:', error);
+    logger.error('Failed to trigger cache sync:', error);
     
     // Log the failed admin action
     try {
@@ -638,7 +638,7 @@ export const triggerCacheSync = async (req: Request, res: Response): Promise<Res
         }
       );
     } catch (logError) {
-      console.error('Failed to log cache sync failure:', logError);
+      logger.error('Failed to log cache sync failure:', logError);
     }
     
     return res.status(500).json({
@@ -649,3 +649,4 @@ export const triggerCacheSync = async (req: Request, res: Response): Promise<Res
   }
 };
 import { getCompositionRoot } from '../app/composition-root';
+import { logger } from '../utils/logger';

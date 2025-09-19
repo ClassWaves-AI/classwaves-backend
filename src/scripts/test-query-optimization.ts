@@ -19,6 +19,7 @@ import {
   logQueryOptimization
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
+import { logger } from '../utils/logger';
 
 interface OptimizationTestResult {
   endpoint: string;
@@ -45,13 +46,13 @@ class QueryOptimizationTester {
   private redisResults: RedisTestResult | null = null;
 
   async runAllTests(): Promise<void> {
-    console.log('🔍 QUERY OPTIMIZATION VALIDATION SUITE');
-    console.log('=====================================');
-    console.log(`Target Goals:`);
-    console.log(`  • ≥30% reduction in bytes scanned`);
-    console.log(`  • ≥50% reduction in query execution time`);
-    console.log(`  • API contracts unchanged`);
-    console.log('');
+    logger.debug('🔍 QUERY OPTIMIZATION VALIDATION SUITE');
+    logger.debug('=====================================');
+    logger.debug(`Target Goals:`);
+    logger.debug(`  • ≥30% reduction in bytes scanned`);
+    logger.debug(`  • ≥50% reduction in query execution time`);
+    logger.debug(`  • API contracts unchanged`);
+    logger.debug('');
 
     // Test 1: Field Selection Logic
     await this.testFieldSelectionLogic();
@@ -73,7 +74,7 @@ class QueryOptimizationTester {
   }
 
   async testFieldSelectionLogic(): Promise<void> {
-    console.log('📊 Testing Field Selection Logic...');
+    logger.debug('📊 Testing Field Selection Logic...');
     
     const testCases = [
       {
@@ -123,16 +124,16 @@ class QueryOptimizationTester {
 
       this.results.push(result);
 
-      console.log(`  ${result.passed ? '✅' : '❌'} ${testCase.name}:`);
-      console.log(`     Fields: ${result.fieldsSelected}/${result.fieldsTotal} (${result.fieldReductionPercent.toFixed(1)}% reduction)`);
-      console.log(`     Est. bytes reduction: ${result.estimatedBytesReduction.toFixed(1)}%`);
-      console.log(`     Build time: ${result.queryBuildTime.toFixed(2)}ms`);
-      console.log(`     Optimization: ${result.optimizationLevel}`);
+      logger.debug(`  ${result.passed ? '✅' : '❌'} ${testCase.name}:`);
+      logger.debug(`     Fields: ${result.fieldsSelected}/${result.fieldsTotal} (${result.fieldReductionPercent.toFixed(1)}% reduction)`);
+      logger.debug(`     Est. bytes reduction: ${result.estimatedBytesReduction.toFixed(1)}%`);
+      logger.debug(`     Build time: ${result.queryBuildTime.toFixed(2)}ms`);
+      logger.debug(`     Optimization: ${result.optimizationLevel}`);
     }
   }
 
   async testQueryBuilderPerformance(): Promise<void> {
-    console.log('\n⚡ Testing Query Builder Performance...');
+    logger.debug('\n⚡ Testing Query Builder Performance...');
     
     const iterations = 1000;
     const builders = [buildSessionListQuery, buildSessionDetailQuery, buildTeacherAnalyticsQuery, buildSessionAnalyticsQuery];
@@ -147,12 +148,12 @@ class QueryOptimizationTester {
       const endTime = performance.now();
       const avgTime = (endTime - startTime) / iterations;
       
-      console.log(`  ✅ Query builder avg time: ${avgTime.toFixed(4)}ms (${iterations} iterations)`);
+      logger.debug(`  ✅ Query builder avg time: ${avgTime.toFixed(4)}ms (${iterations} iterations)`);
     }
   }
 
   async testRedisPerformance(): Promise<void> {
-    console.log('\n🔄 Testing Redis Performance...');
+    logger.debug('\n🔄 Testing Redis Performance...');
     
     try {
       // Import Redis service
@@ -171,18 +172,18 @@ class QueryOptimizationTester {
         healthStatus: 'connected'
       };
 
-      console.log(`  Redis Hit Rate: ${stats.hitRate.toFixed(2)}%`);
-      console.log(`  Total Commands: ${stats.totalCommands.toLocaleString()}`);
-      console.log(`  Keyspace Hits: ${stats.keyspaceHits.toLocaleString()}`);
-      console.log(`  Keyspace Misses: ${stats.keyspaceMisses.toLocaleString()}`);
-      console.log(`  Memory Usage: ${stats.usedMemory}`);
+      logger.debug(`  Redis Hit Rate: ${stats.hitRate.toFixed(2)}%`);
+      logger.debug(`  Total Commands: ${stats.totalCommands.toLocaleString()}`);
+      logger.debug(`  Keyspace Hits: ${stats.keyspaceHits.toLocaleString()}`);
+      logger.debug(`  Keyspace Misses: ${stats.keyspaceMisses.toLocaleString()}`);
+      logger.debug(`  Memory Usage: ${stats.usedMemory}`);
       
       if (stats.hitRate < 50) {
-        console.log(`  ⚠️  WARNING: Redis hit rate is below 50% - consider cache optimization`);
+        logger.debug(`  ⚠️  WARNING: Redis hit rate is below 50% - consider cache optimization`);
       }
       
     } catch (error) {
-      console.log(`  ❌ Redis test failed: ${error instanceof Error ? error.message : String(error)}`);
+      logger.debug(`  ❌ Redis test failed: ${error instanceof Error ? error.message : String(error)}`);
       this.redisResults = {
         hitRate: 0,
         totalRequests: 0,
@@ -195,7 +196,7 @@ class QueryOptimizationTester {
   }
 
   async testEndpointResponses(): Promise<void> {
-    console.log('\n🌐 Testing Optimized Endpoint Responses...');
+    logger.debug('\n🌐 Testing Optimized Endpoint Responses...');
     
     const testEndpoints = [
       { path: '/api/v1/health', method: 'GET', description: 'Health Check' },
@@ -211,10 +212,10 @@ class QueryOptimizationTester {
         const responseTime = endTime - startTime;
         const isHealthy = response.status === 200;
         
-        console.log(`  ${isHealthy ? '✅' : '❌'} ${endpoint.description}: ${response.status} (${responseTime.toFixed(2)}ms)`);
+        logger.debug(`  ${isHealthy ? '✅' : '❌'} ${endpoint.description}: ${response.status} (${responseTime.toFixed(2)}ms)`);
         
       } catch (error) {
-        console.log(`  ❌ ${endpoint.description}: Failed - ${error instanceof Error ? error.message : String(error)}`);
+        logger.debug(`  ❌ ${endpoint.description}: Failed - ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
@@ -249,7 +250,7 @@ class QueryOptimizationTester {
   }
 
   async testCachePerformance(): Promise<void> {
-    console.log('\n🎯 Testing Cache Performance...');
+    logger.debug('\n🎯 Testing Cache Performance...');
     
     try {
       // Test cache hit/miss patterns with sample queries
@@ -300,9 +301,9 @@ class QueryOptimizationTester {
         
         if (secondCallTime < firstCallTime) {
           cacheHitTests++;
-          console.log(`  ✅ ${query.type}: Cache hit (${secondCallTime.toFixed(2)}ms vs ${firstCallTime.toFixed(2)}ms)`);
+          logger.debug(`  ✅ ${query.type}: Cache hit (${secondCallTime.toFixed(2)}ms vs ${firstCallTime.toFixed(2)}ms)`);
         } else {
-          console.log(`  ❌ ${query.type}: No cache benefit (${secondCallTime.toFixed(2)}ms vs ${firstCallTime.toFixed(2)}ms)`);
+          logger.debug(`  ❌ ${query.type}: No cache benefit (${secondCallTime.toFixed(2)}ms vs ${firstCallTime.toFixed(2)}ms)`);
         }
       }
 
@@ -310,87 +311,87 @@ class QueryOptimizationTester {
       const cacheMetrics = queryCacheService.getCacheMetrics();
       const impactMetrics = await queryCacheService.getRedisImpactMetrics();
       
-      console.log(`\n📈 Cache Performance Metrics:`);
-      console.log(`  Test Hit Rate: ${totalCacheTests > 0 ? ((cacheHitTests / totalCacheTests) * 100).toFixed(1) : 0}%`);
-      console.log(`  Service Hit Rate Improvement: ${impactMetrics.estimatedHitRateImprovement.toFixed(1)}%`);
-      console.log(`  Cache Utilization: ${impactMetrics.cacheUtilization}`);
+      logger.debug(`\n📈 Cache Performance Metrics:`);
+      logger.debug(`  Test Hit Rate: ${totalCacheTests > 0 ? ((cacheHitTests / totalCacheTests) * 100).toFixed(1) : 0}%`);
+      logger.debug(`  Service Hit Rate Improvement: ${impactMetrics.estimatedHitRateImprovement.toFixed(1)}%`);
+      logger.debug(`  Cache Utilization: ${impactMetrics.cacheUtilization}`);
       
       // Clean up test cache entries
       await queryCacheService.invalidateCache('test:*');
       
     } catch (error) {
-      console.log(`  ❌ Cache performance test failed: ${error instanceof Error ? error.message : String(error)}`);
+      logger.debug(`  ❌ Cache performance test failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   async generateTestReport(): Promise<void> {
-    console.log('\n📋 QUERY OPTIMIZATION TEST REPORT');
-    console.log('==================================');
+    logger.debug('\n📋 QUERY OPTIMIZATION TEST REPORT');
+    logger.debug('==================================');
     
     const passedTests = this.results.filter(r => r.passed).length;
     const totalTests = this.results.length;
     const avgFieldReduction = this.results.reduce((sum, r) => sum + r.fieldReductionPercent, 0) / totalTests;
     const avgBytesReduction = this.results.reduce((sum, r) => sum + r.estimatedBytesReduction, 0) / totalTests;
     
-    console.log(`\n🎯 OPTIMIZATION RESULTS:`);
-    console.log(`  Tests Passed: ${passedTests}/${totalTests} (${((passedTests/totalTests)*100).toFixed(1)}%)`);
-    console.log(`  Avg Field Reduction: ${avgFieldReduction.toFixed(1)}% (Target: ≥30%)`);
-    console.log(`  Est. Bytes Reduction: ${avgBytesReduction.toFixed(1)}% (Target: ≥30%)`);
+    logger.debug(`\n🎯 OPTIMIZATION RESULTS:`);
+    logger.debug(`  Tests Passed: ${passedTests}/${totalTests} (${((passedTests/totalTests)*100).toFixed(1)}%)`);
+    logger.debug(`  Avg Field Reduction: ${avgFieldReduction.toFixed(1)}% (Target: ≥30%)`);
+    logger.debug(`  Est. Bytes Reduction: ${avgBytesReduction.toFixed(1)}% (Target: ≥30%)`);
     
-    console.log(`\n📊 DETAILED RESULTS:`);
+    logger.debug(`\n📊 DETAILED RESULTS:`);
     for (const result of this.results) {
-      console.log(`  ${result.passed ? '✅' : '❌'} ${result.endpoint}:`);
-      console.log(`     Field reduction: ${result.fieldReductionPercent.toFixed(1)}%`);
-      console.log(`     Est. performance gain: ${result.estimatedBytesReduction.toFixed(1)}%`);
+      logger.debug(`  ${result.passed ? '✅' : '❌'} ${result.endpoint}:`);
+      logger.debug(`     Field reduction: ${result.fieldReductionPercent.toFixed(1)}%`);
+      logger.debug(`     Est. performance gain: ${result.estimatedBytesReduction.toFixed(1)}%`);
     }
 
     if (this.redisResults) {
-      console.log(`\n🔄 REDIS PERFORMANCE (Before Optimization):`);
-      console.log(`  Hit Rate: ${this.redisResults.hitRate.toFixed(2)}%`);
-      console.log(`  Status: ${this.redisResults.healthStatus}`);
+      logger.debug(`\n🔄 REDIS PERFORMANCE (Before Optimization):`);
+      logger.debug(`  Hit Rate: ${this.redisResults.hitRate.toFixed(2)}%`);
+      logger.debug(`  Status: ${this.redisResults.healthStatus}`);
       
       // Get cache service metrics
       try {
         const impactMetrics = await queryCacheService.getRedisImpactMetrics();
-        console.log(`\n🎯 CACHE OPTIMIZATION IMPACT:`);
-        console.log(`  Estimated Hit Rate Improvement: +${impactMetrics.estimatedHitRateImprovement.toFixed(1)}%`);
-        console.log(`  Cache Service Utilization: ${impactMetrics.cacheUtilization}`);
-        console.log(`  Projected Total Hit Rate: ${(this.redisResults.hitRate + impactMetrics.estimatedHitRateImprovement).toFixed(1)}%`);
+        logger.debug(`\n🎯 CACHE OPTIMIZATION IMPACT:`);
+        logger.debug(`  Estimated Hit Rate Improvement: +${impactMetrics.estimatedHitRateImprovement.toFixed(1)}%`);
+        logger.debug(`  Cache Service Utilization: ${impactMetrics.cacheUtilization}`);
+        logger.debug(`  Projected Total Hit Rate: ${(this.redisResults.hitRate + impactMetrics.estimatedHitRateImprovement).toFixed(1)}%`);
         
         const projectedHitRate = this.redisResults.hitRate + impactMetrics.estimatedHitRateImprovement;
         
         if (projectedHitRate >= 50) {
-          console.log(`  ✅ Cache optimization successfully addresses Redis performance!`);
+          logger.debug(`  ✅ Cache optimization successfully addresses Redis performance!`);
         } else {
-          console.log(`  ⚠️  Additional cache tuning may be needed to reach 50%+ hit rate`);
+          logger.debug(`  ⚠️  Additional cache tuning may be needed to reach 50%+ hit rate`);
         }
         
       } catch (error) {
-        console.log(`  ❌ Could not assess cache impact: ${error instanceof Error ? error.message : String(error)}`);
+        logger.debug(`  ❌ Could not assess cache impact: ${error instanceof Error ? error.message : String(error)}`);
       }
       
       if (this.redisResults.hitRate < 20) {
-        console.log(`\n🔧 ADDITIONAL REDIS OPTIMIZATIONS COMPLETED:`);
-        console.log(`  ✅ Added QueryCacheService with intelligent TTL management`);
-        console.log(`  ✅ Integrated caching into all 4 optimized endpoints`);
-        console.log(`  ✅ Implemented cache warming for frequently accessed queries`);
-        console.log(`  ✅ Added cache metrics and monitoring`);
+        logger.debug(`\n🔧 ADDITIONAL REDIS OPTIMIZATIONS COMPLETED:`);
+        logger.debug(`  ✅ Added QueryCacheService with intelligent TTL management`);
+        logger.debug(`  ✅ Integrated caching into all 4 optimized endpoints`);
+        logger.debug(`  ✅ Implemented cache warming for frequently accessed queries`);
+        logger.debug(`  ✅ Added cache metrics and monitoring`);
       }
     }
 
-    console.log(`\n✅ GOALS ASSESSMENT:`);
-    console.log(`  Field Selection Optimization: ${avgFieldReduction >= 30 ? 'ACHIEVED' : 'NEEDS IMPROVEMENT'} (${avgFieldReduction.toFixed(1)}% ≥ 30%)`);
-    console.log(`  Estimated Performance Gain: ${avgBytesReduction >= 30 ? 'ACHIEVED' : 'NEEDS IMPROVEMENT'} (${avgBytesReduction.toFixed(1)}% ≥ 30%)`);
-    console.log(`  API Contract Integrity: MAINTAINED (same response structure)`);
+    logger.debug(`\n✅ GOALS ASSESSMENT:`);
+    logger.debug(`  Field Selection Optimization: ${avgFieldReduction >= 30 ? 'ACHIEVED' : 'NEEDS IMPROVEMENT'} (${avgFieldReduction.toFixed(1)}% ≥ 30%)`);
+    logger.debug(`  Estimated Performance Gain: ${avgBytesReduction >= 30 ? 'ACHIEVED' : 'NEEDS IMPROVEMENT'} (${avgBytesReduction.toFixed(1)}% ≥ 30%)`);
+    logger.debug(`  API Contract Integrity: MAINTAINED (same response structure)`);
     
     const overallSuccess = avgFieldReduction >= 30 && passedTests === totalTests;
-    console.log(`\n🎉 OVERALL: ${overallSuccess ? 'SUCCESS' : 'NEEDS ATTENTION'}`);
+    logger.debug(`\n🎉 OVERALL: ${overallSuccess ? 'SUCCESS' : 'NEEDS ATTENTION'}`);
 
     if (!overallSuccess) {
-      console.log(`\n🔧 NEXT STEPS:`);
-      console.log(`  1. Review failed optimizations and increase field reduction`);
-      console.log(`  2. Implement Redis caching for optimized queries`);
-      console.log(`  3. Add performance monitoring to track real-world improvements`);
+      logger.debug(`\n🔧 NEXT STEPS:`);
+      logger.debug(`  1. Review failed optimizations and increase field reduction`);
+      logger.debug(`  2. Implement Redis caching for optimized queries`);
+      logger.debug(`  3. Add performance monitoring to track real-world improvements`);
     }
   }
 }

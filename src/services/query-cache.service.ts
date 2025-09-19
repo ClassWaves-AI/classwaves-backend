@@ -23,6 +23,7 @@ import { CacheTTLPolicy, ttlWithJitter } from './cache-ttl.policy';
 import { decompressToString, compressString } from '../utils/compression.util';
 import { cacheAdminPort } from '../utils/cache-admin.port.instance';
 import * as client from 'prom-client';
+import { logger } from '../utils/logger';
 
 interface CacheEntry<T = any> {
   data: T;
@@ -223,7 +224,7 @@ export class QueryCacheService {
       }
 
       const p = (async () => {
-        console.log(`💾 Cache MISS: ${queryType}, fetching from database`);
+        logger.debug(`💾 Cache MISS: ${queryType}, fetching from database`);
         const dbStartTime = performance.now();
         let data: T;
         const lockKey = makeKey('lock', 'query_cache', queryType, cacheKey);
@@ -246,17 +247,17 @@ export class QueryCacheService {
                 await this.sleep(100);
               }
             }
-          } catch {}
+          } catch { /* intentionally ignored: best effort cleanup */ }
         }
 
         data = await dataFetcher();
         const dbTime = performance.now() - dbStartTime;
         await this.storeCachedQuery({ legacyKey: fullCacheKey, prefixedKey }, queryType, data, context);
         this.recordMiss(queryType, performance.now() - startTime, dbTime);
-        console.log(`📊 Cache STORED: ${queryType} (fetch: ${dbTime.toFixed(2)}ms, total: ${(performance.now() - startTime).toFixed(2)}ms)`);
+        logger.debug(`📊 Cache STORED: ${queryType} (fetch: ${dbTime.toFixed(2)}ms, total: ${(performance.now() - startTime).toFixed(2)}ms)`);
         // Release lock if held
         if (this.useNxLocks && acquired) {
-          try { await this.cache.del(lockKey); } catch {}
+          try { await this.cache.del(lockKey); } catch { /* intentionally ignored: best effort cleanup */ }
         }
         return data;
       })().finally(() => {
@@ -266,7 +267,7 @@ export class QueryCacheService {
       return p;
       
     } catch (error) {
-      console.error(`❌ Cache error for ${queryType}:`, error);
+      logger.error(`❌ Cache error for ${queryType}:`, error);
       // Stale-if-error: if we have a recently expired entry, serve it within grace
       if (cachedEntryForStale) {
         const strategy = this.CACHE_STRATEGIES[queryType];
@@ -315,7 +316,7 @@ export class QueryCacheService {
       const hasCore = d && (d.title != null || d.access_code != null || d.goal != null || d.description != null);
       if (!hasCore) {
         // Skip caching incomplete rows to avoid first-load UI gaps
-        console.warn('⚠️ Skipping cache write: session-detail missing core fields (title/goal/description/access_code)');
+        logger.warn('⚠️ Skipping cache write: session-detail missing core fields (title/goal/description/access_code)');
         return;
       }
     }
@@ -381,11 +382,11 @@ export class QueryCacheService {
       }
       total = await cacheAdminPort.deleteByPattern(matches, 1000);
       if (total > 0) {
-        console.log(`🧹 Invalidated ${total} cache entries for pattern: ${pattern}`);
+        logger.debug(`🧹 Invalidated ${total} cache entries for pattern: ${pattern}`);
       }
       
     } catch (error) {
-      console.error('Failed to invalidate cache:', error);
+      logger.error('Failed to invalidate cache:', error);
     }
   }
 
@@ -401,20 +402,20 @@ export class QueryCacheService {
       switch (queryType) {
         case 'session-detail':
           if (context.sessionId) {
-            console.log(`🔥 Warming session detail cache: ${context.sessionId}`);
+            logger.debug(`🔥 Warming session detail cache: ${context.sessionId}`);
             // Trigger background cache warming
             this.scheduleWarmUp('session-detail', context);
           }
           break;
         case 'teacher-analytics':
           if (context.teacherId) {
-            console.log(`🔥 Warming teacher analytics cache: ${context.teacherId}`);
+            logger.debug(`🔥 Warming teacher analytics cache: ${context.teacherId}`);
             this.scheduleWarmUp('teacher-analytics', context);
           }
           break;
       }
     } catch (error) {
-      console.error('Cache warming failed:', error);
+      logger.error('Cache warming failed:', error);
     }
   }
 
@@ -461,7 +462,7 @@ export class QueryCacheService {
     metrics.hits++;
     metrics.totalQueries++;
     metrics.averageRetrievalTime = (metrics.averageRetrievalTime * (metrics.totalQueries - 1) + retrievalTime) / metrics.totalQueries;
-    try { QueryCacheService.cacheHitsTotal.inc({ queryType }); } catch {}
+    try { QueryCacheService.cacheHitsTotal.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private recordMiss(queryType: string, totalTime: number, dbTime: number): void {
@@ -469,31 +470,31 @@ export class QueryCacheService {
     metrics.misses++;
     metrics.totalQueries++;
     metrics.averageRetrievalTime = (metrics.averageRetrievalTime * (metrics.totalQueries - 1) + totalTime) / metrics.totalQueries;
-    try { QueryCacheService.cacheMissesTotal.inc({ queryType }); } catch {}
+    try { QueryCacheService.cacheMissesTotal.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private recordLegacyFallback(queryType: string): void {
     const metrics = this.getOrCreateMetrics(queryType);
     metrics.legacyFallbacks = (metrics.legacyFallbacks || 0) + 1;
-    try { QueryCacheService.cacheLegacyFallbacksTotal.inc({ queryType }); } catch {}
+    try { QueryCacheService.cacheLegacyFallbacksTotal.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private recordCoalesced(queryType: string): void {
     const metrics = this.getOrCreateMetrics(queryType);
     metrics.coalesced = (metrics.coalesced || 0) + 1;
-    try { QueryCacheService.cacheCoalescedTotal.inc({ queryType }); } catch {}
+    try { QueryCacheService.cacheCoalescedTotal.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private recordRefreshAhead(queryType: string): void {
     const metrics = this.getOrCreateMetrics(queryType);
     metrics.refreshAhead = (metrics.refreshAhead || 0) + 1;
-    try { QueryCacheService.cacheRefreshAheadTotal.inc({ queryType }); } catch {}
+    try { QueryCacheService.cacheRefreshAheadTotal.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private recordStaleServed(queryType: string): void {
     const metrics = this.getOrCreateMetrics(queryType);
     metrics.staleServed = (metrics.staleServed || 0) + 1;
-    try { QueryCacheService.cacheStaleServedTotal.inc({ queryType }); } catch {}
+    try { QueryCacheService.cacheStaleServedTotal.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private getOrCreateMetrics(queryType: string): CacheMetrics {
@@ -516,7 +517,7 @@ export class QueryCacheService {
   private scheduleWarmUp(queryType: string, context: any): void {
     // In production, this would use a job queue
     // For now, just log the intent
-    console.log(`📋 Scheduled cache warm-up: ${queryType}`, context);
+    logger.debug(`📋 Scheduled cache warm-up: ${queryType}`, context);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -563,7 +564,7 @@ export class QueryCacheService {
         const data = await dataFetcher();
         await this.storeCachedQuery({ legacyKey, prefixedKey }, queryType, data, context);
       } catch (e) {
-        console.warn(`⚠️ Refresh-ahead failed for ${queryType}:${cacheKey}`, e);
+        logger.warn(`⚠️ Refresh-ahead failed for ${queryType}:${cacheKey}`, e);
       } finally {
         this.inflight.delete(flightKey);
       }

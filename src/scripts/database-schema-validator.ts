@@ -29,6 +29,7 @@
 
 import { DatabricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { logger } from '../utils/logger';
 
 interface SchemaValidationResult {
   schema: string;
@@ -74,7 +75,7 @@ class DatabaseSchemaValidator {
    */
   async validateSchema(): Promise<ValidationReport> {
     this.startTime = performance.now();
-    console.log('🔍 ClassWaves Database Schema Validator Starting...\n');
+    logger.debug('🔍 ClassWaves Database Schema Validator Starting...\n');
 
     const report: ValidationReport = {
       success: false,
@@ -94,7 +95,7 @@ class DatabaseSchemaValidator {
     try {
       // Test database connection
       await this.validateConnection();
-      console.log('✅ Database connection established\n');
+      logger.debug('✅ Database connection established\n');
 
       // Get expected schema definitions
       const expectedSchemas = this.getExpectedSchemas();
@@ -102,7 +103,7 @@ class DatabaseSchemaValidator {
 
       // Validate each schema
       for (const schemaConfig of expectedSchemas) {
-        console.log(`🔍 Validating schema: ${schemaConfig.name}`);
+        logger.debug(`🔍 Validating schema: ${schemaConfig.name}`);
         const schemaResult = await this.validateSchemaStructure(schemaConfig);
         report.schemaResults.push(schemaResult);
 
@@ -143,7 +144,7 @@ class DatabaseSchemaValidator {
       report.criticalErrors.push(`Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       report.summary.criticalIssues = report.criticalErrors.length;
       
-      console.error('\n❌ Schema validation failed:', error);
+      logger.error('\n❌ Schema validation failed:', error);
       this.outputResults(report);
       
       return report;
@@ -164,13 +165,13 @@ class DatabaseSchemaValidator {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown connection error';
       
-      console.error('❌ Database connection failed:', errorMessage);
-      console.log('\n🔧 CONNECTION TROUBLESHOOTING:\n');
-      console.log('   1. Verify DATABRICKS_TOKEN is set in .env file');
-      console.log('   2. Check DATABRICKS_HOST and DATABRICKS_WAREHOUSE_ID are correct');
-      console.log('   3. Ensure Databricks token has not expired');
-      console.log('   4. Verify Unity Catalog "classwaves" exists and is accessible');
-      console.log('   5. Confirm read permissions on all required schemas\n');
+      logger.error('❌ Database connection failed:', errorMessage);
+      logger.debug('\n🔧 CONNECTION TROUBLESHOOTING:\n');
+      logger.debug('   1. Verify DATABRICKS_TOKEN is set in .env file');
+      logger.debug('   2. Check DATABRICKS_HOST and DATABRICKS_WAREHOUSE_ID are correct');
+      logger.debug('   3. Ensure Databricks token has not expired');
+      logger.debug('   4. Verify Unity Catalog "classwaves" exists and is accessible');
+      logger.debug('   5. Confirm read permissions on all required schemas\n');
       
       throw new Error(`Database connection failed: ${errorMessage}`);
     }
@@ -351,7 +352,7 @@ class DatabaseSchemaValidator {
    * Validate test data isolation to ensure production data protection
    */
   private async validateTestDataIsolation(report: ValidationReport): Promise<void> {
-    console.log('\n🔒 Validating test data isolation...');
+    logger.debug('\n🔒 Validating test data isolation...');
     
     try {
       // Check we're using proper catalog isolation
@@ -370,7 +371,7 @@ class DatabaseSchemaValidator {
       // Verify we have sandbox/test schema targeting capability
       // This ensures integration tests can use dedicated test data
       const testingNote = 'Test data isolation configured to use sandbox schema patterns';
-      console.log(`✅ ${testingNote}`);
+      logger.debug(`✅ ${testingNote}`);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -382,41 +383,41 @@ class DatabaseSchemaValidator {
    * Output validation results to console
    */
   private outputResults(report: ValidationReport): void {
-    console.log('\n📊 SCHEMA VALIDATION REPORT');
-    console.log('=' .repeat(50));
+    logger.debug('\n📊 SCHEMA VALIDATION REPORT');
+    logger.debug('=' .repeat(50));
     
-    console.log(`⏱️  Execution Time: ${(report.executionTime / 1000).toFixed(2)}s`);
-    console.log(`📈 Schemas: ${report.summary.validSchemas}/${report.summary.totalSchemas} valid`);
-    console.log(`📋 Tables: ${report.summary.validTables}/${report.summary.totalTables} valid`);
+    logger.debug(`⏱️  Execution Time: ${(report.executionTime / 1000).toFixed(2)}s`);
+    logger.debug(`📈 Schemas: ${report.summary.validSchemas}/${report.summary.totalSchemas} valid`);
+    logger.debug(`📋 Tables: ${report.summary.validTables}/${report.summary.totalTables} valid`);
     
     if (report.success) {
-      console.log('\n🎉 VALIDATION SUCCESSFUL');
-      console.log('✅ All required schemas and tables exist');
-      console.log('✅ Integration tests can proceed');
+      logger.debug('\n🎉 VALIDATION SUCCESSFUL');
+      logger.debug('✅ All required schemas and tables exist');
+      logger.debug('✅ Integration tests can proceed');
       
       if (report.warnings.length > 0) {
-        console.log('\n⚠️  Warnings:');
-        report.warnings.forEach(warning => console.log(`   - ${warning}`));
+        logger.debug('\n⚠️  Warnings:');
+        report.warnings.forEach(warning => logger.debug(`   - ${warning}`));
       }
       
     } else {
-      console.log('\n❌ VALIDATION FAILED');
-      console.log(`🚨 ${report.summary.criticalIssues} critical issues found`);
+      logger.debug('\n❌ VALIDATION FAILED');
+      logger.debug(`🚨 ${report.summary.criticalIssues} critical issues found`);
       
-      console.log('\n❌ Critical Errors:');
-      report.criticalErrors.forEach(error => console.log(`   - ${error}`));
+      logger.debug('\n❌ Critical Errors:');
+      report.criticalErrors.forEach(error => logger.debug(`   - ${error}`));
       
-      console.log('\n🔧 RESOLUTION STEPS:');
-      console.log('   1. Run catalog creation: npm run db:create-catalog');
-      console.log('   2. Run database setup: npm run db:setup');
-      console.log('   3. Verify Databricks permissions for test schemas');
-      console.log('   4. Contact platform team if issues persist');
+      logger.debug('\n🔧 RESOLUTION STEPS:');
+      logger.debug('   1. Run catalog creation: npm run db:create-catalog');
+      logger.debug('   2. Run database setup: npm run db:setup');
+      logger.debug('   3. Verify Databricks permissions for test schemas');
+      logger.debug('   4. Contact platform team if issues persist');
       
-      console.log('\n⚠️  Integration tests BLOCKED until schema validation passes');
+      logger.debug('\n⚠️  Integration tests BLOCKED until schema validation passes');
     }
     
-    console.log('\n' + '=' .repeat(50));
-    console.log(`🏁 Schema validation completed in ${(report.executionTime / 1000).toFixed(2)}s`);
+    logger.debug('\n' + '=' .repeat(50));
+    logger.debug(`🏁 Schema validation completed in ${(report.executionTime / 1000).toFixed(2)}s`);
   }
 }
 
@@ -431,7 +432,7 @@ async function main() {
     process.exit(report.success ? 0 : 1);
     
   } catch (error) {
-    console.error('❌ Schema validation failed:', error);
+    logger.error('❌ Schema validation failed:', error);
     process.exit(1);
   }
 }
@@ -439,7 +440,7 @@ async function main() {
 // Execute if run directly
 if (require.main === module) {
   main().catch((error) => {
-    console.error('❌ Validation execution failed:', error);
+    logger.error('❌ Validation execution failed:', error);
     process.exit(1);
   });
 }

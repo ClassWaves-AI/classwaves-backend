@@ -7,6 +7,13 @@ import { aiAnalysisBufferService } from '../ai-analysis-buffer.service';
 import { alertPrioritizationService } from '../alert-prioritization.service';
 import * as client from 'prom-client';
 import type { WsGuidanceAnalyticsEvent } from '@classwaves/shared';
+import { logger } from '../../utils/logger';
+import {
+  getGuidancePromptActionCounter,
+  getGuidanceRedisUnavailableCounter,
+  getGuidanceTimeToFirstActionHistogram,
+  getGuidanceWsSubscribersGauge,
+} from '../../metrics/guidance.metrics';
 
 interface GuidanceSocketData extends NamespaceSocketData {
   subscribedSessions: Set<string>;
@@ -19,11 +26,24 @@ interface SubscriptionData {
   subscriptions?: string[];
 }
 
+type PromptInteractionAction =
+  | 'ack'
+  | 'acknowledge'
+  | 'use'
+  | 'dismiss'
+  | 'snooze'
+  | 'copy'
+  | 'save_exit_check';
+
+type GuidanceRedisComponent = 'attention_gate' | 'autoprompt' | 'prompt_timing' | 'ontrack_summary';
+
 interface PromptInteractionData {
   promptId: string;
-  action: 'acknowledge' | 'use' | 'dismiss';
+  action: PromptInteractionAction;
   feedback?: string;
   sessionId?: string;
+  userId?: string;
+  timestamp?: number | string;
 }
 
 export class GuidanceNamespaceService extends NamespaceBaseService {
@@ -104,6 +124,13 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       return client.register.getSingleMetric('guidance_emits_failed_total') as client.Counter<string>;
     }
   })();
+  private static promptActionCounter = getGuidancePromptActionCounter();
+  private static promptFirstActionHistogram = getGuidanceTimeToFirstActionHistogram();
+  private static redisUnavailableCounter = getGuidanceRedisUnavailableCounter();
+  private static wsSubscribersGauge = getGuidanceWsSubscribersGauge();
+
+  private readonly sessionSubscriberCounts = new Map<string, number>();
+  private readonly redisErrorLogTimestamps = new Map<GuidanceRedisComponent, number>();
 
   protected onConnection(socket: Socket): void {
     const socketData = socket.data as GuidanceSocketData;
@@ -130,10 +157,13 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       await this.handleGuidanceUnsubscription(socket, data);
     });
 
-    // Prompt interaction events
-    socket.on('prompt:interact', async (data: PromptInteractionData) => {
+    // Prompt interaction events (support legacy + new event names)
+    const promptInteractionListener = async (data: PromptInteractionData) => {
       await this.handlePromptInteraction(socket, data);
-    });
+    };
+    socket.on('prompt:interaction', promptInteractionListener);
+    socket.on('prompt:interact', promptInteractionListener);
+    socket.on('teacher:prompt:interaction', promptInteractionListener);
 
     // Session-specific subscriptions
     socket.on('session:guidance:subscribe', async (data: { sessionId: string }) => {
@@ -158,7 +188,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       await this.handleAnalyticsUnsubscription(socket, data);
     });
 
-    console.log(`Guidance namespace: Teacher ${socket.data.userId} connected for guidance`);
+    logger.debug(`Guidance namespace: Teacher ${socket.data.userId} connected for guidance`);
   }
 
   protected onDisconnection(socket: Socket, reason: string): void {
@@ -168,13 +198,15 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     if (socketData.subscribedSessions) {
       socketData.subscribedSessions.forEach(sessionId => {
         this.notifySessionOfSubscriberChange(sessionId, socket.data.userId, 'unsubscribed');
+        this.adjustSessionSubscriberGauge(sessionId, -1);
       });
+      socketData.subscribedSessions.clear();
     }
   }
 
   protected onUserFullyDisconnected(userId: string): void {
     // Update guidance system that teacher is offline
-    console.log(`Guidance namespace: Teacher ${userId} fully disconnected from guidance`);
+    logger.debug(`Guidance namespace: Teacher ${userId} fully disconnected from guidance`);
   }
 
   protected onError(socket: Socket, error: Error): void {
@@ -205,9 +237,9 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         timestamp: new Date()
       });
 
-      console.log(`Guidance namespace: Teacher ${socket.data.userId} subscribed to guidance`);
+      logger.debug(`Guidance namespace: Teacher ${socket.data.userId} subscribed to guidance`);
     } catch (error) {
-      console.error('Guidance subscription error:', error);
+      logger.error('Guidance subscription error:', error);
       socket.emit('error', {
         code: 'SUBSCRIPTION_FAILED',
         message: 'Failed to subscribe to guidance'
@@ -235,7 +267,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         timestamp: new Date()
       });
     } catch (error) {
-      console.error('Guidance unsubscription error:', error);
+      logger.error('Guidance unsubscription error:', error);
       socket.emit('error', {
         code: 'UNSUBSCRIPTION_FAILED',
         message: 'Failed to unsubscribe from guidance'
@@ -251,7 +283,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         const { getCompositionRoot } = await import('../../app/composition-root');
         const repo = getCompositionRoot().getSessionRepository();
         session = await repo.getOwnedSessionBasic(data.sessionId, socket.data.userId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       if (!session) {
         session = await databricksService.queryOne(
           `SELECT id, status FROM classwaves.sessions.classroom_sessions 
@@ -269,6 +301,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       }
 
       const socketData = socket.data as GuidanceSocketData;
+      const wasSubscribed = socketData.subscribedSessions.has(data.sessionId);
       socketData.subscribedSessions.add(data.sessionId);
 
       // Join session-specific guidance room
@@ -278,15 +311,19 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       // Notify that teacher is monitoring this session
       this.notifySessionOfSubscriberChange(data.sessionId, socket.data.userId, 'subscribed');
 
+      if (!wasSubscribed) {
+        this.adjustSessionSubscriberGauge(data.sessionId, 1);
+      }
+
       socket.emit('session:guidance:subscribed', {
         sessionId: data.sessionId,
         sessionStatus: session.status,
         timestamp: new Date()
       });
 
-      console.log(`Guidance namespace: Teacher ${socket.data.userId} subscribed to session ${data.sessionId} guidance`);
+      logger.debug(`Guidance namespace: Teacher ${socket.data.userId} subscribed to session ${data.sessionId} guidance`);
     } catch (error) {
-      console.error('Session guidance subscription error:', error);
+      logger.error('Session guidance subscription error:', error);
       socket.emit('error', {
         code: 'SESSION_SUBSCRIPTION_FAILED',
         message: 'Failed to subscribe to session guidance'
@@ -297,19 +334,23 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
   private async handleSessionGuidanceUnsubscription(socket: Socket, data: { sessionId: string }) {
     try {
       const socketData = socket.data as GuidanceSocketData;
-      socketData.subscribedSessions.delete(data.sessionId);
+      const wasSubscribed = socketData.subscribedSessions.delete(data.sessionId);
 
       const roomName = `guidance:session:${data.sessionId}`;
       await socket.leave(roomName);
 
       this.notifySessionOfSubscriberChange(data.sessionId, socket.data.userId, 'unsubscribed');
 
+      if (wasSubscribed) {
+        this.adjustSessionSubscriberGauge(data.sessionId, -1);
+      }
+
       socket.emit('session:guidance:unsubscribed', {
         sessionId: data.sessionId,
         timestamp: new Date()
       });
     } catch (error) {
-      console.error('Session guidance unsubscription error:', error);
+      logger.error('Session guidance unsubscription error:', error);
       socket.emit('error', {
         code: 'SESSION_UNSUBSCRIPTION_FAILED',
         message: 'Failed to unsubscribe from session guidance'
@@ -341,7 +382,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         const repo = getCompositionRoot().getSessionRepository();
         const session = await repo.getOwnedSessionBasic(prompt.session_id, socket.data.userId);
         owns = !!session;
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       if (!owns) {
         socket.emit('error', {
           code: 'PROMPT_NOT_FOUND',
@@ -350,30 +391,55 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         return;
       }
 
+      const { canonicalAction, metricsLabel } = this.normalizePromptInteractionAction(data.action);
+      try { GuidanceNamespaceService.promptActionCounter.inc({ action: metricsLabel }); } catch { /* intentionally ignored: best effort cleanup */ }
+
+      const shouldMeasureLatency = canonicalAction !== undefined && metricsLabel !== 'other';
+      if (shouldMeasureLatency) {
+        await this.observePromptActionLatency(data.promptId);
+      }
+
+      if (!canonicalAction) {
+        logger.warn(`Unknown prompt interaction action received: ${data.action}`);
+        socket.emit('prompt:interaction_confirmed', {
+          promptId: data.promptId,
+          action: data.action,
+          timestamp: Date.now()
+        });
+        return;
+      }
+
+      const normalizedPayload: PromptInteractionData = {
+        ...data,
+        action: canonicalAction,
+        sessionId: data.sessionId ?? prompt.session_id,
+      };
+
       // Process the interaction
-      await this.processPromptInteraction(data, socket.data.userId);
+      await this.processPromptInteraction(normalizedPayload, socket.data.userId);
 
       // Broadcast interaction to session guidance subscribers
       if (prompt.session_id) {
         this.emitToRoom(`guidance:session:${prompt.session_id}`, 'prompt:interaction', {
           promptId: data.promptId,
-          action: data.action,
+          action: normalizedPayload.action,
           userId: socket.data.userId,
           feedback: data.feedback,
-          timestamp: new Date(),
+          sessionId: normalizedPayload.sessionId,
+          timestamp: new Date().toISOString(),
           traceId: (socket.data as any)?.traceId || undefined,
         });
       }
 
       socket.emit('prompt:interaction_confirmed', {
         promptId: data.promptId,
-        action: data.action,
-        timestamp: new Date()
+        action: normalizedPayload.action,
+        timestamp: Date.now()
       });
 
-      console.log(`Guidance namespace: Teacher ${socket.data.userId} ${data.action} prompt ${data.promptId}`);
+      logger.debug(`Guidance namespace: Teacher ${socket.data.userId} ${normalizedPayload.action} prompt ${data.promptId}`);
     } catch (error) {
-      console.error('Prompt interaction error:', error);
+      logger.error('Prompt interaction error:', error);
       socket.emit('error', {
         code: 'PROMPT_INTERACTION_FAILED',
         message: 'Failed to process prompt interaction'
@@ -394,7 +460,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
             maxAge: 30 // Last 30 minutes
           });
         } catch (error) {
-          console.warn(`⚠️ Failed to get active prompts for session ${data.sessionId}:`, error);
+          logger.warn(`⚠️ Failed to get active prompts for session ${data.sessionId}:`, error);
           prompts = []; // Graceful degradation
         }
 
@@ -404,7 +470,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
             includeMetadata: true
           });
         } catch (error) {
-          console.warn(`⚠️ Failed to get current insights for session ${data.sessionId}:`, error);
+          logger.warn(`⚠️ Failed to get current insights for session ${data.sessionId}:`, error);
           insights = {}; // Graceful degradation
         }
       } else {
@@ -458,15 +524,28 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       // Refactored current_state payload: expose tier1 and tier2ByGroup at top-level
       const tier1 = Array.isArray((insights as any)?.tier1Insights) ? (insights as any).tier1Insights : undefined;
       const tier2ByGroup = (insights as any)?.tier2ByGroup || undefined;
+      const serializedPrompts = prompts.map((prompt) => {
+        if (prompt && typeof prompt === 'object' && 'contextEvidence' in prompt) {
+          const { contextEvidence, context, ...rest } = prompt as any;
+          const paragraph = contextEvidence?.contextSummary ?? context ?? null;
+          return {
+            ...rest,
+            contextSummary: paragraph,
+            context: contextEvidence ?? null,
+          };
+        }
+        return prompt;
+      });
+
       socket.emit('guidance:current_state', {
         sessionId: data.sessionId,
-        prompts,
+        prompts: serializedPrompts,
         tier1,
         tier2ByGroup,
         timestamp: new Date(),
       });
     } catch (error) {
-      console.error('Get current state error:', error);
+      logger.error('Get current state error:', error);
       socket.emit('error', {
         code: 'STATE_FETCH_FAILED',
         message: 'Failed to fetch current guidance state'
@@ -514,12 +593,12 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         timestamp: new Date()
       });
 
-      console.log(`Guidance namespace: Teacher ${socket.data.userId} subscribed to analytics`, {
+      logger.debug(`Guidance namespace: Teacher ${socket.data.userId} subscribed to analytics`, {
         sessionId: data.sessionId || 'global',
         metrics: Array.from(requestedSet)
       });
     } catch (error) {
-      console.error('Analytics subscription error:', error);
+      logger.error('Analytics subscription error:', error);
       socket.emit('error', {
         code: 'ANALYTICS_SUBSCRIPTION_FAILED',
         message: 'Failed to subscribe to analytics'
@@ -566,7 +645,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         timestamp: new Date()
       });
     } catch (error) {
-      console.error('Analytics unsubscription error:', error);
+      logger.error('Analytics unsubscription error:', error);
       socket.emit('error', {
         code: 'ANALYTICS_UNSUBSCRIPTION_FAILED',
         message: 'Failed to unsubscribe from analytics'
@@ -619,7 +698,99 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         })
       });
     } catch (error) {
-      console.warn('Failed to record prompt interaction analytics:', error);
+      logger.warn('Failed to record prompt interaction analytics:', error);
+    }
+  }
+
+  private normalizePromptInteractionAction(action?: PromptInteractionAction | null): {
+    canonicalAction?: Exclude<PromptInteractionAction, 'ack'>;
+    metricsLabel: string;
+  } {
+    if (!action) {
+      return { canonicalAction: undefined, metricsLabel: 'other' };
+    }
+
+    const normalized = String(action).toLowerCase();
+    switch (normalized) {
+      case 'ack':
+      case 'acknowledge':
+        return { canonicalAction: 'acknowledge', metricsLabel: 'ack' };
+      case 'use':
+        return { canonicalAction: 'use', metricsLabel: 'use' };
+      case 'snooze':
+        return { canonicalAction: 'snooze', metricsLabel: 'snooze' };
+      case 'copy':
+        return { canonicalAction: 'copy', metricsLabel: 'copy' };
+      case 'save_exit_check':
+      case 'save-exit-check':
+        return { canonicalAction: 'save_exit_check', metricsLabel: 'save_exit_check' };
+      case 'dismiss':
+        return { canonicalAction: 'dismiss', metricsLabel: 'other' };
+      default:
+        return { canonicalAction: undefined, metricsLabel: 'other' };
+    }
+  }
+
+  private async observePromptActionLatency(promptId?: string): Promise<void> {
+    if (!promptId || typeof promptId !== 'string') {
+      return;
+    }
+    const key = `guidance:prompt:first_emit_at:${promptId}`;
+    try {
+      const client = redisService.getClient();
+      const firstEmit = await client.get(key);
+      if (!firstEmit) {
+        return;
+      }
+      const parsed = Number(firstEmit);
+      if (Number.isFinite(parsed)) {
+        const delta = Date.now() - parsed;
+        if (delta >= 0) {
+          try { GuidanceNamespaceService.promptFirstActionHistogram.observe(delta); } catch { /* intentionally ignored: best effort cleanup */ }
+        }
+      }
+      await client.del(key);
+    } catch (error) {
+      this.handleRedisFailure('prompt_timing', error);
+    }
+  }
+
+  private async recordPromptFirstEmitTimestamp(promptId?: string): Promise<void> {
+    if (!promptId || typeof promptId !== 'string') {
+      return;
+    }
+    try {
+      const client = redisService.getClient();
+      const key = `guidance:prompt:first_emit_at:${promptId}`;
+      const ttlMs = 24 * 60 * 60 * 1000;
+      await client.set(key, Date.now().toString(), 'PX', ttlMs, 'NX');
+    } catch (error) {
+      this.handleRedisFailure('prompt_timing', error);
+    }
+  }
+
+  private adjustSessionSubscriberGauge(sessionId: string, delta: number): void {
+    if (!sessionId) {
+      return;
+    }
+    const current = this.sessionSubscriberCounts.get(sessionId) ?? 0;
+    const next = Math.max(0, current + delta);
+    if (next === 0) {
+      this.sessionSubscriberCounts.delete(sessionId);
+    } else {
+      this.sessionSubscriberCounts.set(sessionId, next);
+    }
+    try { GuidanceNamespaceService.wsSubscribersGauge.set({ sessionId }, next); } catch { /* intentionally ignored: best effort cleanup */ }
+  }
+
+  private handleRedisFailure(component: GuidanceRedisComponent, error: unknown): void {
+    try { GuidanceNamespaceService.redisUnavailableCounter.inc({ component }); } catch { /* intentionally ignored: best effort cleanup */ }
+    const now = Date.now();
+    const lastLogged = this.redisErrorLogTimestamps.get(component) ?? 0;
+    if (now - lastLogged >= 60000) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`⚠️ Guidance Redis unavailable for ${component}: ${message}`);
+      this.redisErrorLogTimestamps.set(component, now);
     }
   }
 
@@ -635,38 +806,53 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
 
   // Public API for AI services to emit guidance events
   public emitTeacherAlert(sessionId: string, prompt: any): void {
+    void this.recordPromptFirstEmitTimestamp(prompt?.id);
+
     const roomSession = `guidance:session:${sessionId}`;
     const roomAll = 'guidance:all';
     // Emit to session-specific guidance subscribers
     const ok1 = this.emitToRoom(roomSession, 'teacher:alert', prompt);
     // Also emit to general guidance subscribers
     const ok2 = this.emitToRoom(roomAll, 'teacher:alert', prompt);
-    try { GuidanceNamespaceService.teacherAlertsEmits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    try { GuidanceNamespaceService.teacherAlertsEmits.inc({ namespace: this.getNamespaceName() }); } catch { /* intentionally ignored: best effort cleanup */ }
     // Treat no-subscriber case as a failed emit for metrics purposes
     const hasSessionSubs = (this.namespace.adapter.rooms.get(roomSession)?.size || 0) > 0;
     const hasAllSubs = (this.namespace.adapter.rooms.get(roomAll)?.size || 0) > 0;
     if (!hasSessionSubs && !hasAllSubs) {
-      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'alert' }); } catch {}
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'alert' }); } catch { /* intentionally ignored: best effort cleanup */ }
     }
     // Persist prompt event (non-blocking)
     (async () => {
       try {
         const { guidanceEventsService } = await import('../guidance-events.service');
         await guidanceEventsService.record({ sessionId, groupId: prompt?.groupId, type: 'prompt', payload: prompt, timestamp: new Date() });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
   }
 
   public emitTeacherRecommendations(sessionId: string, prompts: any[], opts?: { generatedAt?: string | number; tier?: 'tier1' | 'tier2' }): void {
     const roomSession = `guidance:session:${sessionId}`;
     const roomAll = 'guidance:all';
-    const ok1 = this.emitToRoom(roomSession, 'teacher:recommendations', prompts);
-    const ok2 = this.emitToRoom(roomAll, 'teacher:recommendations', prompts);
-    try { GuidanceNamespaceService.teacherRecsEmits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    for (const prompt of Array.isArray(prompts) ? prompts : []) {
+      const promptId = prompt?.id ?? prompt?.promptId;
+      void this.recordPromptFirstEmitTimestamp(promptId);
+    }
+    const serializedPrompts = prompts.map((prompt) => {
+      const { contextEvidence, context, ...rest } = prompt ?? {};
+      const paragraph = contextEvidence?.contextSummary ?? context ?? null;
+      return {
+        ...rest,
+        contextSummary: paragraph,
+        context: contextEvidence ?? null,
+      };
+    });
+    const ok1 = this.emitToRoom(roomSession, 'teacher:recommendations', serializedPrompts);
+    const ok2 = this.emitToRoom(roomAll, 'teacher:recommendations', serializedPrompts);
+    try { GuidanceNamespaceService.teacherRecsEmits.inc({ namespace: this.getNamespaceName() }); } catch { /* intentionally ignored: best effort cleanup */ }
     const hasSessionSubs = (this.namespace.adapter.rooms.get(roomSession)?.size || 0) > 0;
     const hasAllSubs = (this.namespace.adapter.rooms.get(roomAll)?.size || 0) > 0;
     if (!hasSessionSubs && !hasAllSubs) {
-      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'recommendations' }); } catch {}
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'recommendations' }); } catch { /* intentionally ignored: best effort cleanup */ }
     }
     // Prompt delivery SLIs (best-effort)
     (async () => {
@@ -677,14 +863,14 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         const repo = getCompositionRoot().getSessionRepository();
         const basic = await repo.getBasic(sessionId);
         school = (basic as any)?.school_id || 'unknown';
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       const delivered = hasSessionSubs || hasAllSubs;
-      try { GuidanceNamespaceService.promptDeliveryTotal.inc({ tier, status: delivered ? 'delivered' : 'no_subscriber', school }); } catch {}
+      try { GuidanceNamespaceService.promptDeliveryTotal.inc({ tier, status: delivered ? 'delivered' : 'no_subscriber', school }); } catch { /* intentionally ignored: best effort cleanup */ }
       if (opts?.generatedAt) {
         const started = typeof opts.generatedAt === 'string' ? new Date(opts.generatedAt).getTime() : Number(opts.generatedAt);
         if (!Number.isNaN(started)) {
           const latency = Date.now() - started;
-          try { GuidanceNamespaceService.promptDeliveryLatency.observe({ tier }, latency); } catch {}
+          try { GuidanceNamespaceService.promptDeliveryLatency.observe({ tier }, latency); } catch { /* intentionally ignored: best effort cleanup */ }
         }
       }
       // Per-session SLI via Redis (to avoid high-cardinality Prometheus labels)
@@ -693,23 +879,23 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         await redisService.getClient().incr(key);
         // Keep counters ephemeral to bound storage
         await redisService.getClient().expire(key, parseInt(process.env.SLI_SESSION_TTL_SECONDS || '3600', 10));
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
     // Persist prompt recommendations as individual prompt events
     (async () => {
       try {
         const { guidanceEventsService } = await import('../guidance-events.service');
-        for (const p of prompts) {
+        for (const p of serializedPrompts) {
           await guidanceEventsService.record({ sessionId, groupId: p?.groupId, type: 'prompt', payload: p, timestamp: new Date() });
         }
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
   }
 
   public emitTier1Insight(sessionId: string, insight: any): void {
     const room = `guidance:session:${sessionId}`;
     const ok = this.emitToRoom(room, 'ai:tier1:insight', insight);
-    try { GuidanceNamespaceService.tier1Emits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    try { GuidanceNamespaceService.tier1Emits.inc({ namespace: this.getNamespaceName() }); } catch { /* intentionally ignored: best effort cleanup */ }
     // Per-school SLI (best-effort)
     (async () => {
       try {
@@ -717,49 +903,49 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         const repo = getCompositionRoot().getSessionRepository();
         const basic = await repo.getBasic(sessionId);
         const school = (basic as any)?.school_id || 'unknown';
-        try { GuidanceNamespaceService.tier1DeliveredBySchool.inc({ school }); } catch {}
-      } catch {}
+        try { GuidanceNamespaceService.tier1DeliveredBySchool.inc({ school }); } catch { /* intentionally ignored: best effort cleanup */ }
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
     const hasSubs = (this.namespace.adapter.rooms.get(room)?.size || 0) > 0;
     if (!hasSubs) {
-      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier1' }); } catch {}
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier1' }); } catch { /* intentionally ignored: best effort cleanup */ }
     }
     // Persist tier1 insight
     (async () => {
       try {
         const { guidanceEventsService } = await import('../guidance-events.service');
         await guidanceEventsService.record({ sessionId, groupId: insight?.groupId, type: 'tier1', payload: insight, timestamp: new Date() });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
   }
 
   public emitTier2Insight(sessionId: string, insight: any): void {
     if (!insight || !insight.groupId) {
-      console.warn('⚠️ Guidance: Dropping Tier2 emit without groupId (session-scope no longer supported)', { sessionId });
+      logger.warn('⚠️ Guidance: Dropping Tier2 emit without groupId (session-scope no longer supported)', { sessionId });
       return;
     }
     const room = `guidance:session:${sessionId}`;
     const ok = this.emitToRoom(room, 'ai:tier2:insight', insight);
-    try { GuidanceNamespaceService.tier2Emits.inc({ namespace: this.getNamespaceName() }); } catch {}
+    try { GuidanceNamespaceService.tier2Emits.inc({ namespace: this.getNamespaceName() }); } catch { /* intentionally ignored: best effort cleanup */ }
     (async () => {
       try {
         const { getCompositionRoot } = await import('../../app/composition-root');
         const repo = getCompositionRoot().getSessionRepository();
         const basic = await repo.getBasic(sessionId);
         const school = (basic as any)?.school_id || 'unknown';
-        try { GuidanceNamespaceService.tier2DeliveredBySchool.inc({ school }); } catch {}
-      } catch {}
+        try { GuidanceNamespaceService.tier2DeliveredBySchool.inc({ school }); } catch { /* intentionally ignored: best effort cleanup */ }
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
     const hasSubs = (this.namespace.adapter.rooms.get(room)?.size || 0) > 0;
     if (!hasSubs) {
-      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier2' }); } catch {}
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: 'tier2' }); } catch { /* intentionally ignored: best effort cleanup */ }
     }
     // Persist tier2 insight
     (async () => {
       try {
         const { guidanceEventsService } = await import('../guidance-events.service');
         await guidanceEventsService.record({ sessionId, groupId: insight?.groupId, type: 'tier2', payload: insight, timestamp: new Date() });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     })();
   }
 
@@ -772,7 +958,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     const deliveredGlobal = this.emitToRoom(globalRoom, 'guidance:analytics', event);
 
     if (!deliveredSession && !deliveredGlobal) {
-      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: `analytics_${category}` }); } catch {}
+      try { GuidanceNamespaceService.emitsFailed.inc({ namespace: this.getNamespaceName(), type: `analytics_${category}` }); } catch { /* intentionally ignored: best effort cleanup */ }
     }
   }
 

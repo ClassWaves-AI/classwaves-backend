@@ -23,6 +23,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { databricksService } from '../services/databricks.service';
 import { validate } from '../middleware/validation.middleware';
 import { createSessionSchema, updateSessionSchema, sessionLifecycleNotesSchema, resendSessionEmailSchema } from '../utils/validation.schemas';
+import { logger } from '../utils/logger';
 
 
 const router = Router();
@@ -72,7 +73,7 @@ router.get('/:sessionId/websocket-debug', async (req, res) => {
       const sessionsService = namespacedWS.getSessionsService();
       if (sessionsService) {
         // Emit debug event to sessions namespace
-        console.log(`🔧 DEBUG: Emitting test event to sessions namespace for session ${sessionId}`);
+        logger.debug(`🔧 DEBUG: Emitting test event to sessions namespace for session ${sessionId}`);
       }
     }
     
@@ -119,7 +120,7 @@ router.get('/:sessionId/student-debug/:studentId', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Debug endpoint error:', error);
+    logger.error('Debug endpoint error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: 'DEBUG_FAILED', message: errorMessage });
   }
@@ -151,7 +152,7 @@ router.post('/clear-connection-limits/:studentId', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Clear connection limits error:', error);
+    logger.error('Clear connection limits error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: 'CLEAR_FAILED', message: errorMessage });
   }

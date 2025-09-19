@@ -370,9 +370,9 @@ export async function getAdminSecurityStats(timeframeHours: number = 24): Promis
     // Gracefully handle missing audit log table
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
-      console.warn('Audit log table not found - returning empty admin security stats (non-critical)');
+      logger.warn('Audit log table not found - returning empty admin security stats (non-critical)');
     } else {
-      console.error('Error fetching admin security stats from audit log:', error);
+      logger.error('Error fetching admin security stats from audit log:', error);
     }
     
     return {

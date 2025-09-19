@@ -1,10 +1,11 @@
 import { DBSQLClient } from '@databricks/sql';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function testDatabricksSDK() {
-  console.log('Testing Databricks connection with different configurations...\n');
+  logger.debug('Testing Databricks connection with different configurations...\n');
   
   const token = process.env.DATABRICKS_TOKEN || '';
   const host = process.env.DATABRICKS_HOST?.replace(/^https?:\/\//, '') || '';
@@ -17,12 +18,11 @@ async function testDatabricksSDK() {
     '0' + Number(warehouseId).toString(16) : 
     warehouseId;
     
-  console.log('Environment:');
-  console.log('- Host:', host);
-  console.log('- Warehouse ID (original):', warehouseId);
-  console.log('- Warehouse ID (hex):', warehouseHex);
-  console.log('- Token prefix:', token.substring(0, 10) + '...');
-  console.log();
+  logger.debug('Environment:');
+  logger.debug('- Host:', host);
+  logger.debug('- Warehouse ID (original):', warehouseId);
+  logger.debug('- Warehouse ID (hex):', warehouseHex);
+  logger.debug('- Token prefix:', token.substring(0, 10) + '...');
   
   const client = new DBSQLClient();
   
@@ -41,20 +41,20 @@ async function testDatabricksSDK() {
       }
     };
     
-    console.log('Connecting with options:', {
+    logger.debug('Connecting with options:', {
       ...connectionOptions,
       token: connectionOptions.token.substring(0, 10) + '...'
     });
     
     await client.connect(connectionOptions);
-    console.log('✅ Connected to Databricks\n');
+    logger.debug('✅ Connected to Databricks\n');
     
     // Now let's try to use the session
     const session = await client.openSession();
-    console.log('✅ Session opened\n');
+    logger.debug('✅ Session opened\n');
     
     // First, let's check what catalogs we have access to
-    console.log('Checking available catalogs...');
+    logger.debug('Checking available catalogs...');
     const catalogOp = await session.executeStatement(
       'SHOW CATALOGS',
       {
@@ -65,11 +65,10 @@ async function testDatabricksSDK() {
     const catalogs = await catalogOp.fetchAll();
     await catalogOp.close();
     
-    console.log('Available catalogs:', catalogs);
-    console.log();
+    logger.debug('Available catalogs:', catalogs);
     
     // Try creating our catalog
-    console.log('Creating classwaves catalog...');
+    logger.debug('Creating classwaves catalog...');
     const createCatalogOp = await session.executeStatement(
       'CREATE CATALOG IF NOT EXISTS classwaves',
       {
@@ -80,36 +79,36 @@ async function testDatabricksSDK() {
     await createCatalogOp.fetchAll();
     await createCatalogOp.close();
     
-    console.log('✅ Catalog creation completed\n');
+    logger.debug('✅ Catalog creation completed\n');
     
     await session.close();
     await client.close();
     
-    console.log('✅ All operations completed successfully!');
-    console.log(`\nUse this warehouse ID in your .env file: ${warehouseHex}`);
+    logger.debug('✅ All operations completed successfully!');
+    logger.debug(`\nUse this warehouse ID in your .env file: ${warehouseHex}`);
     
   } catch (error: any) {
-    console.error('❌ Error:', error.message);
+    logger.error('❌ Error:', error.message);
     
     if (error.response) {
-      console.error('\nResponse details:');
-      console.error('- Status:', error.response.status);
-      console.error('- Status Text:', error.response.statusText);
+      logger.error('\nResponse details:');
+      logger.error('- Status:', error.response.status);
+      logger.error('- Status Text:', error.response.statusText);
       
       if (error.response.headers) {
         const errorMsg = error.response.headers.get('x-thriftserver-error-message');
         if (errorMsg) {
-          console.error('- Server Error:', errorMsg);
+          logger.error('- Server Error:', errorMsg);
         }
         
         const requestId = error.response.headers.get('x-request-id');
         if (requestId) {
-          console.error('- Request ID:', requestId);
+          logger.error('- Request ID:', requestId);
         }
       }
       
       if (error.response.data) {
-        console.error('- Response Data:', error.response.data);
+        logger.error('- Response Data:', error.response.data);
       }
     }
     

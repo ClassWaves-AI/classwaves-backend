@@ -1,57 +1,58 @@
 import { databricksService } from '../services/databricks.service';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function verifyTablesLocation() {
-  console.log('🔍 Verifying table locations...\n');
+  logger.debug('🔍 Verifying table locations...\n');
   
   try {
     await databricksService.connect();
-    console.log('✅ Connected to Databricks\n');
+    logger.debug('✅ Connected to Databricks\n');
     
     // Check what's in the workspace.default
-    console.log('📋 Tables in workspace.default:');
+    logger.debug('📋 Tables in workspace.default:');
     try {
       const defaultTables = await databricksService.query('SHOW TABLES IN workspace.default');
       if (defaultTables && defaultTables.length > 0) {
         defaultTables.forEach((table: any) => {
           const tableName = table.tableName || table.table_name || Object.values(table)[1];
-          console.log(`   - ${tableName}`);
+          logger.debug(`   - ${tableName}`);
         });
       } else {
-        console.log('   (no tables)');
+        logger.debug('   (no tables)');
       }
     } catch (error: any) {
-      console.log('   Error:', error.message);
+      logger.debug('   Error:', error.message);
     }
     
     // Check what's in classwaves.main
-    console.log('\n📋 Tables in classwaves.main:');
+    logger.debug('\n📋 Tables in classwaves.main:');
     try {
       const mainTables = await databricksService.query('SHOW TABLES IN classwaves.main');
       if (mainTables && mainTables.length > 0) {
         mainTables.forEach((table: any) => {
           const tableName = table.tableName || table.table_name || Object.values(table)[1];
-          console.log(`   - ${tableName}`);
+          logger.debug(`   - ${tableName}`);
         });
       } else {
-        console.log('   (no tables)');
+        logger.debug('   (no tables)');
       }
     } catch (error: any) {
-      console.log('   Error:', error.message);
+      logger.debug('   Error:', error.message);
     }
     
     // Try to query from fully qualified names
-    console.log('\n🔍 Checking fully qualified table names:');
+    logger.debug('\n🔍 Checking fully qualified table names:');
     
     const checkTable = async (fullName: string) => {
       process.stdout.write(`   ${fullName}: `);
       try {
         const result = await databricksService.query(`SELECT COUNT(*) as count FROM ${fullName}`);
-        console.log(`✅ (${result[0].count} rows)`);
+        logger.debug(`✅ (${result[0].count} rows)`);
       } catch (error: any) {
-        console.log('❌');
+        logger.debug('❌');
       }
     };
     
@@ -61,36 +62,36 @@ async function verifyTablesLocation() {
     await checkTable('classwaves.main.teachers');
     
     // Check where demo data is
-    console.log('\n🔍 Looking for demo data:');
+    logger.debug('\n🔍 Looking for demo data:');
     try {
-      console.log('\nIn workspace.default:');
+      logger.debug('\nIn workspace.default:');
       const defaultDemo = await databricksService.query(
         "SELECT * FROM workspace.default.schools WHERE domain = 'demo.classwaves.com'"
       );
       if (defaultDemo && defaultDemo.length > 0) {
-        console.log('✅ Found demo school in workspace.default');
+        logger.debug('✅ Found demo school in workspace.default');
       }
     } catch (error) {
-      console.log('❌ No demo data in workspace.default');
+      logger.debug('❌ No demo data in workspace.default');
     }
     
     try {
-      console.log('\nIn classwaves.main:');
+      logger.debug('\nIn classwaves.main:');
       const mainDemo = await databricksService.query(
         "SELECT * FROM classwaves.main.schools WHERE domain = 'demo.classwaves.com'"
       );
       if (mainDemo && mainDemo.length > 0) {
-        console.log('✅ Found demo school in classwaves.main');
+        logger.debug('✅ Found demo school in classwaves.main');
       }
     } catch (error) {
-      console.log('❌ No demo data in classwaves.main');
+      logger.debug('❌ No demo data in classwaves.main');
     }
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    logger.error('❌ Error:', error);
   } finally {
     await databricksService.disconnect();
-    console.log('\n👋 Disconnected from Databricks');
+    logger.debug('\n👋 Disconnected from Databricks');
   }
 }
 

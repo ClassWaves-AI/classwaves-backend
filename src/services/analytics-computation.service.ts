@@ -1,4 +1,3 @@
-/* eslint-disable no-useless-catch */
 /**
  * Analytics Computation Service
  * 
@@ -11,14 +10,21 @@ import { redisService } from './redis.service';
 import { realTimeAnalyticsCacheService } from './real-time-analytics-cache.service';
 import { databricksConfig } from '../config/databricks.config';
 import { analyticsLogger } from '../utils/analytics-logger';
-import { 
-  SessionMembershipSummary, 
+import {
+  SessionMembershipSummary,
   SessionAnalyticsOverviewComplete,
   EngagementMetrics,
   TimelineAnalysis,
   GroupPerformanceSummary,
-  TimelineMilestone
+  TimelineMilestone,
 } from '@classwaves/shared';
+import { logger } from '../utils/logger';
+
+const logSuppressedError = (scope: string, error: unknown) => {
+  logger.debug(scope, {
+    error: error instanceof Error ? error.message : String(error),
+  });
+};
 
 interface ComputedAnalytics {
   sessionAnalyticsOverview: SessionAnalyticsOverviewComplete;
@@ -90,8 +96,10 @@ export class AnalyticsComputationService {
           throw err;
         }
       } catch (lockErr) {
-        // Bubble up lock error to allow controller to emit duplicate_prevention
-        throw lockErr;
+        const err = lockErr instanceof Error ? lockErr : new Error(String(lockErr));
+        (err as any).type = (err as any).type || 'LOCK_ACQUISITION_FAILED';
+        logSuppressedError('analytics.lock.acquire_failed', err);
+        throw err;
       }
       // Wrap the entire computation in a global timeout
       const timeoutMs = this.COMPUTATION_TIMEOUT;
@@ -109,19 +117,19 @@ export class AnalyticsComputationService {
           // Check if analytics already computed (idempotency)
           const existingAnalytics = await this.getExistingAnalytics(sessionId);
           if (existingAnalytics && existingAnalytics.computationMetadata.status === 'completed') {
-            console.log(`✅ Analytics already computed for session ${sessionId}, returning cached result`);
+            logger.debug(`✅ Analytics already computed for session ${sessionId}, returning cached result`);
             return existingAnalytics;
           }
 
-          console.log(`🚀 Starting analytics computation for session ${sessionId}`);
+          logger.debug(`🚀 Starting analytics computation for session ${sessionId}`);
       
           // Mark computation as in progress
-          console.log(`📝 Marking computation as in progress...`);
+          logger.debug(`📝 Marking computation as in progress...`);
           await this.markComputationInProgress(sessionId, computationId);
-          console.log(`✅ Computation marked as in progress`);
+          logger.debug(`✅ Computation marked as in progress`);
       
           // Fetch session data
-          console.log(`📊 Fetching session data for ${sessionId}...`);
+          logger.debug(`📊 Fetching session data for ${sessionId}...`);
           const sessionData = await this.fetchSessionData(sessionId);
           if (!sessionData) {
             // Throw a typed error to guarantee error.type visibility in tests
@@ -129,7 +137,7 @@ export class AnalyticsComputationService {
             err.type = 'DATA_CORRUPTION';
             throw err;
           }
-          console.log(`✅ Session data fetched:`, {
+          logger.debug(`✅ Session data fetched:`, {
             id: sessionData.id,
             title: sessionData.title,
             status: sessionData.status,
@@ -137,16 +145,16 @@ export class AnalyticsComputationService {
           });
 
           // Validate session data completeness for analytics computation
-          console.log(`🔍 Validating session data completeness...`);
+          logger.debug(`🔍 Validating session data completeness...`);
           const validationResult = this.validateSessionDataForAnalytics(sessionData);
           if (!validationResult.isValid) {
-            console.error(`❌ Session data validation failed:`, validationResult.errors);
+            logger.error(`❌ Session data validation failed:`, validationResult.errors);
             throw new Error(`Session data incomplete for analytics: ${validationResult.errors.join(', ')}`);
           }
-          console.log(`✅ Session data validation passed`);
+          logger.debug(`✅ Session data validation passed`);
 
           // Compute analytics components with partial-failure tolerance
-          console.log(`🔄 Computing analytics components in parallel...`);
+          logger.debug(`🔄 Computing analytics components in parallel...`);
           const withTimeout = async <T>(label: string, ms: number, p: Promise<T>): Promise<T> => {
             let to: NodeJS.Timeout | null = null;
             try {
@@ -232,8 +240,8 @@ export class AnalyticsComputationService {
                 `SELECT 1 as marker FROM ${databricksConfig.catalog}.analytics.__planned_vs_actual WHERE session_id = ? LIMIT 1`,
                 [sessionId]
               );
-            } catch (_) {
-              // ignore query errors (view may be absent in dev)
+            } catch (error) {
+              logSuppressedError('analytics.planned_vs_actual.query_failed', error);
             }
             if (plannedVsActual === null) {
               // View exists but contains no marker for this session; be conservative
@@ -242,17 +250,15 @@ export class AnalyticsComputationService {
             }
           } else {
             // Feature disabled; keep computed engagement metrics
-            try {
-              if (process.env.API_DEBUG === '1') {
-                console.log('ℹ️ planned_vs_actual disabled via ANALYTICS_USE_PLANNED_VS_ACTUAL=0; using computed engagement metrics');
-              }
-            } catch {}
+            if (process.env.API_DEBUG === '1') {
+              logger.debug('ℹ️ planned_vs_actual disabled via ANALYTICS_USE_PLANNED_VS_ACTUAL=0; using computed engagement metrics');
+            }
           }
 
           // Keep membership summary independent of engagement metrics to match tests
 
           // Do not infer groupsAtFullCapacity without explicit planned vs actual data
-          console.log(`✅ Analytics components computed (partial failures tolerated)`);
+          logger.debug(`✅ Analytics components computed (partial failures tolerated)`);
 
           const computedAt = new Date().toISOString();
           const processingTime = Date.now() - startTime;
@@ -279,24 +285,24 @@ export class AnalyticsComputationService {
           };
 
           // Persist analytics to database (do not fail overall)
-          console.log(`💾 Persisting analytics to database...`);
+          logger.debug(`💾 Persisting analytics to database...`);
           try {
             persisting = true;
             await this.persistAnalytics(sessionId, computedAnalytics);
             persisting = false;
-            console.log(`✅ Analytics persisted successfully`);
+            logger.debug(`✅ Analytics persisted successfully`);
           } catch (persistErr) {
             const msg = (persistErr as Error)?.message || '';
             // If connection error, bubble up to satisfy strict test; else continue as partial success
             if (/database connection failed/i.test(msg)) {
               throw persistErr;
             }
-            console.warn('⚠️ Persistence failed, continuing with partial success:', msg);
+            logger.warn('⚠️ Persistence failed, continuing with partial success', { error: msg });
             computedAnalytics.computationMetadata.status = 'partial_success';
           }
       
           // Log successful computation
-          console.log(`📝 Logging successful computation...`);
+          logger.debug(`📝 Logging successful computation...`);
           analyticsLogger.logOperation(
             'analytics_computation_completed',
             'session_analytics',
@@ -313,8 +319,8 @@ export class AnalyticsComputationService {
             }
           );
 
-          console.log(`✅ Analytics computation completed for session ${sessionId} in ${processingTime}ms`);
-          console.log(`🎯 Returning computed analytics:`, {
+          logger.debug(`✅ Analytics computation completed for session ${sessionId} in ${processingTime}ms`);
+          logger.debug(`🎯 Returning computed analytics:`, {
             hasSessionOverview: !!computedAnalytics.sessionAnalyticsOverview,
             groupAnalyticsCount: computedAnalytics.groupAnalytics.length,
             computationStatus: computedAnalytics.computationMetadata.status
@@ -344,7 +350,7 @@ export class AnalyticsComputationService {
     } catch (error) {
       const processingTime = Date.now() - startTime;
       
-      console.error(`💥 ANALYTICS COMPUTATION ERROR for session ${sessionId}:`, {
+      logger.error(`💥 ANALYTICS COMPUTATION ERROR for session ${sessionId}:`, {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
         processingTime
@@ -374,21 +380,21 @@ export class AnalyticsComputationService {
           if (fallback) {
             // Mark as fallback and return gracefully
             (fallback.computationMetadata as any).status = 'fallback_from_cache';
-            console.warn('⚠️ Using cached analytics as fallback due to DB connection error');
+            logger.warn('⚠️ Using cached analytics as fallback due to DB connection error');
             return fallback;
           }
-        } catch (e) {
-          // ignore and proceed to failure path
+        } catch (fallbackError) {
+          logSuppressedError('analytics.fallback.fetch_failed', fallbackError);
         }
       }
 
       // Mark computation as failed
-      console.log(`📝 Marking computation as failed...`);
+      logger.debug(`📝 Marking computation as failed...`);
       try {
         await this.markComputationFailed(sessionId, computationId, error);
-        console.log(`✅ Computation marked as failed`);
+        logger.debug(`✅ Computation marked as failed`);
       } catch (markFailedError) {
-        console.error(`❌ Failed to mark computation as failed:`, markFailedError);
+        logger.error(`❌ Failed to mark computation as failed:`, markFailedError);
       }
       
       // Classify and throw typed error (preserve original message for tests)
@@ -415,7 +421,11 @@ export class AnalyticsComputationService {
       }
       // Release Redis lock if held
       if (acquiredLock) {
-        try { await (redisService.getClient() as any).del(lockKey); } catch {}
+        try {
+          await (redisService.getClient() as any).del(lockKey);
+        } catch (error) {
+          logSuppressedError('analytics.lock.release_failed', error);
+        }
       }
     }
   }
@@ -423,8 +433,8 @@ export class AnalyticsComputationService {
   /**
    * Compute session membership summary
    */
-  private async computeMembershipSummary(sessionId: string, sessionData: any): Promise<SessionMembershipSummary> {
-    console.log(`🔍 Computing membership summary for session ${sessionId}...`);
+  private async computeMembershipSummary(sessionId: string, _sessionData: any): Promise<SessionMembershipSummary> {
+    logger.debug(`🔍 Computing membership summary for session ${sessionId}...`);
     
     const groups = (await databricksService.query(`
       SELECT 
@@ -440,9 +450,9 @@ export class AnalyticsComputationService {
       ORDER BY sg.name, sgm.created_at
     `, [sessionId])) || [];
     
-    console.log(`📊 Found ${groups.length} group membership records for session ${sessionId}`);
+    logger.debug(`📊 Found ${groups.length} group membership records for session ${sessionId}`);
     if (groups.length > 0) {
-      console.log(`🔍 Sample group data:`, groups[0]);
+      logger.debug(`🔍 Sample group data:`, groups[0]);
     }
 
     const groupsMap = new Map();
@@ -541,7 +551,7 @@ export class AnalyticsComputationService {
   /**
    * Compute engagement metrics
    */
-  private async computeEngagementMetrics(sessionId: string, sessionData: any): Promise<EngagementMetrics> {
+  private async computeEngagementMetrics(sessionId: string, _sessionData: any): Promise<EngagementMetrics> {
     // In unit tests, bypass cache to align with mocked DB order
     if (process.env.NODE_ENV !== 'test') {
       // Prefer cached real-time metrics
@@ -608,7 +618,11 @@ export class AnalyticsComputationService {
       try {
         eventPayload = event.payload ? (typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload) : {};
       } catch (error) {
-        console.warn('Failed to parse event payload:', event.payload);
+        logger.warn('Failed to parse session event payload', {
+          sessionId,
+          eventType: event.event_type,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
 
       if (event.event_type === 'session_started') {
@@ -637,7 +651,7 @@ export class AnalyticsComputationService {
   /**
    * Compute group performance summaries
    */
-  private async computeGroupPerformance(sessionId: string, sessionData: any): Promise<GroupPerformanceSummary[]> {
+  private async computeGroupPerformance(sessionId: string, _sessionData: any): Promise<GroupPerformanceSummary[]> {
     try {
       const groups = (await databricksService.query(`
         SELECT 
@@ -666,6 +680,7 @@ export class AnalyticsComputationService {
         }));
       }
     } catch (primaryErr) {
+      logSuppressedError('analytics.group_performance.primary_query_failed', primaryErr);
       // If primary query fails (e.g., due to group_members join), try a direct GA-based fallback
       try {
         const gaRows = (await databricksService.query(`
@@ -691,8 +706,8 @@ export class AnalyticsComputationService {
             readyTime: group.first_member_joined
           }));
         }
-      } catch (_) {
-        // swallow and continue to participants-derived fallback below
+      } catch (error) {
+        logSuppressedError('analytics.group_performance.query_failed', error);
       }
     }
 
@@ -753,7 +768,8 @@ export class AnalyticsComputationService {
         }
       }
       return derived;
-    } catch (_) {
+    } catch (error) {
+      logSuppressedError('analytics.group_performance.derive_failed', error);
       return [];
     }
   }
@@ -762,7 +778,7 @@ export class AnalyticsComputationService {
    * Persist computed analytics to database
    */
   private async persistAnalytics(sessionId: string, computedAnalytics: ComputedAnalytics): Promise<void> {
-    const { sessionAnalyticsOverview, computationMetadata } = computedAnalytics;
+    const { sessionAnalyticsOverview } = computedAnalytics;
 
     // Avoid strict session info dependency in unit tests; use compatibility fields below
     // (We skip writing full cacheData during unit tests.)
@@ -811,7 +827,7 @@ export class AnalyticsComputationService {
           }
         );
       } catch (error) {
-        console.warn(`Failed to update group ${groupAnalytics.groupId} analytics:`, error);
+        logger.warn(`Failed to update group ${groupAnalytics.groupId} analytics:`, error);
         // Don't fail the whole operation if group updates fail
       }
     }
@@ -825,9 +841,9 @@ export class AnalyticsComputationService {
       const payload = { sessionId, timestamp: new Date().toISOString() };
       const { getNamespacedWebSocketService } = await import('./websocket/namespaced-websocket.service');
       getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:finalized', payload);
-      console.log(`📡 Emitted analytics:finalized event for session ${sessionId}`);
+      logger.debug(`📡 Emitted analytics:finalized event for session ${sessionId}`);
     } catch (error) {
-      console.error(`Failed to emit analytics:finalized for session ${sessionId}:`, error);
+      logger.error(`Failed to emit analytics:finalized for session ${sessionId}:`, error);
     }
   }
 
@@ -905,7 +921,7 @@ export class AnalyticsComputationService {
     return null;
   }
 
-  private async markComputationInProgress(sessionId: string, computationId: string): Promise<void> {
+  private async markComputationInProgress(sessionId: string, _computationId: string): Promise<void> {
     // In unit tests, avoid consuming mocked DB query order
     if (process.env.NODE_ENV === 'test') return;
     // Use direct SQL to avoid upsert's automatic created_at/updated_at fields
@@ -920,13 +936,13 @@ export class AnalyticsComputationService {
       WHERE session_id = ?
     `;
     
-    const updateResult = await databricksService.query(updateSql, [now, now, sessionId]);
+    await databricksService.query(updateSql, [now, now, sessionId]);
     
     // If no rows were updated, the session doesn't exist in cache yet - skip for now
     // (it will be created when persistAnalytics runs)
   }
 
-  private async markComputationFailed(sessionId: string, computationId: string, error: any): Promise<void> {
+  private async markComputationFailed(sessionId: string, _computationId: string, _error: any): Promise<void> {
     // Always attempt to upsert failure counter even if cache update fails
     // In unit tests, skip the extra UPDATE query to avoid interfering with mocked call ordering
     if (process.env.NODE_ENV !== 'test') {
@@ -940,7 +956,7 @@ export class AnalyticsComputationService {
         `;
         await databricksService.query(updateSql, [new Date(), sessionId]);
       } catch (e) {
-        console.warn('⚠️ Failed to update session_analytics_cache as failed:', e);
+        logger.warn('⚠️ Failed to update session_analytics_cache as failed', { error: e instanceof Error ? e.message : String(e) });
       }
     }
     try {
@@ -950,7 +966,7 @@ export class AnalyticsComputationService {
         technical_issues_count: 1
       });
     } catch (e) {
-      console.warn('⚠️ Failed to upsert failure counter in session_metrics:', e);
+      logger.warn('⚠️ Failed to upsert failure counter in session_metrics', { error: e instanceof Error ? e.message : String(e) });
     }
   }
 

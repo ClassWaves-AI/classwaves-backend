@@ -4,10 +4,40 @@ import * as client from 'prom-client'
 import { initializeNamespacedWebSocket, getNamespacedWebSocketService, closeNamespacedWebSocket } from '../../../services/websocket/namespaced-websocket.service'
 import { generateAccessToken } from '../../../utils/jwt.utils'
 
+jest.mock('../../../services/websocket/websocket-security-validator.service', () => ({
+  webSocketSecurityValidator: {
+    validateNamespaceAccess: jest.fn().mockResolvedValue({ allowed: true }),
+    logSecurityEvent: jest.fn().mockResolvedValue(undefined),
+    handleDisconnection: jest.fn().mockResolvedValue(undefined),
+    getNamespaceConfig: jest.fn().mockReturnValue({
+      allowedRoles: ['teacher', 'admin', 'super_admin', 'student'],
+      requireSchoolVerification: false,
+      requireSessionAccess: false,
+      maxConnectionsPerUser: 50,
+      rateLimitWindow: 60,
+      rateLimitMaxRequests: 100,
+    }),
+  },
+}));
+
+jest.mock('../../../services/databricks.service', () => ({
+  databricksService: {
+    queryOne: jest.fn().mockResolvedValue({ id: 'session', teacher_id: 't-1', school_id: 'school-1' }),
+    query: jest.fn().mockResolvedValue([]),
+  },
+}));
+
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: {
+    enqueue: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
 describe('WS: stall detector emits audio:ingress:stalled after overdue', () => {
   let server: http.Server
   let port: number
   let socket: ClientSocket
+  let setImmediateSpy: jest.SpyInstance<any, any>
 
   const sessionId = 'sess-stall-1'
   const groupId = 'g-stall-1'
@@ -16,6 +46,10 @@ describe('WS: stall detector emits audio:ingress:stalled after overdue', () => {
   const token = generateAccessToken(teacher, school, sessionId)
 
   beforeAll(async () => {
+    setImmediateSpy = jest.spyOn(global, 'setImmediate').mockImplementation(((cb: (...args: any[]) => void, ...args: any[]) => {
+      cb(...args)
+      return 0 as any
+    }) as any)
     process.env.NODE_ENV = 'test'
     process.env.JWT_SECRET = 'classwaves-test-secret'
     process.env.API_DEBUG = '1'
@@ -29,12 +63,18 @@ describe('WS: stall detector emits audio:ingress:stalled after overdue', () => {
   })
 
   afterAll(async () => {
-    try { await closeNamespacedWebSocket() } catch {}
+    try { await closeNamespacedWebSocket() } catch { /* intentionally ignored: best effort cleanup */ }
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>(resolve => server.close(() => resolve()))
+    setImmediateSpy.mockRestore()
   })
 
   afterEach(() => {
-    try { socket?.disconnect() } catch {}
+    try { socket?.disconnect() } catch { /* intentionally ignored: best effort cleanup */ }
+  })
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
   })
 
   it('emits audio:ingress:stalled when no ingest observed for > 2× cadence', async () => {
@@ -76,6 +116,6 @@ describe('WS: stall detector emits audio:ingress:stalled after overdue', () => {
         clearInterval(svc.stallCheckTimer)
         svc.stallCheckTimer = null
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   })
 })

@@ -14,6 +14,7 @@
 
 import { databricksService } from './databricks.service';
 import { TeacherPrompt } from '../types/teacher-guidance.types';
+import { logger } from '../utils/logger';
 
 // Validation moved to edges. Define types for clarity.
 type AlertContext = {
@@ -96,7 +97,7 @@ export class AlertPrioritizationService {
     // Start cleanup process for expired alerts
     this.startCleanupProcess();
     
-    console.log('🚨 Alert Prioritization Service initialized', {
+    logger.debug('🚨 Alert Prioritization Service initialized', {
       maxAlertsPerMinute: this.config.maxAlertsPerMinute,
       batchIntervalMs: this.config.batchIntervalMs,
       adaptiveLearning: this.config.learningEnabled
@@ -157,7 +158,7 @@ export class AlertPrioritizationService {
       });
 
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Alert prioritized: ${alert.id} (score: ${priorityScore.toFixed(3)}, group: ${alert.batchGroup}) in ${processingTime}ms`);
+      logger.debug(`✅ Alert prioritized: ${alert.id} (score: ${priorityScore.toFixed(3)}, group: ${alert.batchGroup}) in ${processingTime}ms`);
 
       return {
         alertId: alert.id,
@@ -167,7 +168,7 @@ export class AlertPrioritizationService {
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Alert prioritization failed:`, error);
+      logger.error(`❌ Alert prioritization failed:`, error);
       
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -228,10 +229,10 @@ export class AlertPrioritizationService {
         feedbackRating: feedback?.rating
       });
 
-      console.log(`📊 Alert response recorded: ${alertId} -> ${responseType} (${responseTimeMs}ms)`);
+      logger.debug(`📊 Alert response recorded: ${alertId} -> ${responseType} (${responseTimeMs}ms)`);
 
     } catch (error) {
-      console.error(`❌ Failed to record alert response:`, error);
+      logger.error(`❌ Failed to record alert response:`, error);
       throw error;
     }
   }
@@ -574,10 +575,10 @@ export class AlertPrioritizationService {
         // Set up delivery confirmation timeout
         this.setupDeliveryConfirmation(alert, deliveryId);
         
-        console.log(`🚨 Immediate alert delivered: ${alert.id} (delivery: ${deliveryId})`);
+        logger.debug(`🚨 Immediate alert delivered: ${alert.id} (delivery: ${deliveryId})`);
       }
     } catch (error) {
-      console.error(`❌ Failed to deliver immediate alert ${alert.id}:`, error);
+      logger.error(`❌ Failed to deliver immediate alert ${alert.id}:`, error);
       alert.deliveryMetadata.currentRetries++;
       
       // Retry if under limit
@@ -681,10 +682,10 @@ export class AlertPrioritizationService {
           this.setupBatchDeliveryConfirmation(batch, deliveryId);
         }
         
-        console.log(`📦 Alert batch delivered: ${batch.id} (${batch.alerts.length} alerts, delivery: ${deliveryId})`);
+        logger.debug(`📦 Alert batch delivered: ${batch.id} (${batch.alerts.length} alerts, delivery: ${deliveryId})`);
       }
     } catch (error) {
-      console.error(`❌ Failed to deliver alert batch ${batch.id}:`, error);
+      logger.error(`❌ Failed to deliver alert batch ${batch.id}:`, error);
     }
   }
 
@@ -697,14 +698,14 @@ export class AlertPrioritizationService {
    */
   private setupDeliveryConfirmation(alert: PrioritizedAlert, deliveryId: string): void {
     const confirmationTimeout = setTimeout(async () => {
-      console.warn(`⚠️ Delivery confirmation timeout for alert ${alert.id} (delivery: ${deliveryId})`);
+      logger.warn(`⚠️ Delivery confirmation timeout for alert ${alert.id} (delivery: ${deliveryId})`);
       
       // Record delivery failure
       await this.recordDeliveryTimeout(alert, deliveryId);
       
       // Retry if possible
       if (alert.deliveryMetadata.currentRetries < alert.deliveryMetadata.maxRetries) {
-        console.log(`🔄 Retrying delivery for alert ${alert.id}`);
+        logger.debug(`🔄 Retrying delivery for alert ${alert.id}`);
         await this.deliverAlertImmediately(alert);
       }
     }, 30000); // 30 second timeout
@@ -718,7 +719,7 @@ export class AlertPrioritizationService {
    */
   private setupBatchDeliveryConfirmation(batch: AlertBatch, deliveryId: string): void {
     const confirmationTimeout = setTimeout(async () => {
-      console.warn(`⚠️ Batch delivery confirmation timeout for batch ${batch.id} (delivery: ${deliveryId})`);
+      logger.warn(`⚠️ Batch delivery confirmation timeout for batch ${batch.id} (delivery: ${deliveryId})`);
       
       // Record batch delivery failure
       await this.recordBatchDeliveryTimeout(batch, deliveryId);
@@ -746,10 +747,10 @@ export class AlertPrioritizationService {
       // Record successful delivery
       await this.recordSuccessfulDelivery(alertId, deliveryId, sessionId);
       
-      console.log(`✅ Alert delivery confirmed: ${alertId} (delivery: ${deliveryId})`);
+      logger.debug(`✅ Alert delivery confirmed: ${alertId} (delivery: ${deliveryId})`);
       
     } catch (error) {
-      console.error(`❌ Failed to confirm alert delivery:`, error);
+      logger.error(`❌ Failed to confirm alert delivery:`, error);
     }
   }
 
@@ -761,10 +762,10 @@ export class AlertPrioritizationService {
       // Record successful batch delivery
       await this.recordSuccessfulBatchDelivery(batchId, deliveryId, sessionId);
       
-      console.log(`✅ Batch delivery confirmed: ${batchId} (delivery: ${deliveryId})`);
+      logger.debug(`✅ Batch delivery confirmed: ${batchId} (delivery: ${deliveryId})`);
       
     } catch (error) {
-      console.error(`❌ Failed to confirm batch delivery:`, error);
+      logger.error(`❌ Failed to confirm batch delivery:`, error);
     }
   }
 
@@ -783,7 +784,7 @@ export class AlertPrioritizationService {
         maxRetries: alert.deliveryMetadata.maxRetries
       });
     } catch (error) {
-      console.warn('Failed to log delivery timeout:', error);
+      logger.warn('Failed to log delivery timeout:', error);
     }
   }
 
@@ -801,7 +802,7 @@ export class AlertPrioritizationService {
         batchSize: batch.alerts.length
       });
     } catch (error) {
-      console.warn('Failed to log batch delivery timeout:', error);
+      logger.warn('Failed to log batch delivery timeout:', error);
     }
   }
 
@@ -818,7 +819,7 @@ export class AlertPrioritizationService {
         deliveryId
       });
     } catch (error) {
-      console.warn('Failed to log successful delivery:', error);
+      logger.warn('Failed to log successful delivery:', error);
     }
   }
 
@@ -835,7 +836,7 @@ export class AlertPrioritizationService {
         deliveryId
       });
     } catch (error) {
-      console.warn('Failed to log successful batch delivery:', error);
+      logger.warn('Failed to log successful batch delivery:', error);
     }
   }
 
@@ -846,10 +847,10 @@ export class AlertPrioritizationService {
   private async loadTeacherProfiles(): Promise<void> {
     try {
       // Load from database - placeholder for now
-      console.log('📚 Loading teacher alert profiles...');
+      logger.debug('📚 Loading teacher alert profiles...');
       // Implementation will be added once database integration is complete
     } catch (error) {
-      console.warn('⚠️ Failed to load teacher profiles:', error);
+      logger.warn('⚠️ Failed to load teacher profiles:', error);
     }
   }
 
@@ -922,7 +923,7 @@ export class AlertPrioritizationService {
     if (process.env.NODE_ENV === 'test') return; // avoid timers in tests
     this.cleanupTimer = setInterval(() => {
       this.cleanupExpiredAlerts().catch(error => {
-        console.error('❌ Alert cleanup failed:', error);
+        logger.error('❌ Alert cleanup failed:', error);
       });
     }, 60000); // Every minute
     (this.cleanupTimer as any).unref?.();
@@ -943,7 +944,7 @@ export class AlertPrioritizationService {
     }
     
     if (cleanedCount > 0) {
-      console.log(`🧹 Cleaned up ${cleanedCount} expired alerts`);
+      logger.debug(`🧹 Cleaned up ${cleanedCount} expired alerts`);
     }
   }
 
@@ -982,7 +983,7 @@ export class AlertPrioritizationService {
         dataAccessed: data.error ? `error: ${data.error}` : 'alert_metadata'
       }).catch(() => {});
     } catch (error) {
-      console.warn('⚠️ Audit logging failed in alert prioritization service:', error);
+      logger.warn('⚠️ Audit logging failed in alert prioritization service:', error);
     }
   }
 }

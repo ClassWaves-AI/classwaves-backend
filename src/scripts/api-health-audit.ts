@@ -1,4 +1,5 @@
 #!/usr/bin/env ts-node
+import { logger } from '../utils/logger';
 
 // No direct service imports needed - we use the running API endpoints instead
 
@@ -49,12 +50,12 @@ class APIHealthAuditor {
     try {
       // Try to get token from environment variable first
       if (process.env.API_AUDIT_TOKEN) {
-        console.log('🔑 Using API_AUDIT_TOKEN from environment');
+        logger.debug('🔑 Using API_AUDIT_TOKEN from environment');
         return process.env.API_AUDIT_TOKEN;
       }
 
       // Try to get token from running system (if available)
-      console.log('🔑 Attempting to get valid auth token from running system...');
+      logger.debug('🔑 Attempting to get valid auth token from running system...');
       
       // Check if we can create a test user session
       const testAuthResponse = await fetch(`${this.baseUrl}/api/v1/auth/test-token`, {
@@ -69,17 +70,17 @@ class APIHealthAuditor {
       if (testAuthResponse.ok) {
         const authData = await testAuthResponse.json() as any;
         if (authData?.token) {
-          console.log('✅ Got valid test token from system');
+          logger.debug('✅ Got valid test token from system');
           return authData.token;
         }
       }
 
       // Fallback: try to use existing session if available
-      console.log('⚠️  No valid token available. Some endpoints will be skipped.');
+      logger.debug('⚠️  No valid token available. Some endpoints will be skipped.');
       return null;
 
     } catch (error) {
-      console.log('⚠️  Could not get auth token:', error instanceof Error ? error.message : String(error));
+      logger.debug('⚠️  Could not get auth token:', error instanceof Error ? error.message : String(error));
       return null;
     }
   }
@@ -297,7 +298,7 @@ class APIHealthAuditor {
   }
 
   async runAudit(): Promise<AuditReport> {
-    console.log('🔍 Starting comprehensive API health audit...\n');
+    logger.debug('🔍 Starting comprehensive API health audit...\n');
 
     // Get valid auth token first
     this.authToken = await this.getValidAuthToken();
@@ -306,14 +307,14 @@ class APIHealthAuditor {
     const results: TestResult[] = [];
     
     // Check system health first
-    console.log('🏥 Checking system health...');
+    logger.debug('🏥 Checking system health...');
     const systemHealth = await this.checkSystemHealth();
     
     // Test each endpoint
-    console.log(`\n🧪 Testing ${endpoints.length} endpoints...\n`);
+    logger.debug(`\n🧪 Testing ${endpoints.length} endpoints...\n`);
     
     for (const endpoint of endpoints) {
-      console.log(`Testing ${endpoint.method} ${endpoint.path}...`);
+      logger.debug(`Testing ${endpoint.method} ${endpoint.path}...`);
       
       if (endpoint.requiredAuth && !this.authToken) {
         const result: TestResult = {
@@ -325,7 +326,7 @@ class APIHealthAuditor {
           details: { reason: 'No auth token available' }
         };
         results.push(result);
-        console.log(`  ⏭️  Skipped (no auth)`);
+        logger.debug(`  ⏭️  Skipped (no auth)`);
         continue;
       }
 
@@ -333,10 +334,10 @@ class APIHealthAuditor {
       results.push(result);
       
       const statusIcon = result.status === 'passed' ? '✅' : result.status === 'failed' ? '❌' : '⏭️';
-      console.log(`  ${statusIcon} ${result.status} (${result.responseTime}ms)`);
+      logger.debug(`  ${statusIcon} ${result.status} (${result.responseTime}ms)`);
       
       if (result.status === 'failed') {
-        console.log(`    Error: ${result.error}`);
+        logger.debug(`    Error: ${result.error}`);
       }
     }
 
@@ -387,14 +388,14 @@ class APIHealthAuditor {
       systemHealth
     };
 
-    console.log('\n📊 Audit Results:');
-    console.log(`Overall Status: ${overallStatus.toUpperCase()}`);
-    console.log(`Success Rate: ${successRate.toFixed(1)}%`);
-    console.log(`Passed: ${passed}, Failed: ${failed}, Skipped: ${skipped}`);
+    logger.debug('\n📊 Audit Results:');
+    logger.debug(`Overall Status: ${overallStatus.toUpperCase()}`);
+    logger.debug(`Success Rate: ${successRate.toFixed(1)}%`);
+    logger.debug(`Passed: ${passed}, Failed: ${failed}, Skipped: ${skipped}`);
     
     if (recommendations.length > 0) {
-      console.log('\n💡 Recommendations:');
-      recommendations.forEach(rec => console.log(`  • ${rec}`));
+      logger.debug('\n💡 Recommendations:');
+      recommendations.forEach(rec => logger.debug(`  • ${rec}`));
     }
 
     return report;
@@ -454,11 +455,11 @@ if (require.main === module) {
   
   auditor.runAudit()
     .then(() => {
-      console.log('\n🎉 Audit completed!');
+      logger.debug('\n🎉 Audit completed!');
       process.exit(0);
     })
     .catch(error => {
-      console.error('\n💥 Audit failed:', error);
+      logger.error('\n💥 Audit failed:', error);
       process.exit(1);
     });
 }

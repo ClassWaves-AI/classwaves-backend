@@ -1,6 +1,4 @@
 import { Request, Response } from 'express';
-import { databricksService } from '../services/databricks.service';
-import { databricksConfig } from '../config/databricks.config';
 import { getCompositionRoot } from '../app/composition-root';
 import { 
   EmailRecipient, 
@@ -15,10 +13,9 @@ import {
 } from '@classwaves/shared';
 import { AuthRequest } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
-import { withTiming, observe } from '../utils/profile-metrics';
+import { observe } from '../utils/profile-metrics';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { 
-  buildSessionListQuery,
   buildSessionDetailQuery,
   logQueryOptimization
 } from '../utils/query-builder.utils';
@@ -31,6 +28,7 @@ import { RetryService } from '../services/retry.service';
 import { CacheTTLPolicy, ttlWithJitter } from '../services/cache-ttl.policy';
 import { cachePort } from '../utils/cache.port.instance';
 import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
+import { logger } from '../utils/logger';
 
 /**
  * Store session access code in Redis for student leader joining
@@ -57,9 +55,9 @@ async function storeSessionAccessCode(sessionId: string, accessCode: string): Pr
       await cachePort.set(legacyCodeToSession, sessionId, expiration);
     }
     
-    console.log(`✅ Stored access code ${accessCode} for session ${sessionId}`);
+    logger.debug(`✅ Stored access code ${accessCode} for session ${sessionId}`);
   } catch (error) {
-    console.error('❌ Failed to store session access code:', error);
+    logger.error('❌ Failed to store session access code:', error);
     throw error;
   }
 }
@@ -76,7 +74,7 @@ async function getSessionByAccessCode(accessCode: string): Promise<string | null
       : await cachePort.get(legacy);
     return sessionId;
   } catch (error) {
-    console.error('❌ Failed to retrieve session by access code:', error);
+    logger.error('❌ Failed to retrieve session by access code:', error);
     return null;
   }
 }
@@ -93,7 +91,7 @@ async function getAccessCodeBySession(sessionId: string): Promise<string | null>
       : await cachePort.get(legacy);
     return accessCode;
   } catch (error) {
-    console.error('❌ Failed to retrieve access code by session:', error);
+    logger.error('❌ Failed to retrieve access code by session:', error);
     return null;
   }
 }
@@ -108,7 +106,7 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
-    console.log('🔍 listSessions called with teacher:', teacher.id, 'email:', teacher.email);
+    logger.debug('🔍 listSessions called with teacher:', teacher.id, 'email:', teacher.email);
     
     // Get query parameters
     const page = parseInt(req.query.page as string) || 1;
@@ -124,14 +122,14 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     const statusFilter = status ? `:status:${status}` : '';
     const viewKey = view ? `:view:${view}` : ':view:default';
     const cacheKey = `sessions:teacher:${teacher.id}${viewKey}:limit:${limit}${statusFilter}:sort:${sort}:page:${page}`;
-    console.log('📦 Cache key (query-cache):', cacheKey);
+    logger.debug('📦 Cache key (query-cache):', cacheKey);
 
     // Use query cache (epoch-aware, coalescing, refresh-ahead)
     const sessions = await queryCacheService.getCachedQuery(
       cacheKey,
       'session-list',
       async () => {
-        console.log('🔍 Cache MISS - fetching from database');
+        logger.debug('🔍 Cache MISS - fetching from database');
         
         // Get raw session data (route by view)
         const dbStart = Date.now();
@@ -140,9 +138,9 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
           : await getTeacherSessionsOptimized(teacher.id, limit);
         observe('sessions_list', 'db', Date.now() - dbStart);
         
-        console.log('🔍 Raw sessions returned:', rawSessions?.length || 0);
+        logger.debug('🔍 Raw sessions returned:', rawSessions?.length || 0);
         if (rawSessions && rawSessions.length > 0) {
-          console.log('🔍 First session group_count:', rawSessions[0].group_count);
+          logger.debug('🔍 First session group_count:', rawSessions[0].group_count);
         }
 
         // Map DB rows to frontend contract
@@ -198,15 +196,21 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
     if (process.env.PERF_TUNING_LOGS === '1') {
       try {
         const m = (queryCacheService.getCacheMetrics() as any)['session-list'];
-        if (m) console.log('CACHE-HIT-RATIO session-list', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
-      } catch {}
+        if (m) {
+          logger.debug('CACHE-HIT-RATIO session-list', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
+        }
+      } catch (error) {
+        logger.debug('Unable to compute session-list cache hit ratio', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return res.json({
       success: true,
       data: sessions,
     });
   } catch (error) {
-    console.error('Error listing sessions:', error);
+    logger.error('Error listing sessions:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -223,15 +227,18 @@ export async function listSessions(req: Request, res: Response): Promise<Respons
  */
 export async function joinSession(req: Request, res: Response): Promise<Response> {
   try {
-    const { sessionCode, studentName, displayName, avatar, dateOfBirth, email } = (req.body || {}) as any;
+    const { sessionCode, studentName, displayName, dateOfBirth, email } = (req.body || {}) as any;
     if (!sessionCode || !(studentName || displayName)) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Missing required fields' });
     }
 
     // Prefer Redis mapping (created at session creation time) for fast lookup
     let session: any = null;
+    const composition = getCompositionRoot();
+    const sessionRepo = composition.getSessionRepository();
+    const dbPort = composition.getDbPort();
+    const groupRepo = composition.getGroupRepository();
     const cachedSessionId = await getSessionByAccessCode(sessionCode);
-    const sessionRepo = getCompositionRoot().getSessionRepository();
     if (cachedSessionId) {
       session = await sessionRepo.getBasic(cachedSessionId);
     }
@@ -262,7 +269,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       }
     }
 
-    const studentId = (databricksService as any).generateId?.() ?? `stu_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const studentId = dbPort.generateId();
     let safeDisplayName = String(displayName || studentName).replace(/[<>"/\\]/g, '');
     let rosterEmail = email;
 
@@ -271,7 +278,6 @@ export async function joinSession(req: Request, res: Response): Promise<Response
     // Match by email first (most reliable), fall back to display name
     let groupLeaderAssignment;
     
-    const groupRepo = getCompositionRoot().getGroupRepository();
     if (email && email.trim()) {
       groupLeaderAssignment = await groupRepo.findLeaderAssignmentByEmail(session.id, email.trim());
     } else {
@@ -295,11 +301,11 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       // Use the roster display name and email since we found them
       safeDisplayName = assignment.leader_name;
       rosterEmail = assignment.leader_email;
-      console.log(`✅ Group leader found: ${assignment.leader_name} (${assignment.leader_email}) leading "${assignment.group_name}"`);
+      logger.debug(`✅ Group leader found: ${assignment.leader_name} (${assignment.leader_email}) leading "${assignment.group_name}"`);
     } else {
       // Student not found as a group leader for this session
       const identifier = email ? `email: ${email}` : `name: ${safeDisplayName}`;
-      console.warn(`Student (${identifier}) not found as group leader for session ${session.id}`);
+      logger.warn(`Student (${identifier}) not found as group leader for session ${session.id}`);
       
       // For now, allow them to join without a group assignment
       // Teacher can manually assign them in the frontend
@@ -364,7 +370,7 @@ export async function joinSession(req: Request, res: Response): Promise<Response
       } : null
     });
   } catch (error) {
-    console.error('Error joining session:', error);
+    logger.error('Error joining session:', error);
     return res.status(500).json({ error: 'JOIN_FAILED', message: 'Failed to join session' });
   }
 }
@@ -407,7 +413,7 @@ export async function getSessionParticipants(req: Request, res: Response): Promi
       groups,
     });
   } catch (error) {
-    console.error('Error listing participants:', error);
+    logger.error('Error listing participants:', error);
     return res.status(500).json({ error: 'PARTICIPANTS_FETCH_FAILED', message: 'Failed to fetch participants' });
   }
 }
@@ -439,7 +445,7 @@ export async function getSessionAnalytics(req: Request, res: Response): Promise<
       },
     });
   } catch (error) {
-    console.error('Error getting session analytics:', error);
+    logger.error('Error getting session analytics:', error);
     return res.status(500).json({ error: 'ANALYTICS_FETCH_FAILED', message: 'Failed to fetch session analytics' });
   }
 }
@@ -455,7 +461,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     const school = authReq.school!;
     
     // Validate new payload structure per SOW
-    const payload: CreateSessionWithEmailRequest = req.body;
+    const payload = req.body as CreateSessionWithEmailRequest;
     const {
       topic,
       goal,
@@ -463,8 +469,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       description,
       plannedDuration,
       scheduledStart,
-      groupPlan,
-      aiConfig = { hidden: true, defaultsApplied: true }
+      groupPlan
     } = payload;
 
     // Validate required fields
@@ -504,11 +509,16 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       
       // Members are optional - group leaders can participate without additional members
       // This allows for single-person groups led by the group leader
-      console.log(`✅ Group "${group.name}" validated with leader ${group.leaderId} and ${group.memberIds?.length || 0} members`);
+      logger.debug(`✅ Group "${group.name}" validated with leader ${group.leaderId} and ${group.memberIds?.length || 0} members`);
     }
 
+    const composition = getCompositionRoot();
+    const sessionRepository = composition.getSessionRepository();
+    const groupRepository = composition.getGroupRepository();
+    const dbPort = composition.getDbPort();
+
     // Generate session ID and access code
-    const sessionId = (databricksService as any).generateId?.() ?? `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const sessionId = dbPort.generateId();
     const accessCode = Math.random().toString(36).slice(2, 8).toUpperCase();
 
     // Create session + groups + members sequentially with error handling
@@ -518,7 +528,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     try {
       // 1. Create main session record
       // Insert session with required columns
-      await getCompositionRoot().getSessionRepository().insertSession({
+      await sessionRepository.insertSession({
         id: sessionId,
         title: topic,
         description: description || undefined,
@@ -551,9 +561,9 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       // 2. Create group records with leader assignments
       for (let i = 0; i < groupPlan.groups.length; i++) {
         const group = groupPlan.groups[i];
-        const groupId = (databricksService as any).generateId?.() ?? `grp_${sessionId}_${i}`;
+        const groupId = dbPort.generateId();
         
-        await getCompositionRoot().getGroupRepository().insertGroup({
+        await groupRepository.insertGroup({
           id: groupId,
           session_id: sessionId,
           name: group.name,
@@ -578,7 +588,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         for (const studentId of allMemberIds) {
           // Deterministic ID to avoid exhausting generateId sequence in tests
           const memberId = `mem_${groupId}_${studentId}`;
-          await getCompositionRoot().getGroupRepository().insertGroupMember({
+          await groupRepository.insertGroupMember({
             id: memberId,
             session_id: sessionId,
             group_id: groupId,
@@ -601,7 +611,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       const errorMessage = createError instanceof Error ? createError.message : String(createError);
       const errorStack = createError instanceof Error ? createError.stack : undefined;
       
-      console.error('❌ DETAILED SESSION CREATION ERROR:', {
+      logger.error('❌ DETAILED SESSION CREATION ERROR:', {
         error: createError,
         message: errorMessage,
         stack: errorStack,
@@ -619,8 +629,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       });
       
       // Log the original error without wrapping for debugging
-      console.error('❌ RAW ERROR OBJECT:', createError);
-      console.error('❌ DATABASE INSERT DETAILS:', {
+      logger.error('❌ RAW ERROR OBJECT:', createError);
+      logger.error('❌ DATABASE INSERT DETAILS:', {
         operation: 'classroom_sessions insert',
         sessionData: {
           id: sessionId,
@@ -666,7 +676,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     
     if (payload.emailNotifications?.enabled) {
       try {
-        console.log('📧 Sending email notifications to group leaders...');
+        logger.debug('📧 Sending email notifications to group leaders...');
         emailResults = await triggerSessionEmailNotifications(
           sessionId,
           {
@@ -681,7 +691,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           },
           groupPlan
         );
-        console.log(`📊 Email notifications completed: ${emailResults.sent.length} sent, ${emailResults.failed.length} failed`);
+        logger.debug(`📊 Email notifications completed: ${emailResults.sent.length} sent, ${emailResults.failed.length} failed`);
 
         // Compliance audit: batch-level email send event (no PII)
         try {
@@ -700,10 +710,10 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             dataAccessed: JSON.stringify({ sent: emailResults.sent.length, failed: emailResults.failed.length })
           }).catch(() => {});
         } catch (auditErr) {
-          console.warn('⚠️ Failed to record compliance audit for session_email_sent (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
+          logger.warn('⚠️ Failed to record compliance audit for session_email_sent (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
         }
       } catch (emailError) {
-        console.error('❌ Email notification failed, but session was created successfully:', emailError);
+        logger.error('❌ Email notification failed, but session was created successfully:', emailError);
         // Compliance audit: failed batch send
         try {
           const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -720,12 +730,12 @@ export async function createSession(req: Request, res: Response): Promise<Respon
             complianceBasis: 'ferpa',
           }).catch(() => {});
         } catch (auditErr) {
-          console.warn('⚠️ Failed to record compliance audit for session_email_failed (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
+          logger.warn('⚠️ Failed to record compliance audit for session_email_failed (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
         }
         // Don't fail session creation if emails fail
       }
     } else {
-      console.info('📭 Email notifications disabled by request payload; skipping group leader emails.');
+      logger.info('📭 Email notifications disabled by request payload; skipping group leader emails.');
     }
 
     // 8. Build session for response (bypass DB fetch in tests)
@@ -760,7 +770,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     if (process.env.NODE_ENV !== 'test') {
       await cacheEventBus.sessionCreated(sessionId, teacher.id, school.id);
     }
-    console.log('🔄 Session created event emitted for cache management');
+    logger.debug('🔄 Session created event emitted for cache management');
 
     // Write-through: upsert FULL session-detail cache for the creator to avoid incomplete cache entries
     try {
@@ -771,7 +781,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         await queryCacheService.upsertCachedQuery('session-detail', cacheKey, fullRow, { sessionId, teacherId: teacher.id });
       }
     } catch (e) {
-      console.warn('⚠️ Write-through session-detail cache upsert failed after createSession:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Write-through session-detail cache upsert failed after createSession:', e instanceof Error ? e.message : String(e));
     }
 
     return res.status(201).json({
@@ -787,7 +797,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
       },
     });
   } catch (error) {
-    console.error('❌ Error creating session:', error);
+    logger.error('❌ Error creating session:', error);
     const responsePayload: any = {
       success: false,
       error: {
@@ -818,14 +828,14 @@ async function triggerSessionEmailNotifications(
     const recipients = await buildEmailRecipientList(sessionId, groupPlan);
     
     if (recipients.length === 0) {
-      console.warn('⚠️ No group leaders with email addresses found for session', sessionId);
+      logger.warn('⚠️ No group leaders with email addresses found for session', sessionId);
       return { sent: [], failed: [] };
     }
 
     // Send notifications via email service
     return await getCompositionRoot().getEmailPort().sendSessionInvitation(recipients, sessionData);
   } catch (error) {
-    console.error('Failed to send session email notifications:', error);
+    logger.error('Failed to send session email notifications:', error);
     throw error;
   }
 }
@@ -842,7 +852,7 @@ async function buildEmailRecipientList(
   for (const group of groupPlan.groups) {
     // Only process groups that have a designated leader
     if (!group.leaderId) {
-      console.warn(`⚠️ Group ${group.name} has no leader assigned, skipping email notification`);
+      logger.warn(`⚠️ Group ${group.name} has no leader assigned, skipping email notification`);
       continue;
     }
 
@@ -860,7 +870,7 @@ async function buildEmailRecipientList(
         groupName: group.name,
       });
     } else {
-      console.warn(`⚠️ Group leader ${group.leaderId} not found or has no email, skipping notification`);
+      logger.warn(`⚠️ Group leader ${group.leaderId} not found or has no email, skipping notification`);
     }
   }
 
@@ -895,7 +905,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         groupId,
         { leader_id: newLeaderId, updated_at: new Date() }
       );
-      console.log(`👑 Updated group leader for group ${groupId} to ${newLeaderId}`);
+      logger.debug(`👑 Updated group leader for group ${groupId} to ${newLeaderId}`);
     }
     
     // Prepare session data for email
@@ -936,7 +946,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         dataAccessed: JSON.stringify({ sent: results.sent.length, failed: results.failed.length })
       }).catch(() => {});
     } catch (auditErr) {
-      console.warn('⚠️ Failed to record compliance audit for resend (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
+      logger.warn('⚠️ Failed to record compliance audit for resend (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
     }
     
     return res.json({
@@ -949,7 +959,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
       },
     });
   } catch (error) {
-    console.error('Failed to resend session email:', error);
+    logger.error('Failed to resend session email:', error);
     // Compliance audit: failed resend
     try {
       const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -966,7 +976,7 @@ export async function resendSessionEmail(req: Request, res: Response): Promise<R
         complianceBasis: 'ferpa',
       }).catch(() => {});
     } catch (auditErr) {
-      console.warn('⚠️ Failed to record compliance audit for resend failure (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
+      logger.warn('⚠️ Failed to record compliance audit for resend failure (non-blocking):', auditErr instanceof Error ? auditErr.message : String(auditErr));
     }
     return res.status(500).json({
       success: false,
@@ -1007,9 +1017,11 @@ export async function consentCheck(req: Request, res: Response): Promise<Respons
     }
 
     // Look up student by email within the same school
-    const student = await databricksService.queryOne<any>(
+    const composition = getCompositionRoot();
+    const dbPort = composition.getDbPort();
+    const student = await dbPort.queryOne<{ id: string; email_consent: boolean; has_parental_consent: boolean; coppa_compliant: boolean; teacher_verified_age: boolean }>(
       `SELECT id, email_consent, has_parental_consent, coppa_compliant, teacher_verified_age 
-       FROM ${databricksConfig.catalog}.users.students 
+       FROM classwaves.users.students 
        WHERE lower(email) = lower(?) AND school_id = ?
        LIMIT 1`,
       [email, session.school_id]
@@ -1031,7 +1043,7 @@ export async function consentCheck(req: Request, res: Response): Promise<Respons
       }
     });
   } catch (error) {
-    console.error('Consent check failed:', error);
+    logger.error('Consent check failed:', error);
     return res.status(500).json({ success: false, error: { code: 'CONSENT_CHECK_FAILED', message: error instanceof Error ? error.message : String(error) } });
   }
 }
@@ -1048,8 +1060,6 @@ async function validateSessionOwnership(sessionId: string, teacherId: string): P
  * Helper: Record session configured analytics event
  */
 async function recordSessionConfigured(sessionId: string, teacherId: string, groupPlan: any): Promise<void> {
-  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
-  
   try {
     const configuredAt = new Date();
     
@@ -1082,7 +1092,7 @@ async function recordSessionConfigured(sessionId: string, teacherId: string, gro
       }
     );
   } catch (error) {
-    console.error('Failed to record session configured analytics:', error);
+    logger.error('Failed to record session configured analytics:', error);
     // Don't throw - analytics failure shouldn't block session creation
   }
 }
@@ -1096,8 +1106,6 @@ async function recordSessionStarted(
   readyGroupsAtStart: number, 
   startedWithoutReadyGroups: boolean
 ): Promise<void> {
-  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
-  
   try {
     const startedAt = new Date();
     
@@ -1123,7 +1131,7 @@ async function recordSessionStarted(
       }
     );
   } catch (error) {
-    console.error('Failed to record session started analytics:', error);
+    logger.error('Failed to record session started analytics:', error);
     // Don't throw - analytics failure shouldn't block session start
   }
 }
@@ -1136,7 +1144,7 @@ export async function getTeacherSessionsOptimized(teacherId: string, limit: numb
   // Delegate to repository for minimal list projection
   const sessionRepo = getCompositionRoot().getSessionRepository();
   const result = await sessionRepo.listOwnedSessionsForList(teacherId, limit);
-  console.log('🔍 DEBUG: listOwnedSessionsForList result count:', result?.length || 0);
+  logger.debug('🔍 DEBUG: listOwnedSessionsForList result count:', result?.length || 0);
   return result;
 }
 
@@ -1146,7 +1154,7 @@ export async function getTeacherSessionsOptimized(teacherId: string, limit: numb
 export async function getTeacherSessionsForDashboard(teacherId: string, limit: number = 3): Promise<any[]> {
   const sessionRepo = getCompositionRoot().getSessionRepository();
   const result = await sessionRepo.listOwnedSessionsForDashboard(teacherId, Math.min(limit, 3));
-  console.log('🔍 DEBUG: listOwnedSessionsForDashboard result count:', result?.length || 0);
+  logger.debug('🔍 DEBUG: listOwnedSessionsForDashboard result count:', result?.length || 0);
   return result;
 }
 
@@ -1239,7 +1247,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
   };
 }
 
-function buildSessionFromRow(session: any, sessionId: string): Session {
+function buildSessionFromRow(session: any, _sessionId: string): Session {
   // Minimal mapping used only in tests when bypassing cache
   return {
     id: session.id,
@@ -1299,7 +1307,7 @@ export async function getSession(req: Request, res: Response): Promise<Response>
       }).catch(() => {});
     } catch (e) {
       // Do not block response on audit failure
-      console.warn('Audit log failed in getSession:', e);
+      logger.warn('Audit log failed in getSession:', e);
     }
     
     // Use helper to get complete session with groups
@@ -1322,7 +1330,7 @@ export async function getSession(req: Request, res: Response): Promise<Response>
       });
     }
     
-    console.error('Error getting session:', error);
+    logger.error('Error getting session:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -1343,7 +1351,7 @@ export async function getDashboardMetrics(req: Request, res: Response): Promise<
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     
-    console.log('📊 Getting dashboard metrics for teacher:', teacher.id);
+    logger.debug('📊 Getting dashboard metrics for teacher:', teacher.id);
     
     const cacheKey = `dashboard:teacher:${teacher.id}`;
     const data = await queryCacheService.getCachedQuery(
@@ -1367,13 +1375,19 @@ export async function getDashboardMetrics(req: Request, res: Response): Promise<
     if (process.env.PERF_TUNING_LOGS === '1') {
       try {
         const m = (queryCacheService.getCacheMetrics() as any)['dashboard-metrics'];
-        if (m) console.log('CACHE-HIT-RATIO dashboard-metrics', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
-      } catch {}
+        if (m) {
+          logger.debug('CACHE-HIT-RATIO dashboard-metrics', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
+        }
+      } catch (error) {
+        logger.debug('Unable to compute dashboard cache hit ratio', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return res.json({ success: true, data });
     
   } catch (error) {
-    console.error('Error getting dashboard metrics:', error);
+    logger.error('Error getting dashboard metrics:', error);
     return res.status(500).json({
       success: false,
       error: { code: 'DASHBOARD_METRICS_FAILED', message: 'Failed to get dashboard metrics' },
@@ -1418,7 +1432,7 @@ export async function getCacheHealth(req: Request, res: Response): Promise<Respo
       },
     });
   } catch (error) {
-    console.error('Error getting cache health:', error);
+    logger.error('Error getting cache health:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -1515,12 +1529,14 @@ export async function getGroupsStatus(req: Request, res: Response): Promise<Resp
     if (process.env.PERF_TUNING_LOGS === '1') {
       try {
         const m = (queryCacheService.getCacheMetrics() as any)['group-status'];
-        if (m) console.log('CACHE-HIT-RATIO group-status', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
-      } catch {}
+        if (m) logger.debug('CACHE-HIT-RATIO group-status', `${m.hitRate.toFixed(1)}%`, 'hits', m.hits, 'misses', m.misses);
+      } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
     }
     return res.json({ success: true, data: payload });
   } catch (error) {
-    console.error('Error fetching groups status:', error);
+    logger.error('Error fetching groups status:', error);
     return res.status(500).json({ success: false, error: { code: 'GROUPS_STATUS_FETCH_FAILED', message: 'Failed to fetch groups status' } });
   }
 }
@@ -1532,7 +1548,7 @@ export async function getGroupsStatus(req: Request, res: Response): Promise<Resp
 export async function startSession(req: Request, res: Response): Promise<Response> {
   const startTime = Date.now();
   try {
-    console.log('🔧 DEBUG: startSession endpoint called for session:', req.params.sessionId);
+    logger.debug('🔧 DEBUG: startSession endpoint called for session:', req.params.sessionId);
     const authReq = req as AuthRequest;
     const teacher = authReq.user!;
     const sessionId = req.params.sessionId;
@@ -1617,12 +1633,12 @@ export async function startSession(req: Request, res: Response): Promise<Respons
           } catch (metricError) {
             // Metrics failures are non-blocking
             if (process.env.API_DEBUG === '1') {
-              console.warn('Metrics counter increment failed:', metricError);
+              logger.warn('Metrics counter increment failed:', metricError);
             }
           }
         }
       } catch (metricsError) {
-        console.warn('⚠️ Session gating metrics recording failed (non-critical):', metricsError);
+        logger.warn('⚠️ Session gating metrics recording failed (non-critical):', metricsError);
       }
 
       // SG-BE-03: Return 409 GROUPS_NOT_READY with detailed response
@@ -1651,9 +1667,9 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       // Invalidate all session-detail cache entries for this session
       const cachePattern = `session-detail:*${sessionId}*`;
       await queryCacheService.invalidateCache(cachePattern);
-      console.log('✅ Session cache invalidated for fresh data:', cachePattern);
+      logger.debug('✅ Session cache invalidated for fresh data:', cachePattern);
     } catch (cacheError) {
-      console.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
+      logger.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
       // Continue without cache invalidation - database update is the source of truth
     }
     
@@ -1683,17 +1699,17 @@ export async function startSession(req: Request, res: Response): Promise<Respons
             }
           }
         );
-        console.log('✅ WebSocket broadcast successful for session start:', sessionId);
+        logger.debug('✅ WebSocket broadcast successful for session start:', sessionId);
       } catch (wsError) {
         // WebSocket failure should not prevent session start - graceful degradation
-        console.warn('⚠️ WebSocket broadcast failed during session start (non-critical):', {
+        logger.warn('⚠️ WebSocket broadcast failed during session start (non-critical):', {
           sessionId,
           error: wsError instanceof Error ? wsError.message : 'Unknown WebSocket error',
           degradation: 'Session started successfully, real-time updates may be delayed'
         });
       }
     } else {
-      console.warn('⚠️ WebSocket service not available during session start (non-critical):', {
+      logger.warn('⚠️ WebSocket service not available during session start (non-critical):', {
         sessionId,
         degradation: 'Session started successfully, real-time updates unavailable'
       });
@@ -1705,10 +1721,10 @@ export async function startSession(req: Request, res: Response): Promise<Respons
         () => recordSessionStarted(sessionId, teacher.id, readyGroupsAtStart, startedWithoutReadyGroups),
         'record-session-started-analytics'
       );
-      console.log('✅ Analytics recording successful for session start:', sessionId);
+      logger.debug('✅ Analytics recording successful for session start:', sessionId);
     } catch (analyticsError) {
       // Analytics failure should not prevent session start - graceful degradation
-      console.warn('⚠️ Analytics recording failed during session start (non-critical):', {
+      logger.warn('⚠️ Analytics recording failed during session start (non-critical):', {
         sessionId,
         error: analyticsError instanceof Error ? analyticsError.message : 'Unknown analytics error',
         degradation: 'Session started successfully, analytics may be incomplete'
@@ -1731,7 +1747,12 @@ export async function startSession(req: Request, res: Response): Promise<Respons
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
-      }).catch(() => {});
+      }).catch((error: unknown) => {
+        logger.warn('Session start audit log enqueue failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
     
     // Get complete session for response - with retry and timeout
@@ -1741,8 +1762,12 @@ export async function startSession(req: Request, res: Response): Promise<Respons
         () => getSessionWithGroups(sessionId, teacher.id),
         'get-session-with-groups-for-response'
       );
-    } catch (e) {
+    } catch (error) {
       // Fallback to minimal session payload using known fields
+      logger.warn('Falling back to minimal session payload after start', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       fullSession = {
         id: session.id,
         teacher_id: teacher.id,
@@ -1772,7 +1797,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     (fullSession as any).status = 'active';
     
     const totalDuration = Date.now() - startTime;
-    console.log('✅ Session started successfully with resilience hardening:', {
+    logger.debug('✅ Session started successfully with resilience hardening:', {
       sessionId,
       teacherId: teacher.id,
       totalDuration: `${totalDuration}ms`,
@@ -1785,15 +1810,17 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
       getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'active' });
     } catch (e) {
-      console.warn('⚠️ Failed to emit session:status_changed (non-blocking):', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Failed to emit session:status_changed (non-blocking):', e instanceof Error ? e.message : String(e));
     }
     if (process.env.NODE_ENV !== 'test') {
       await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, 'created', 'active');
     }
-    console.log('🔄 Session status change event emitted: created → active');
+    logger.debug('🔄 Session status change event emitted: created → active');
 
     // WS gating status in Redis
-    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'active', 24 * 3600); } catch {}
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'active', 24 * 3600); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
 
     return res.json({
       success: true,
@@ -1805,7 +1832,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     });
   } catch (error) {
     const totalDuration = Date.now() - startTime;
-    console.error('❌ Session start failed with retry exhaustion:', {
+    logger.error('❌ Session start failed with retry exhaustion:', {
       sessionId: req.params.sessionId,
       teacherId: (req as AuthRequest).user?.id,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -1873,10 +1900,16 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       // Coordinated shutdown signal to clients to stop capture
       try {
         nsSessions?.emitToSession(sessionId, 'audio:capture:stop', { sessionId, reason: 'session_ending' });
-      } catch {}
-    } catch {}
+      } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
+    } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
     // Set ending flag for gating
-    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ending', 3600); } catch {}
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ending', 3600); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
 
     // Update session status with duration tracking
     const actualEnd = new Date();
@@ -1893,16 +1926,18 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     try {
       await redisService.set(`ws:session:ending:${sessionId}`, '1', 120);
     } catch (e) {
-      console.warn('Failed to set session ending flag (non-blocking):', e instanceof Error ? e.message : String(e));
+      logger.warn('Failed to set session ending flag (non-blocking):', e instanceof Error ? e.message : String(e));
     }
     
     // Emit session status change event for intelligent cache invalidation (skip in unit tests)
     if (process.env.NODE_ENV !== 'test') {
       await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, session.status, 'ended');
     }
-    console.log('🔄 Session status change event emitted:', session.status, '→ ended');
+    logger.debug('🔄 Session status change event emitted:', session.status, '→ ended');
     // Persist ended status for gating (short TTL)
-    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ended', 24 * 3600); } catch {}
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'ended', 24 * 3600); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
     
     // Record audit log (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -1937,7 +1972,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         }
       );
     } catch (error) {
-      console.error('Failed to log session ended event:', error);
+      logger.error('Failed to log session ended event:', error);
       // Don't block session ending
     }
 
@@ -1953,9 +1988,11 @@ export async function endSession(req: Request, res: Response): Promise<Response>
           traceId: (res.locals as any)?.traceId || (req as any)?.traceId
         });
         // Ensure any active flush schedulers are stopped on session end
-        try { ns?.stopFlushSchedulersForSession(sessionId); } catch {}
+        try { ns?.stopFlushSchedulersForSession(sessionId); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
       } catch (e) {
-        console.warn('Failed to emit namespaced session end (non-blocking):', e instanceof Error ? e.message : String(e));
+        logger.warn('Failed to emit namespaced session end (non-blocking):', e instanceof Error ? e.message : String(e));
       }
 
       // Legacy emission removed (namespaced is canonical)
@@ -1972,7 +2009,9 @@ export async function endSession(req: Request, res: Response): Promise<Response>
             for (const gid of ids) {
               ns?.emitToGroup(gid, 'audio:capture:stop', { sessionId, reason: 'session_ending' });
             }
-          } catch {}
+          } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
           // Best-effort drain of pending audio windows
           try {
             const { inMemoryAudioProcessor } = await import('../services/audio/InMemoryAudioProcessor');
@@ -1982,15 +2021,19 @@ export async function endSession(req: Request, res: Response): Promise<Response>
               drainPromise,
               new Promise((resolve) => setTimeout(resolve, drainTimeout))
             ]);
-          } catch {}
+          } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
           // Reset transcript overlap merge state for all groups in this session
           try {
             const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
             getNamespacedWebSocketService()?.getSessionsService().resetTranscriptMergeStateForGroups(ids);
-          } catch {}
+          } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
         }
       } catch (e) {
-        console.warn('Audio drain before analytics failed (non-blocking):', e instanceof Error ? e.message : String(e));
+        logger.warn('Audio drain before analytics failed (non-blocking):', e instanceof Error ? e.message : String(e));
       }
 
       // Trigger robust analytics computation with circuit breaker protection and duplicate prevention
@@ -2000,16 +2043,15 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         try {
           const { analyticsComputationService } = await import('../services/analytics-computation.service');
 
-          console.log(`🎯 Starting protected analytics computation for ended session ${sessionId}`);
+          logger.debug(`🎯 Starting protected analytics computation for ended session ${sessionId}`);
           const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
 
           if (computedAnalytics) {
-            // @ts-ignore - dynamic import typing
             await analyticsComputationService.emitAnalyticsFinalized(sessionId);
             const duration = Date.now() - startTime;
-            console.log(`🎉 Protected analytics computation completed in ${duration}ms for session ${sessionId}`);
+            logger.debug(`🎉 Protected analytics computation completed in ${duration}ms for session ${sessionId}`);
           } else {
-            console.warn(`⚠️ Protected analytics computation returned null for session ${sessionId}`);
+            logger.warn(`⚠️ Protected analytics computation returned null for session ${sessionId}`);
             const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
             getNamespacedWebSocketService()?.getSessionsService().emitToSession(sessionId, 'analytics:failed', {
               sessionId,
@@ -2022,7 +2064,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
           const duration = Date.now() - startTime;
           const errorMessage = error instanceof Error ? error.message : 'Unknown analytics error';
 
-          console.error(`❌ Protected analytics computation error for session ${sessionId} after ${duration}ms:`, error);
+          logger.error(`❌ Protected analytics computation error for session ${sessionId} after ${duration}ms:`, error);
 
           const isCircuitBreakerError = errorMessage.includes('circuit breaker');
           const isLockError = errorMessage.includes('locked by') || errorMessage.includes('lock acquisition failed');
@@ -2043,16 +2085,19 @@ export async function endSession(req: Request, res: Response): Promise<Response>
           try {
             const client = await import('prom-client');
             const ctr = (client.register.getSingleMetric('analytics_failed_total') as any) || new (client as any).Counter({ name: 'analytics_failed_total', help: 'Total analytics failed emits', labelNames: ['type'] });
-            // @ts-ignore
             ctr.inc({ type: payload.errorType });
-          } catch {}
+          } catch (metricError) {
+            logger.debug('session controller fallback suppressed error', {
+              error: metricError instanceof Error ? metricError.message : String(metricError),
+            });
+          }
         }
       };
 
       if (process.env.NODE_ENV === 'test') {
         await runAnalytics();
       } else {
-        setImmediate(() => { runAnalytics().catch((e) => console.error('Analytics async error:', e)); });
+        setImmediate(() => { runAnalytics().catch((e) => logger.error('Analytics async error:', e)); });
       }
 
       // Flush any pending transcripts from Redis to DB BEFORE running summaries
@@ -2060,7 +2105,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         const { transcriptPersistenceService } = await import('../services/transcript-persistence.service');
         await transcriptPersistenceService.flushSession(sessionId);
       } catch (e) {
-        console.warn('⚠️ Transcript flush on session end failed (non-blocking):', e instanceof Error ? e.message : String(e));
+        logger.warn('⚠️ Transcript flush on session end failed (non-blocking):', e instanceof Error ? e.message : String(e));
       }
 
       // Trigger group + session summaries if feature flag enabled (after flush)
@@ -2077,22 +2122,22 @@ export async function endSession(req: Request, res: Response): Promise<Response>
               timestamp: new Date().toISOString()
             });
           } catch (e) {
-            console.warn('⚠️ Summary synthesis failed:', e instanceof Error ? e.message : String(e));
+            logger.warn('⚠️ Summary synthesis failed:', e instanceof Error ? e.message : String(e));
           }
         };
         if (summariesEnabled) {
           if (process.env.NODE_ENV === 'test') {
             await runSummaries();
           } else {
-            setImmediate(() => { runSummaries().catch((e) => console.error('Summaries async error:', e)); });
+            setImmediate(() => { runSummaries().catch((e) => logger.error('Summaries async error:', e)); });
           }
         }
       } catch (e) {
-        console.warn('⚠️ Failed to schedule summaries:', e instanceof Error ? e.message : String(e));
+        logger.warn('⚠️ Failed to schedule summaries:', e instanceof Error ? e.message : String(e));
       }
 
     } catch (e) {
-      console.warn('WebSocket notify failed in endSession:', e);
+      logger.warn('WebSocket notify failed in endSession:', e);
     }
     
     
@@ -2104,7 +2149,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       stats = await statsRepo.getEndSessionStats(sessionId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.warn('⚠️ Final session stats failed, using fallback zeros:', msg);
+      logger.warn('⚠️ Final session stats failed, using fallback zeros:', msg);
       // Observability: count fallback usage
       try {
         const client = await import('prom-client');
@@ -2112,7 +2157,9 @@ export async function endSession(req: Request, res: Response): Promise<Response>
         const existing = (client.register.getSingleMetric(name) as any);
         const counter = existing || new (client as any).Counter({ name, help: 'Total times end-session stats fallback was used' });
         counter.inc();
-      } catch {}
+      } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
       stats = { total_groups: 0, total_students: 0, total_transcriptions: 0 };
     }
     
@@ -2142,7 +2189,7 @@ export async function endSession(req: Request, res: Response): Promise<Response>
       },
     });
   } catch (error) {
-    console.error('Error ending session:', error);
+    logger.error('Error ending session:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -2176,7 +2223,9 @@ export async function getSessionSummaries(req: Request, res: Response): Promise<
     }
 
     let sessionSummaryJson: any = null;
-    try { sessionSummaryJson = JSON.parse(sessionSummary.summary_json); } catch {}
+    try { sessionSummaryJson = JSON.parse(sessionSummary.summary_json); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
 
     // Attach guidance insights using repository-backed service (no DB code here)
     try {
@@ -2188,7 +2237,7 @@ export async function getSessionSummaries(req: Request, res: Response): Promise<
       };
     } catch (e) {
       // Graceful degradation: keep existing summary even if insights fail
-      console.warn('⚠️ Failed to load guidance insights for summaries:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Failed to load guidance insights for summaries:', e instanceof Error ? e.message : String(e));
     }
     const groupsMeta = groupSummaries.map(g => ({
       groupId: g.group_id,
@@ -2202,6 +2251,10 @@ export async function getSessionSummaries(req: Request, res: Response): Promise<
       groups: groupsMeta
     });
   } catch (error) {
+    logger.error('Failed to get session summaries', {
+      sessionId: req.params.sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return res.status(500).json({ error: 'SUMMARY_FETCH_FAILED' });
   }
 }
@@ -2225,7 +2278,9 @@ export async function getGroupSummary(req: Request, res: Response): Promise<Resp
     const record = await summariesRepo.getGroupSummary(sessionId, groupId);
     if (!record) return res.status(202).json({ status: 'pending' });
     let json: any = null;
-    try { json = JSON.parse(record.summary_json); } catch {}
+    try { json = JSON.parse(record.summary_json); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
 
     // Attach guidance insights for this group (tier1 for group + tier2 group slice)
     try {
@@ -2236,11 +2291,16 @@ export async function getGroupSummary(req: Request, res: Response): Promise<Resp
         guidanceInsights,
       };
     } catch (e) {
-      console.warn('⚠️ Failed to load group guidance insights:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Failed to load group guidance insights:', e instanceof Error ? e.message : String(e));
     }
 
     return res.json({ groupId, summary: json });
   } catch (error) {
+    logger.error('Failed to get group summary', {
+      sessionId: req.params.sessionId,
+      groupId: req.params.groupId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return res.status(500).json({ error: 'SUMMARY_FETCH_FAILED' });
   }
 }
@@ -2333,7 +2393,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
         await queryCacheService.upsertCachedQuery('session-detail', cacheKey, fullRow, { sessionId, teacherId: teacher.id });
       }
     } catch (e) {
-      console.warn('⚠️ Write-through session-detail cache upsert failed after updateSession:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Write-through session-detail cache upsert failed after updateSession:', e instanceof Error ? e.message : String(e));
     }
     
     // Emit cache event for invalidation + WS client refresh
@@ -2341,7 +2401,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
       const changes = Object.keys(fieldsToUpdate);
       await cacheEventBus.sessionUpdated(sessionId, teacher.id, changes);
     } catch (e) {
-      console.warn('⚠️ CacheEventBus.sessionUpdated failed (non-blocking):', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ CacheEventBus.sessionUpdated failed (non-blocking):', e instanceof Error ? e.message : String(e));
     }
     
     return res.json({
@@ -2351,7 +2411,7 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
       },
     });
   } catch (error) {
-    console.error('Error updating session:', error);
+    logger.error('Error updating session:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -2396,13 +2456,13 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     }
     
     // Archive the session (note: archived_at and archived_by fields don't exist in schema, status change is sufficient)
-    await databricksService.updateSessionStatus(sessionId, 'archived');
+    await getCompositionRoot().getSessionRepository().updateStatus(sessionId, 'archived');
     
     // Emit cache event for invalidation + WS refresh
     try {
       await cacheEventBus.sessionDeleted(sessionId, teacher.id);
     } catch (e) {
-      console.warn('⚠️ CacheEventBus.sessionDeleted failed (non-blocking):', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ CacheEventBus.sessionDeleted failed (non-blocking):', e instanceof Error ? e.message : String(e));
     }
     
     // Record audit log (async)
@@ -2427,7 +2487,7 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
       message: 'Session archived successfully',
     });
   } catch (error) {
-    console.error('Error deleting session:', error);
+    logger.error('Error deleting session:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -2470,9 +2530,9 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       // Invalidate all session-detail cache entries for this session
       const cachePattern = `session-detail:*${sessionId}*`;
       await queryCacheService.invalidateCache(cachePattern);
-      console.log('✅ Session cache invalidated for fresh data:', cachePattern);
+      logger.debug('✅ Session cache invalidated for fresh data:', cachePattern);
     } catch (cacheError) {
-      console.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
+      logger.warn('⚠️ Cache invalidation failed (non-critical):', cacheError);
       // Continue without cache invalidation - database update is the source of truth
     }
     
@@ -2486,9 +2546,11 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
         traceId: (res.locals as any)?.traceId || (req as any)?.traceId
       });
       // Stop server-driven flush timers for this session to avoid orphan emissions
-      try { ns?.stopFlushSchedulersForSession(sessionId); } catch {}
+      try { ns?.stopFlushSchedulersForSession(sessionId); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
     } catch (e) {
-      console.warn('⚠️ WebSocket broadcast failed during session pause (non-critical):', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ WebSocket broadcast failed during session pause (non-critical):', e instanceof Error ? e.message : String(e));
     }
 
     // Record audit log (async)
@@ -2508,7 +2570,9 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       complianceBasis: 'legitimate_interest',
     });
     // WS gating status in Redis
-    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'paused', 24 * 3600); } catch {}
+    try { await (await import('../services/redis.service')).redisService.set(`ws:session:status:${sessionId}`, 'paused', 24 * 3600); } catch (error) {
+      logger.debug('session controller fallback suppressed error', { error: error instanceof Error ? error.message : String(error) });
+    }
 
     return res.json({
       success: true,
@@ -2520,7 +2584,7 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       },
     });
   } catch (error) {
-    console.error('Error pausing session:', error);
+    logger.error('Error pausing session:', error);
     return res.status(500).json({
       success: false,
       error: {

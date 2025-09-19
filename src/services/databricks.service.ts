@@ -2,6 +2,8 @@ import { DBSQLClient } from '@databricks/sql';
 import * as client from 'prom-client';
 import { v4 as uuidv4 } from 'uuid';
 import { databricksConfig } from '../config/databricks.config';
+import { DatabricksMockService, databricksMockService } from './databricks.mock.service';
+import { logger } from '../utils/logger';
 
 interface TranscriptionResult {
   text: string;
@@ -144,7 +146,7 @@ export class DatabricksService {
   // Removed: Databricks waveWhispererUrl (STT migrated to OpenAI Whisper)
 
   constructor() {
-    console.log('Databricks config:', {
+    logger.debug('Databricks config:', {
       host: databricksConfig.host ? 'Set' : 'Missing',
       token: databricksConfig.token ? 'Set' : 'Missing',
       warehouse: databricksConfig.warehouse ? 'Set' : 'Missing',
@@ -154,7 +156,7 @@ export class DatabricksService {
     
     if (!databricksConfig.host || !databricksConfig.token || !databricksConfig.warehouse) {
       if (process.env.NODE_ENV !== 'production') {
-        console.warn('⚠️ Databricks configuration is incomplete. Proceeding in dev mode without DB connection.');
+        logger.warn('⚠️ Databricks configuration is incomplete. Proceeding in dev mode without DB connection.');
       } else {
         throw new Error('Databricks configuration is incomplete');
       }
@@ -218,7 +220,7 @@ export class DatabricksService {
 
   private setBreakerGauge(): void {
     const map: Record<typeof this.breakerState, number> = { CLOSED: 0, HALF_OPEN: 1, OPEN: 2 } as const;
-    try { this.dbBreakerGauge.set(map[this.breakerState]); } catch {}
+    try { this.dbBreakerGauge.set(map[this.breakerState]); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   // ----------------------------
@@ -269,7 +271,7 @@ export class DatabricksService {
     this.breakerState = next;
     this.stateChangedAt = this.now();
     this.setBreakerGauge();
-    console.log(`🔄 DB Circuit Breaker ${prev} → ${next} (${reason})`);
+    logger.debug(`🔄 DB Circuit Breaker ${prev} → ${next} (${reason})`);
     if (next === 'CLOSED') {
       this.consecutiveFailures = 0;
       this.requestCount = 0;
@@ -345,7 +347,7 @@ export class DatabricksService {
    */
   async connect(): Promise<void> {
     try {
-      console.log('Connection params:', {
+      logger.debug('Connection params:', {
         host: this.connectionParams.hostname,
         path: this.connectionParams.path,
         tokenLength: (this.connectionParams.token ? this.connectionParams.token.length : 0),
@@ -362,7 +364,7 @@ export class DatabricksService {
       };
       
       if (!databricksConfig.token) {
-        console.warn('⚠️ Skipping Databricks connection in dev mode (no token)');
+        logger.warn('⚠️ Skipping Databricks connection in dev mode (no token)');
         return;
       }
       // Enforce connect timeout
@@ -373,9 +375,9 @@ export class DatabricksService {
         }),
         new Promise((_, reject) => setTimeout(() => reject(new Error(`Connect timeout after ${databricksConfig.connectTimeoutMs}ms`)), databricksConfig.connectTimeoutMs))
       ]);
-      console.log('✅ Connected to Databricks SQL Warehouse');
+      logger.debug('✅ Connected to Databricks SQL Warehouse');
     } catch (error) {
-      console.error('❌ Failed to connect to Databricks:', error);
+      logger.error('❌ Failed to connect to Databricks:', error);
       throw error;
     }
   }
@@ -388,7 +390,7 @@ export class DatabricksService {
       try {
         await this.currentSession.close();
       } catch (error) {
-        console.warn('Error closing session:', error);
+        logger.warn('Error closing session:', error);
       }
       this.currentSession = null;
     }
@@ -449,7 +451,7 @@ export class DatabricksService {
   async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
     const queryStart = performance.now();
     const queryPreview = sql.replace(/\s+/g, ' ').substring(0, 80) + '...';
-    console.log(`🔍 DB QUERY START: ${queryPreview}`);
+    logger.debug(`🔍 DB QUERY START: ${queryPreview}`);
     
     let retries = 0;
     const maxRetries = Math.max(0, databricksConfig.maxRetries);
@@ -459,7 +461,7 @@ export class DatabricksService {
       try {
         const sessionStart = performance.now();
         const session = await this.getSession();
-        console.log(`⏱️  Session acquisition took ${(performance.now() - sessionStart).toFixed(2)}ms`);
+        logger.debug(`⏱️  Session acquisition took ${(performance.now() - sessionStart).toFixed(2)}ms`);
         
         // Build query with parameters (hardened against '?' inside values)
         const paramStart = performance.now();
@@ -495,7 +497,7 @@ export class DatabricksService {
             const tableMatch = /(insert\s+into|update|from)\s+([a-zA-Z0-9_\.]+)/i.exec(sql);
             const tableRef = tableMatch?.[2] || 'unknown';
             const preview = sql.replace(/\s+/g, ' ').slice(0, 120);
-            console.warn('⚠️ Databricks param count mismatch', {
+            logger.warn('⚠️ Databricks param count mismatch', {
               table: tableRef,
               placeholders: expected,
               params: params.length,
@@ -513,7 +515,7 @@ export class DatabricksService {
           built += parts.slice(used).join('?');
           finalSql = built;
         }
-        console.log(`⏱️  Parameter formatting took ${(performance.now() - paramStart).toFixed(2)}ms`);
+        logger.debug(`⏱️  Parameter formatting took ${(performance.now() - paramStart).toFixed(2)}ms`);
         
         const executeStart = performance.now();
         if (!this.breakerCanPass()) {
@@ -529,11 +531,11 @@ export class DatabricksService {
         } catch (e) {
           // Ensure operation is closed if created (defensive)
           if (operation && operation.close) {
-            try { await operation.close(); } catch {}
+            try { await operation.close(); } catch { /* intentionally ignored: best effort cleanup */ }
           }
           throw e;
         }
-        console.log(`⏱️  Statement execution took ${(performance.now() - executeStart).toFixed(2)}ms`);
+        logger.debug(`⏱️  Statement execution took ${(performance.now() - executeStart).toFixed(2)}ms`);
         
         const fetchStart = performance.now();
         const fetchPromise = (async () => operation.fetchAll())();
@@ -541,13 +543,13 @@ export class DatabricksService {
           fetchPromise,
           new Promise((_, reject) => setTimeout(() => reject(new Error(`QUERY_TIMEOUT:${databricksConfig.queryTimeoutMs}`)), databricksConfig.queryTimeoutMs))
         ]);
-        console.log(`⏱️  Result fetching took ${(performance.now() - fetchStart).toFixed(2)}ms`);
+        logger.debug(`⏱️  Result fetching took ${(performance.now() - fetchStart).toFixed(2)}ms`);
         
         await operation.close();
         
         const queryTotal = performance.now() - queryStart;
-        try { this.dbQueryLatency.observe(queryTotal); } catch {}
-        console.log(`🔍 DB QUERY COMPLETE - Total time: ${queryTotal.toFixed(2)}ms`);
+        try { this.dbQueryLatency.observe(queryTotal); } catch { /* intentionally ignored: best effort cleanup */ }
+        logger.debug(`🔍 DB QUERY COMPLETE - Total time: ${queryTotal.toFixed(2)}ms`);
         if (this.breakerState === 'HALF_OPEN') this.transitionBreaker('CLOSED', 'successful probe in half-open');
         this.consecutiveFailures = 0;
         
@@ -575,7 +577,7 @@ export class DatabricksService {
         return rows;
       } catch (error) {
         const code = this.classifyError(error);
-        console.error(`Query error (attempt ${retries + 1}) [${code}]:`, error);
+        logger.error(`Query error (attempt ${retries + 1}) [${code}]:`, error);
         this.recordFailureAndMaybeOpen(code);
         // Reset session on error and maybe retry
         await this.resetSession();
@@ -742,23 +744,23 @@ export class DatabricksService {
     
     // DEBUG: Log the exact SQL and table info for session creation issues
     if (table === 'classroom_sessions' || table === 'student_groups' || table === 'student_group_members') {
-      console.log(`🔍 DEBUG ${table.toUpperCase()} INSERT:`);
-      console.log(`  Table: ${tbl}`);
-      console.log(`  Schema: ${schema}`);
-      console.log(`  Full table path: ${databricksConfig.catalog}.${schema}.${tbl}`);
-      console.log(`  Columns (${columns.length}): ${columns.join(', ')}`);
-      console.log(`  SQL: ${sql.trim()}`);
-      console.log(`  Data types:`, Object.entries(data).map(([k,v]) => `${k}:${typeof v}`).join(', '));
+      logger.debug(`🔍 DEBUG ${table.toUpperCase()} INSERT:`);
+      logger.debug(`  Table: ${tbl}`);
+      logger.debug(`  Schema: ${schema}`);
+      logger.debug(`  Full table path: ${databricksConfig.catalog}.${schema}.${tbl}`);
+      logger.debug(`  Columns (${columns.length}): ${columns.join(', ')}`);
+      logger.debug(`  SQL: ${sql.trim()}`);
+      logger.debug(`  Data types:`, Object.entries(data).map(([k,v]) => `${k}:${typeof v}`).join(', '));
     }
     
     try {
       await this.query(sql, params);
       if (table === 'classroom_sessions' || table === 'student_groups' || table === 'student_group_members') {
-        console.log(`✅ ${table.toUpperCase()} INSERT SUCCESS`);
+        logger.debug(`✅ ${table.toUpperCase()} INSERT SUCCESS`);
       }
       return data.id || this.generateId();
     } catch (insertError) {
-      console.error(`❌ ${table.toUpperCase()} INSERT FAILED:`, {
+      logger.error(`❌ ${table.toUpperCase()} INSERT FAILED:`, {
         table: tbl,
         schema,
         fullPath: `${databricksConfig.catalog}.${schema}.${tbl}`,
@@ -1131,7 +1133,7 @@ export class DatabricksService {
       updated_at: createdAt,
     };
     
-    console.log('🔍 Attempting to insert session with data:', JSON.stringify(data, null, 2));
+    logger.debug('🔍 Attempting to insert session with data:', JSON.stringify(data, null, 2));
     await this.insert('classroom_sessions', data);
     
     // Return the data we already have instead of querying again
@@ -1289,7 +1291,7 @@ export class DatabricksService {
     school: any;
     teacher: any;
   }> {
-    console.log('🚀 BATCH AUTH OPERATIONS START');
+    logger.debug('🚀 BATCH AUTH OPERATIONS START');
     const batchStart = performance.now();
     
     // Single query to get school and teacher data together
@@ -1427,7 +1429,7 @@ export class DatabricksService {
     }
     
     const batchTotal = performance.now() - batchStart;
-    console.log(`🚀 BATCH AUTH OPERATIONS COMPLETE - Total time: ${batchTotal.toFixed(2)}ms`);
+    logger.debug(`🚀 BATCH AUTH OPERATIONS COMPLETE - Total time: ${batchTotal.toFixed(2)}ms`);
     
     return { school, teacher };
   }
@@ -1454,11 +1456,31 @@ export class DatabricksService {
 }
 
 // Create singleton instance
-let databricksServiceInstance: DatabricksService | null = null;
+type DatabricksServiceLike = DatabricksService | DatabricksMockService;
 
-export const getDatabricksService = (): DatabricksService => {
+let databricksServiceInstance: DatabricksServiceLike | null = null;
+let mockState: boolean | null = null;
+
+const shouldUseMock = (): boolean => {
+  const explicit = process.env.DATABRICKS_MOCK;
+  if (explicit === '1') return true;
+  if (explicit === '0') return false;
+  if (process.env.NODE_ENV === 'test') return true;
+  if (!databricksConfig.host || !databricksConfig.token || !databricksConfig.warehouse) return true;
+  return false;
+};
+
+export const isDatabricksMockEnabled = (): boolean => {
+  if (mockState === null) {
+    mockState = shouldUseMock();
+  }
+  return mockState;
+};
+
+export const getDatabricksService = (): DatabricksServiceLike => {
   if (!databricksServiceInstance) {
-    databricksServiceInstance = new DatabricksService();
+    mockState = shouldUseMock();
+    databricksServiceInstance = mockState ? databricksMockService : new DatabricksService();
   }
   return databricksServiceInstance;
 };
@@ -1489,6 +1511,7 @@ export const databricksService = {
   updateSessionStatus: (sessionId: string, status: SessionStatus, additionalData?: any) => getDatabricksService().updateSessionStatus(sessionId, status, additionalData),
   recordAuditLog: (auditData: any) => getDatabricksService().recordAuditLog(auditData),
   recordAuditLogBatch: (rows: any[]) => getDatabricksService().recordAuditLogBatch(rows),
-  batchAuthOperations: (googleUser: any, domain: string) => getDatabricksService().batchAuthOperations(googleUser, domain),
+  batchAuthOperations: (googleUser: any, domain: string): Promise<{ school: any; teacher: any }> =>
+    getDatabricksService().batchAuthOperations(googleUser, domain),
   // STT removed
 };

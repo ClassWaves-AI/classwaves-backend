@@ -4,6 +4,7 @@ import { SecureJWTService } from '../services/secure-jwt.service';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -28,7 +29,7 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
       return res.status(400).json({ success: false, error: 'sessionCode, studentName, and gradeLevel are required.' });
     }
 
-    console.log('🔧 Generating student token for E2E test:', { sessionCode, studentName, gradeLevel });
+    logger.debug('🔧 Generating student token for E2E test:', { sessionCode, studentName, gradeLevel });
 
     // For E2E testing, create mock IDs and data without database operations
     const sessionId = `e2e-session-${sessionCode}`;
@@ -94,7 +95,7 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
     // Generate a simple mock token for E2E testing (avoiding JWT service complexity)
     const mockToken = `e2e-mock-token-${Date.now()}`;
 
-    console.log('✅ E2E mock token generated successfully');
+    logger.debug('✅ E2E mock token generated successfully');
 
     res.json({
       success: true,
@@ -106,7 +107,7 @@ router.post('/generate-student-token', requireTestSecret, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Generate student token error:', error);
+    logger.error('❌ Generate student token error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     res.status(500).json({ success: false, error: errorMessage });
   }

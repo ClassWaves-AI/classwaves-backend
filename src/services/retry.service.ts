@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 /**
  * RetryService - Phase 3 Implementation
  * 
@@ -55,7 +56,7 @@ export class RetryService {
     let lastError: Error;
     const startTime = performance.now();
 
-    console.log(`🔄 Starting retry operation: ${operationName} (max retries: ${config.maxRetries})`);
+    logger.debug(`🔄 Starting retry operation: ${operationName} (max retries: ${config.maxRetries})`);
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
       const context: RetryContext = {
@@ -81,9 +82,9 @@ export class RetryService {
         
         if (attempt > 0) {
           this.metrics.successfulRetries++;
-          console.log(`✅ Retry operation succeeded: ${operationName} after ${attempt} retries (${totalTime.toFixed(2)}ms)`);
+          logger.debug(`✅ Retry operation succeeded: ${operationName} after ${attempt} retries (${totalTime.toFixed(2)}ms)`);
         } else {
-          console.log(`✅ Operation succeeded on first attempt: ${operationName} (${totalTime.toFixed(2)}ms)`);
+          logger.debug(`✅ Operation succeeded on first attempt: ${operationName} (${totalTime.toFixed(2)}ms)`);
         }
 
         return result;
@@ -95,20 +96,20 @@ export class RetryService {
         if (attempt === config.maxRetries) {
           this.metrics.failedRetries++;
           const totalTime = performance.now() - startTime;
-          console.error(`❌ Operation failed after ${config.maxRetries + 1} attempts: ${operationName} (${totalTime.toFixed(2)}ms)`, error);
+          logger.error(`❌ Operation failed after ${config.maxRetries + 1} attempts: ${operationName} (${totalTime.toFixed(2)}ms)`, error);
           throw error;
         }
 
         // RELIABILITY 2: Smart retry decision
         if (config.retryCondition && !config.retryCondition(error)) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          console.log(`⏭️ Error not retryable (custom condition), failing immediately: ${operationName}`, errorMessage);
+          logger.debug(`⏭️ Error not retryable (custom condition), failing immediately: ${operationName}`, errorMessage);
           throw error;
         }
 
         if (!this.isRetryableError(error)) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          console.log(`⏭️ Non-retryable error, failing immediately: ${operationName}`, errorMessage);
+          logger.debug(`⏭️ Non-retryable error, failing immediately: ${operationName}`, errorMessage);
           throw error;
         }
 
@@ -116,7 +117,7 @@ export class RetryService {
         context.delay = delay;
 
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        console.warn(`⚠️ Retrying operation "${operationName}" in ${delay}ms (attempt ${attempt + 1}/${config.maxRetries + 1})`, {
+        logger.warn(`⚠️ Retrying operation "${operationName}" in ${delay}ms (attempt ${attempt + 1}/${config.maxRetries + 1})`, {
           error: errorMessage,
           attempt: attempt + 1,
           delay
@@ -450,7 +451,7 @@ export class RetryService {
     operations: Array<{ operation: () => Promise<T>; name: string; options?: Partial<RetryOptions> }>,
     concurrency: number = 5
   ): Promise<Array<{ success: boolean; result?: T; error?: Error; name: string }>> {
-    console.log(`🔄 Starting batch retry operations: ${operations.length} operations, concurrency: ${concurrency}`);
+    logger.debug(`🔄 Starting batch retry operations: ${operations.length} operations, concurrency: ${concurrency}`);
 
     const results: Array<{ success: boolean; result?: T; error?: Error; name: string }> = [];
     
@@ -476,7 +477,7 @@ export class RetryService {
     }
 
     const successCount = results.filter(r => r.success).length;
-    console.log(`✅ Batch retry operations completed: ${successCount}/${operations.length} successful`);
+    logger.debug(`✅ Batch retry operations completed: ${successCount}/${operations.length} successful`);
 
     return results;
   }

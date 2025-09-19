@@ -3,6 +3,7 @@ import { databricksService } from './databricks.service';
 import { redisService } from './redis.service';
 // resilientAuthService removed with GSI credential flow deprecation
 import { RetryService } from './retry.service';
+import { logger } from '../utils/logger';
 
 /**
  * AuthHealthMonitor - Phase 3 Implementation
@@ -87,7 +88,7 @@ export class AuthHealthMonitor {
    * MONITORING 1: Comprehensive health check
    */
   async checkAuthSystemHealth(): Promise<HealthStatus> {
-    console.log('🔍 Running comprehensive auth system health check');
+    logger.debug('🔍 Running comprehensive auth system health check');
     const healthCheckStart = performance.now();
 
     const checks = await Promise.allSettled([
@@ -110,7 +111,7 @@ export class AuthHealthMonitor {
     checks.forEach((check, index) => {
       if (check.status === 'rejected') {
         const components = ['GoogleOAuth', 'Database', 'Redis', 'RateLimiting'];
-        console.error(`❌ Health check failed for ${components[index]}:`, check.reason);
+        logger.error(`❌ Health check failed for ${components[index]}:`, check.reason);
       }
     });
 
@@ -142,7 +143,7 @@ export class AuthHealthMonitor {
     await this.processHealthStatus(status);
 
     const healthCheckTime = performance.now() - healthCheckStart;
-    console.log(`🔍 Health check completed in ${healthCheckTime.toFixed(2)}ms - Status: ${overall}`);
+    logger.debug(`🔍 Health check completed in ${healthCheckTime.toFixed(2)}ms - Status: ${overall}`);
 
     return status;
   }
@@ -163,10 +164,10 @@ export class AuthHealthMonitor {
         )
       ]);
 
-      console.log('✅ Google OAuth service healthy');
+      logger.debug('✅ Google OAuth service healthy');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('❌ Google OAuth service unhealthy:', error);
+      logger.error('❌ Google OAuth service unhealthy:', error);
       this.createAlert('critical', 'googleOAuth', 'Google OAuth service is unreachable', { error: errorMessage });
       throw error;
     }
@@ -197,10 +198,10 @@ export class AuthHealthMonitor {
         this.createAlert('warning', 'database', `Database response time is slow: ${duration.toFixed(2)}ms`, { duration });
       }
       
-      console.log(`✅ Database service healthy (${duration.toFixed(2)}ms)`);
+      logger.debug(`✅ Database service healthy (${duration.toFixed(2)}ms)`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('❌ Database service unhealthy:', error);
+      logger.error('❌ Database service unhealthy:', error);
       this.createAlert('critical', 'database', 'Database service is unreachable', { error: errorMessage });
       this.metrics.authFailures++;
       throw error;
@@ -221,10 +222,10 @@ export class AuthHealthMonitor {
         this.createAlert('warning', 'redis', `Redis response time is slow: ${duration.toFixed(2)}ms`, { duration });
       }
       
-      console.log(`✅ Redis service healthy (${duration.toFixed(2)}ms)`);
+      logger.debug(`✅ Redis service healthy (${duration.toFixed(2)}ms)`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('❌ Redis service unhealthy:', error);
+      logger.error('❌ Redis service unhealthy:', error);
       this.createAlert('critical', 'redis', 'Redis service is unreachable', { error: errorMessage });
       throw error;
     }
@@ -235,10 +236,10 @@ export class AuthHealthMonitor {
       // Test rate limiting by checking if Redis rate limit keys can be accessed
       // This is a simple connectivity test
       await redisService.get('rate_limit_health_check');
-      console.log('✅ Rate limiting service healthy');
+      logger.debug('✅ Rate limiting service healthy');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('❌ Rate limiting service unhealthy:', error);
+      logger.error('❌ Rate limiting service unhealthy:', error);
       this.createAlert('warning', 'rateLimiting', 'Rate limiting service may be impaired', { error: errorMessage });
       throw error;
     }
@@ -273,7 +274,7 @@ export class AuthHealthMonitor {
     try {
       this.metrics.cacheHitRate = await this.calculateCacheHitRate();
     } catch (error) {
-      console.warn('⚠️ Failed to calculate cache hit rate:', error);
+      logger.warn('⚠️ Failed to calculate cache hit rate:', error);
       this.metrics.cacheHitRate = 0;
     }
 
@@ -332,7 +333,7 @@ export class AuthHealthMonitor {
         mostFailedOperation: operationStats.mostFailed
       };
     } catch (error) {
-      console.warn('⚠️ Failed to get 24-hour metrics:', error);
+      logger.warn('⚠️ Failed to get 24-hour metrics:', error);
       return {
         totalLogins: 0,
         failureRate: 0,
@@ -362,7 +363,7 @@ export class AuthHealthMonitor {
         responseTime95thPercentile: Number(responseTime95thPercentile.toFixed(2))
       };
     } catch (error) {
-      console.warn('⚠️ Failed to get real-time metrics:', error);
+      logger.warn('⚠️ Failed to get real-time metrics:', error);
       return {
         activeAuthRequests: 0,
         queuedRequests: 0,
@@ -395,7 +396,7 @@ export class AuthHealthMonitor {
       // or by tracking cache hits/misses separately
       return 85; // Placeholder 85% hit rate
     } catch (error) {
-      console.warn('⚠️ Failed to calculate cache hit rate:', error);
+      logger.warn('⚠️ Failed to calculate cache hit rate:', error);
       return 0;
     }
   }
@@ -469,7 +470,7 @@ export class AuthHealthMonitor {
           await redisService.set(failureKey, '1', 86400 * 2);
         }
       } catch (redisError) {
-        console.warn('⚠️ Failed to store metrics in Redis:', redisError);
+        logger.warn('⚠️ Failed to store metrics in Redis:', redisError);
       }
 
       // Track peak concurrency
@@ -479,7 +480,7 @@ export class AuthHealthMonitor {
         await redisService.set(`metrics:${day}:peak_concurrency`, currentConcurrency.toString(), 86400 * 2);
       }
     } catch (error) {
-      console.warn('⚠️ Failed to store 24-hour metrics:', error);
+      logger.warn('⚠️ Failed to store 24-hour metrics:', error);
     }
   }
 
@@ -516,7 +517,7 @@ export class AuthHealthMonitor {
     // In production: integrate with alerting service (PagerDuty, Slack, etc.)
     try {
       // Placeholder for external alerting
-      console.log(`📨 Sending external alert: ${alert.severity} - ${alert.message}`);
+      logger.debug(`📨 Sending external alert: ${alert.severity} - ${alert.message}`);
       
       // Example integration:
       // await alertingService.sendAlert({
@@ -528,7 +529,7 @@ export class AuthHealthMonitor {
       //   metadata: alert.metadata
       // });
     } catch (error) {
-      console.error('⚠️ Failed to send external alert:', error);
+      logger.error('⚠️ Failed to send external alert:', error);
     }
   }
 
@@ -537,7 +538,7 @@ export class AuthHealthMonitor {
     if (alert && !alert.resolved) {
       alert.resolved = true;
       alert.resolvedAt = new Date().toISOString();
-      console.log(`✅ Alert resolved: ${alertId}`);
+      logger.debug(`✅ Alert resolved: ${alertId}`);
       return true;
     }
     return false;
@@ -591,7 +592,7 @@ export class AuthHealthMonitor {
       .forEach(alert => {
         alert.resolved = true;
         alert.resolvedAt = new Date().toISOString();
-        console.log(`🔄 Auto-resolved alert for healthy component ${component}: ${alert.id}`);
+        logger.debug(`🔄 Auto-resolved alert for healthy component ${component}: ${alert.id}`);
       });
   }
 
@@ -644,14 +645,14 @@ export class AuthHealthMonitor {
     };
     this.responseTimeBuffer = [];
     this.activeRequests.clear();
-    console.log('📊 Auth health metrics reset');
+    logger.debug('📊 Auth health metrics reset');
   }
 
   clearResolvedAlerts(): void {
     const beforeCount = this.alerts.length;
     this.alerts = this.alerts.filter(alert => !alert.resolved);
     const removedCount = beforeCount - this.alerts.length;
-    console.log(`🧹 Cleared ${removedCount} resolved alerts`);
+    logger.debug(`🧹 Cleared ${removedCount} resolved alerts`);
   }
 
   /**

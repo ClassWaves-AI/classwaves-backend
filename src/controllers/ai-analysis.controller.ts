@@ -9,7 +9,7 @@
  * - GET /api/v1/ai/tier2/status - Tier 2 system status
  */
 
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { 
   AnalyzeGroupDiscussionRequest,
   AnalyzeGroupDiscussionResponse,
@@ -24,6 +24,7 @@ import {
 import { getCompositionRoot } from '../app/composition-root';
 import { AuthRequest } from '../types/auth.types';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Tier 1 Analysis: Real-time Group Discussion Analysis
@@ -85,7 +86,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
       });
     }
 
-    console.log(`🧠 Starting Tier 1 analysis for group ${groupId} in session ${sessionId}`);
+    logger.debug(`🧠 Starting Tier 1 analysis for group ${groupId} in session ${sessionId}`);
 
     // Prepare analysis options
     const tier1Options: Tier1Options = {
@@ -128,7 +129,7 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
         timestamp: insights.analysisTimestamp,
       });
     } catch (e) {
-      console.warn('⚠️ Failed to emit Tier1 to guidance namespace:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Failed to emit Tier1 to guidance namespace:', e instanceof Error ? e.message : String(e));
     }
 
     // Record audit log (async, fire-and-forget)
@@ -154,12 +155,12 @@ export const analyzeGroupDiscussion = async (req: AuthRequest, res: Response): P
       processingTime: Date.now() - startTime
     };
 
-    console.log(`✅ Tier 1 analysis completed for group ${groupId} in ${response.processingTime}ms`);
+    logger.debug(`✅ Tier 1 analysis completed for group ${groupId} in ${response.processingTime}ms`);
     return res.json(response);
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Tier 1 analysis failed:', error);
+    logger.error('Tier 1 analysis failed:', error);
 
     // Handle specific AI analysis errors
     if (error instanceof Error && (error as AIAnalysisError).code) {
@@ -223,7 +224,7 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
       });
     }
 
-    console.log(`🧠 Starting Tier 2 analysis for session ${sessionId} (${groupTranscripts.length} groups)`);
+    logger.debug(`🧠 Starting Tier 2 analysis for session ${sessionId} (${groupTranscripts.length} groups)`);
 
     // Prepare analysis options
     const tier2Options: Tier2Options = {
@@ -287,13 +288,13 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
           timestamp: insights.analysisTimestamp,
         });
       } else {
-        console.warn('⚠️ Dropping session-scope Tier2 emit (multi-group analysis); group-only is supported', {
+        logger.warn('⚠️ Dropping session-scope Tier2 emit (multi-group analysis); group-only is supported', {
           sessionId,
           groupCount: uniqueGroups.length,
         });
       }
     } catch (e) {
-      console.warn('⚠️ Failed to emit Tier2 to guidance namespace:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Failed to emit Tier2 to guidance namespace:', e instanceof Error ? e.message : String(e));
     }
 
     // Record audit log (async)
@@ -325,12 +326,12 @@ export const generateDeepInsights = async (req: AuthRequest, res: Response): Pro
       processingTime: Date.now() - startTime
     };
 
-    console.log(`✅ Tier 2 analysis completed for session ${sessionId} in ${response.processingTime}ms`);
+    logger.debug(`✅ Tier 2 analysis completed for session ${sessionId} in ${response.processingTime}ms`);
     return res.json(response);
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('Tier 2 analysis failed:', error);
+    logger.error('Tier 2 analysis failed:', error);
 
     // Handle specific AI analysis errors
     if (error instanceof Error && (error as AIAnalysisError).code) {
@@ -376,19 +377,6 @@ export const getSessionInsights = async (req: AuthRequest, res: Response): Promi
       });
     }
 
-    // Build query conditions
-    let groupFilter = '';
-    let groupParams: any[] = [];
-    if (groupIds && Array.isArray(groupIds) && groupIds.length > 0) {
-      const placeholders = groupIds.map(() => '?').join(', ');
-      groupFilter = `AND group_id IN (${placeholders})`;
-      groupParams = groupIds as string[];
-    }
-    
-    const timeFilter = includeHistory 
-      ? '' 
-      : 'AND created_at >= CURRENT_TIMESTAMP() - INTERVAL 2 HOURS';
-
     // Retrieve Tier 1 insights
     const tier1Results = await getCompositionRoot().getAnalyticsRepository().getTier1Results(sessionId, {
       groupIds: (groupIds && Array.isArray(groupIds) && groupIds.length > 0) ? (groupIds as string[]) : undefined,
@@ -425,7 +413,7 @@ export const getSessionInsights = async (req: AuthRequest, res: Response): Promi
     return res.json(response);
 
   } catch (error) {
-    console.error('Failed to retrieve session insights:', error);
+    logger.error('Failed to retrieve session insights:', error);
     return res.status(500).json({
       success: false,
       error: 'Failed to retrieve insights'
@@ -466,7 +454,7 @@ export const getTier1Status = async (req: AuthRequest, res: Response): Promise<R
     });
 
   } catch (error) {
-    console.error('Failed to get Tier 1 status:', error);
+    logger.error('Failed to get Tier 1 status:', error);
     return res.status(500).json({
       success: false,
       error: 'Failed to retrieve status'
@@ -503,7 +491,7 @@ export const getTier2Status = async (req: AuthRequest, res: Response): Promise<R
     });
 
   } catch (error) {
-    console.error('Failed to get Tier 2 status:', error);
+    logger.error('Failed to get Tier 2 status:', error);
     return res.status(500).json({
       success: false,
       error: 'Failed to retrieve status'

@@ -28,7 +28,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     // Fallback: Check for session cookie (for session restoration)
     else if (req.cookies?.session_id) {
       sessionId = req.cookies.session_id;
-      console.log('🍪 Using session cookie for authentication');
+      logger.debug('🍪 Using session cookie for authentication');
     } 
     else {
       return fail(res, ErrorCodes.AUTH_REQUIRED, 'No valid authorization token provided', 401);

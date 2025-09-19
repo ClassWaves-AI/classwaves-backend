@@ -10,7 +10,7 @@ describe('RedisAuditLogAdapter (integration)', () => {
   });
 
   afterAll(async () => {
-    try { await client.del(STREAM_KEY); } catch {}
+    try { await client.del(STREAM_KEY); } catch { /* intentionally ignored: best effort cleanup */ }
     await client.quit();
   });
 

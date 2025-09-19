@@ -1,9 +1,10 @@
 import { DatabricksService } from '../../services/databricks.service';
+import { logger } from '../../utils/logger';
 
 const db = new DatabricksService();
 
 async function migrate() {
-  console.log('🔄 Migration: Add structured name fields to users.students');
+  logger.debug('🔄 Migration: Add structured name fields to users.students');
   try {
     await db.connect();
 
@@ -16,22 +17,22 @@ async function migrate() {
     for (const sql of alters) {
       try {
         await db.query(sql);
-        console.log('✅ Applied:', sql);
+        logger.debug('✅ Applied:', sql);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('ALREADY_EXISTS') || msg.toLowerCase().includes('already exists')) {
-          console.log('ℹ️  Column already exists, skipping:', sql);
+          logger.debug('ℹ️  Column already exists, skipping:', sql);
         } else if (msg.includes('PARSE_SYNTAX_ERROR') && sql.includes('ADD COLUMNS')) {
-          console.warn('⚠️ Syntax error applying ALTER; check warehouse SQL compatibility:', msg);
+          logger.warn('⚠️ Syntax error applying ALTER; check warehouse SQL compatibility:', msg);
         } else {
-          console.warn('⚠️ Skipped/failed:', sql, '-', msg);
+          logger.warn('⚠️ Skipped/failed:', sql, '-', msg);
         }
       }
     }
 
-    console.log('🎉 Migration completed');
+    logger.debug('🎉 Migration completed');
   } catch (e) {
-    console.error('❌ Migration error:', e);
+    logger.error('❌ Migration error:', e);
     process.exit(1);
   } finally {
     await db.disconnect();

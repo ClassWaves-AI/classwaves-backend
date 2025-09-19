@@ -34,6 +34,7 @@ import { RedisNamespaceValidator } from './redis-namespace-setup';
 import { WebSocketHealthChecker } from './websocket-health-check';
 import { AuthServiceValidator } from './auth-service-validation';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -81,7 +82,7 @@ class IntegrationInfrastructureValidator {
    */
   async validateInfrastructure(): Promise<ValidationReport> {
     this.startTime = performance.now();
-    console.log('🏗️ ClassWaves Integration Test Infrastructure Validator Starting...\n');
+    logger.debug('🏗️ ClassWaves Integration Test Infrastructure Validator Starting...\n');
 
     const report: ValidationReport = {
       success: false,
@@ -100,10 +101,10 @@ class IntegrationInfrastructureValidator {
     };
 
     try {
-      console.log('🔍 Validating Integration Test Infrastructure Components:\n');
+      logger.debug('🔍 Validating Integration Test Infrastructure Components:\n');
 
       // 1. Validate Redis namespace infrastructure
-      console.log('1️⃣ Validating Redis Namespace Infrastructure...');
+      logger.debug('1️⃣ Validating Redis Namespace Infrastructure...');
       const redisResult = await this.validateWithTimeout(
         'Redis Namespaces',
         () => this.redisValidator.validateRedisNamespaces(),
@@ -112,7 +113,7 @@ class IntegrationInfrastructureValidator {
       report.components.push(redisResult);
 
       // 2. Validate WebSocket server infrastructure  
-      console.log('\n2️⃣ Validating WebSocket Server Infrastructure...');
+      logger.debug('\n2️⃣ Validating WebSocket Server Infrastructure...');
       const websocketResult = await this.validateWithTimeout(
         'WebSocket Health',
         () => this.websocketChecker.validateWebSocketHealth(),
@@ -121,7 +122,7 @@ class IntegrationInfrastructureValidator {
       report.components.push(websocketResult);
 
       // 3. Validate authentication service integration
-      console.log('\n3️⃣ Validating Authentication Service Integration...');
+      logger.debug('\n3️⃣ Validating Authentication Service Integration...');
       const authResult = await this.validateWithTimeout(
         'Auth Service Integration',
         () => this.authValidator.validateAuthIntegration(),
@@ -130,7 +131,7 @@ class IntegrationInfrastructureValidator {
       report.components.push(authResult);
 
       // 4. Validate service orchestration
-      console.log('\n4️⃣ Validating Service Orchestration...');
+      logger.debug('\n4️⃣ Validating Service Orchestration...');
       const orchestrationResult = await this.validateServiceOrchestration();
       report.components.push(orchestrationResult);
 
@@ -152,7 +153,7 @@ class IntegrationInfrastructureValidator {
       const errorMessage = error instanceof Error ? error.message : String(error);
       report.summary.criticalIssues.push(`Infrastructure validation failed: ${errorMessage}`);
       
-      console.error('❌ CRITICAL INFRASTRUCTURE FAILURE:', error);
+      logger.error('❌ CRITICAL INFRASTRUCTURE FAILURE:', error);
       return report;
     }
   }
@@ -199,30 +200,30 @@ class IntegrationInfrastructureValidator {
       const warnings: string[] = [];
 
       // Test basic backend health
-      console.log('   🔍 Testing backend service availability...');
+      logger.debug('   🔍 Testing backend service availability...');
       const backendHealthy = await this.testBackendHealth();
       if (!backendHealthy) {
         errors.push('Backend service not responding on port 3000');
       } else {
-        console.log('   ✅ Backend service responding');
+        logger.debug('   ✅ Backend service responding');
       }
 
       // Test Redis-Backend integration
-      console.log('   🔍 Testing Redis-Backend integration...');
+      logger.debug('   🔍 Testing Redis-Backend integration...');
       const redisIntegrationHealthy = await this.testRedisBackendIntegration();
       if (!redisIntegrationHealthy) {
         warnings.push('Redis-Backend integration may have issues');
       } else {
-        console.log('   ✅ Redis-Backend integration operational');
+        logger.debug('   ✅ Redis-Backend integration operational');
       }
 
       // Test WebSocket-Backend coordination
-      console.log('   🔍 Testing WebSocket-Backend coordination...');
+      logger.debug('   🔍 Testing WebSocket-Backend coordination...');
       const wsIntegrationHealthy = await this.testWebSocketBackendIntegration();
       if (!wsIntegrationHealthy) {
         warnings.push('WebSocket-Backend coordination may have issues');
       } else {
-        console.log('   ✅ WebSocket-Backend coordination operational');
+        logger.debug('   ✅ WebSocket-Backend coordination operational');
       }
 
       const status = errors.length > 0 ? 'FAILED' : 
@@ -267,7 +268,7 @@ class IntegrationInfrastructureValidator {
       return response.ok;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ⚠️ Backend health check failed: ${errorMessage}`);
+      logger.debug(`   ⚠️ Backend health check failed: ${errorMessage}`);
       return false;
     }
   }
@@ -282,7 +283,7 @@ class IntegrationInfrastructureValidator {
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ⚠️ Redis-Backend integration test failed: ${errorMessage}`);
+      logger.debug(`   ⚠️ Redis-Backend integration test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -297,7 +298,7 @@ class IntegrationInfrastructureValidator {
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ⚠️ WebSocket-Backend integration test failed: ${errorMessage}`);
+      logger.debug(`   ⚠️ WebSocket-Backend integration test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -362,41 +363,41 @@ class IntegrationInfrastructureValidator {
    * Print comprehensive final report
    */
   private printFinalReport(report: ValidationReport): void {
-    console.log('\n' + '='.repeat(80));
-    console.log('🏗️ INTEGRATION TEST INFRASTRUCTURE VALIDATION REPORT');
-    console.log('='.repeat(80));
+    logger.debug('\n' + '='.repeat(80));
+    logger.debug('🏗️ INTEGRATION TEST INFRASTRUCTURE VALIDATION REPORT');
+    logger.debug('='.repeat(80));
     
-    console.log(`\n📊 SUMMARY:`);
-    console.log(`   Execution Time: ${Math.round(report.executionTime)}ms`);
-    console.log(`   Environment: ${report.environment}`);
-    console.log(`   Components: ${report.summary.totalComponents} total`);
-    console.log(`   Status: ${report.summary.operational} operational, ${report.summary.degraded} degraded, ${report.summary.failed} failed`);
+    logger.debug(`\n📊 SUMMARY:`);
+    logger.debug(`   Execution Time: ${Math.round(report.executionTime)}ms`);
+    logger.debug(`   Environment: ${report.environment}`);
+    logger.debug(`   Components: ${report.summary.totalComponents} total`);
+    logger.debug(`   Status: ${report.summary.operational} operational, ${report.summary.degraded} degraded, ${report.summary.failed} failed`);
     
-    console.log(`\n🔍 COMPONENT STATUS:`);
+    logger.debug(`\n🔍 COMPONENT STATUS:`);
     report.components.forEach(component => {
       const statusIcon = component.status === 'OPERATIONAL' ? '✅' : 
                         component.status === 'DEGRADED' ? '⚠️' : '❌';
-      console.log(`   ${statusIcon} ${component.component}: ${component.status} (${Math.round(component.responseTime || 0)}ms)`);
+      logger.debug(`   ${statusIcon} ${component.component}: ${component.status} (${Math.round(component.responseTime || 0)}ms)`);
       
       if (component.errors?.length) {
-        component.errors.forEach(error => console.log(`      ❌ ${error}`));
+        component.errors.forEach(error => logger.debug(`      ❌ ${error}`));
       }
       if (component.warnings?.length) {
-        component.warnings.forEach(warning => console.log(`      ⚠️ ${warning}`));
+        component.warnings.forEach(warning => logger.debug(`      ⚠️ ${warning}`));
       }
     });
 
     if (report.nextSteps?.length) {
-      console.log(`\n🎯 NEXT STEPS:`);
-      report.nextSteps.forEach(step => console.log(`   ${step}`));
+      logger.debug(`\n🎯 NEXT STEPS:`);
+      report.nextSteps.forEach(step => logger.debug(`   ${step}`));
     }
 
-    console.log('\n' + '='.repeat(80));
+    logger.debug('\n' + '='.repeat(80));
     
     const finalStatus = report.success ? '✅ INFRASTRUCTURE READY FOR INTEGRATION TESTS' : 
                                         '❌ INFRASTRUCTURE ISSUES REQUIRE ATTENTION';
-    console.log(finalStatus);
-    console.log('='.repeat(80) + '\n');
+    logger.debug(finalStatus);
+    logger.debug('='.repeat(80) + '\n');
   }
 }
 
@@ -411,7 +412,7 @@ async function main() {
     process.exit(report.success ? 0 : 1);
     
   } catch (error) {
-    console.error('💥 FATAL ERROR during infrastructure validation:', error);
+    logger.error('💥 FATAL ERROR during infrastructure validation:', error);
     process.exit(1);
   }
 }

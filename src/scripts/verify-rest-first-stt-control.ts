@@ -12,6 +12,7 @@ import { io as ioClient, Socket } from 'socket.io-client';
 import * as client from 'prom-client';
 import { initializeNamespacedWebSocket, getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { generateAccessToken, generateSessionId } from '../utils/jwt.utils';
+import { logger } from '../utils/logger';
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 process.env.API_DEBUG = process.env.API_DEBUG || '1';
@@ -48,7 +49,7 @@ async function main() {
   const stalledEvents: any[] = [];
 
   sock.on('connect', async () => {
-    console.log('client: connected', { id: sock.id });
+    logger.debug('client: connected', { id: sock.id });
     // Join group room from server for this single client
     const ns = svc.getIO().of('/sessions');
     // Wait a tick to ensure socket registered
@@ -61,16 +62,16 @@ async function main() {
   sock.on('audio:window:flush', (data) => {
     flushCount += 1;
     flushEvents.push(data);
-    console.log('client:event: audio:window:flush', data);
+    logger.debug('client:event: audio:window:flush', data);
   });
   sock.on('audio:ingress:stalled', (data) => {
     stalledCount += 1;
     stalledEvents.push(data);
-    console.warn('client:event: audio:ingress:stalled', data);
+    logger.warn('client:event: audio:ingress:stalled', data);
   });
-  sock.on('audio:stream:start', (d) => console.log('client:event: audio:stream:start', d));
-  sock.on('audio:stream:end', (d) => console.log('client:event: audio:stream:end', d));
-  sock.on('error', (e) => console.warn('client:error', e));
+  sock.on('audio:stream:start', (d) => logger.debug('client:event: audio:stream:start', d));
+  sock.on('audio:stream:end', (d) => logger.debug('client:event: audio:stream:end', d));
+  sock.on('error', (e) => logger.warn('client:error', e));
 
   // Observe a few flushes
   await sleep(3200);
@@ -78,7 +79,7 @@ async function main() {
   // Mark an ingress timestamp via service to enable stall detection (WS path also updates on chunk)
   try {
     (svc.getSessionsService() as any).updateLastIngestAt(sessionId, groupId);
-  } catch {}
+  } catch { /* intentionally ignored: best effort cleanup */ }
 
   // Wait for stall (overdue > 2× cadence)
   await sleep(2600);
@@ -90,18 +91,17 @@ async function main() {
   await new Promise<void>(resolve => server.close(() => resolve()));
 
   // Summarize
-  console.log('--- Summary ---');
-  console.log('flushCount =', flushCount);
-  console.log('stalledCount =', stalledCount);
+  logger.debug('--- Summary ---');
+  logger.debug('flushCount =', flushCount);
+  logger.debug('stalledCount =', stalledCount);
   try {
     const metrics = await client.register.metrics();
     const lines = metrics.split('\n').filter(l => /audio_window_flush_sent_total|audio_ingress_stalls_total/.test(l));
-    console.log(lines.join('\n'));
-  } catch {}
+    logger.debug(lines.join('\n'));
+  } catch { /* intentionally ignored: best effort cleanup */ }
 }
 
 main().catch((e) => {
-  console.error('verify script failed:', e);
+  logger.error('verify script failed:', e);
   process.exit(1);
 });
-

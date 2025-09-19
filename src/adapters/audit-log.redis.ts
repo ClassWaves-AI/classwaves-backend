@@ -2,6 +2,7 @@ import type { AuditLogPort } from '../services/audit-log.port';
 import type { AuditEvent } from '../services/audit-log.types';
 import { sanitizeAuditEvent } from './audit-sanitizer';
 import { redisService } from '../services/redis.service';
+import { logger } from '../utils/logger';
 
 const STREAM_KEY = process.env.AUDIT_LOG_STREAM_KEY || 'audit:log';
 const MAX_BACKLOG = parseInt(process.env.AUDIT_LOG_MAX_BACKLOG || '50000', 10);
@@ -18,7 +19,7 @@ export class RedisAuditLogAdapter implements AuditLogPort {
         if (len > MAX_BACKLOG) {
           const priority = event.priority ?? 'normal';
           if (priority !== 'critical' && priority !== 'high') {
-            console.warn(`🛑 Audit enqueue dropped due to backlog (${len} > ${MAX_BACKLOG})`, {
+            logger.warn(`🛑 Audit enqueue dropped due to backlog (${len} > ${MAX_BACKLOG})`, {
               eventType: event.eventType,
               category: event.eventCategory,
             });
@@ -60,14 +61,14 @@ export class RedisAuditLogAdapter implements AuditLogPort {
 
       await Promise.race([xaddPromise, timeout]).catch((err) => {
         if (String(err?.message || err) === 'enqueue_timeout') {
-          console.warn('⚠️ Audit enqueue slow; timed out', { eventType: event.eventType });
+          logger.warn('⚠️ Audit enqueue slow; timed out', { eventType: event.eventType });
           return; // swallow
         }
-        console.warn('⚠️ Audit enqueue failed (non-blocking):', err);
+        logger.warn('⚠️ Audit enqueue failed (non-blocking):', err);
       });
     } catch (err) {
       // Never throw to caller; ensure hot path unaffected
-      console.warn('⚠️ Audit enqueue unexpected error (non-blocking):', err);
+      logger.warn('⚠️ Audit enqueue unexpected error (non-blocking):', err);
     }
   }
 }

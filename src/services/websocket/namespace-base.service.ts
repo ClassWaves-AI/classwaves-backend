@@ -111,13 +111,13 @@ export abstract class NamespaceBaseService {
         const c = (client.register.getSingleMetric('ws_connections_total') as client.Counter<string>)
           || new client.Counter({ name: 'ws_connections_total', help: 'WebSocket connections', labelNames: ['namespace'] });
         c.inc({ namespace: this.getNamespaceName() });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       // Standardized connection metric with result label
       try {
         const c2 = (client.register.getSingleMetric('cw_ws_connection_total') as client.Counter<string>)
           || new client.Counter({ name: 'cw_ws_connection_total', help: 'WS connections (standardized)', labelNames: ['namespace', 'result'] });
         c2.inc({ namespace: this.getNamespaceName(), result: 'success' });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       // Reconnect heuristic: if same user disconnected recently, count as reconnect
       try {
@@ -128,7 +128,7 @@ export abstract class NamespaceBaseService {
             || new client.Counter({ name: 'cw_ws_reconnect_total', help: 'WS reconnects detected (heuristic)', labelNames: ['namespace', 'result'] });
           rc.inc({ namespace: this.getNamespaceName(), result: 'success' });
         }
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       const userId = socket.data.userId;
       logger.info('ws:connect', {
@@ -155,7 +155,7 @@ export abstract class NamespaceBaseService {
           traceId: (socket.data as any)?.traceId || null,
           serverTime: new Date().toISOString(),
         });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       socket.on('disconnect', (reason) => {
         // Metrics: disconnect counter
@@ -163,11 +163,11 @@ export abstract class NamespaceBaseService {
           const c = (client.register.getSingleMetric('ws_disconnects_total') as client.Counter<string>)
             || new client.Counter({ name: 'ws_disconnects_total', help: 'WebSocket disconnects', labelNames: ['namespace', 'reason'] });
           c.inc({ namespace: this.getNamespaceName(), reason });
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
         try {
           const key = `${this.getNamespaceName()}:${socket.data.userId}`;
           this.lastDisconnectAt.set(key, Date.now());
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
         logger.info('ws:disconnect', {
           namespace: this.getNamespaceName(),
           socketId: socket.id,
@@ -201,7 +201,7 @@ export abstract class NamespaceBaseService {
             userAgent,
           };
           void webSocketSecurityValidator.handleDisconnection(secCtx, nsName);
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
 
         this.onDisconnection(socket, reason);
       });
@@ -246,17 +246,17 @@ export abstract class NamespaceBaseService {
         const c = (client.register.getSingleMetric('ws_messages_emitted_total') as client.Counter<string>)
           || new client.Counter({ name: 'ws_messages_emitted_total', help: 'WebSocket messages emitted', labelNames: ['namespace', 'event'] });
         c.inc({ namespace: this.getNamespaceName(), event });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       // Standardized alias with label 'type'
       try {
         const c2 = (client.register.getSingleMetric('cw_ws_messages_total') as client.Counter<string>)
           || new client.Counter({ name: 'cw_ws_messages_total', help: 'WS messages emitted', labelNames: ['namespace', 'type'] });
         c2.inc({ namespace: this.getNamespaceName(), type: event });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       // Event versioning: attach schemaVersion to payload if object-like and absent (non-breaking)
       if (data && typeof data === 'object' && !('schemaVersion' in data)) {
-        try { (data as any).schemaVersion = '1.0'; } catch {}
+        try { (data as any).schemaVersion = '1.0'; } catch { /* intentionally ignored: best effort cleanup */ }
       }
 
       const ordered = process.env.WS_ORDERED_EMITS !== '0' && process.env.NODE_ENV !== 'test';
@@ -278,11 +278,11 @@ export abstract class NamespaceBaseService {
       // Optional logging
       const participantCount = this.namespace.adapter.rooms.get(room)?.size || 0;
       if (['group:status_changed', 'session:status_changed', 'wavelistener:issue_reported'].includes(event)) {
-        console.log(`WebSocket: Broadcast '${event}' to room '${room}' (participants: ${participantCount})`);
+        logger.debug(`WebSocket: Broadcast '${event}' to room '${room}' (participants: ${participantCount})`);
       }
       return true;
     } catch (error) {
-      console.error(`WebSocket broadcast failure:`, {
+      logger.error(`WebSocket broadcast failure:`, {
         room,
         event,
         error: error instanceof Error ? error.message : 'Unknown error',

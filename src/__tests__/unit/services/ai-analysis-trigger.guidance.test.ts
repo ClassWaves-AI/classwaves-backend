@@ -1,4 +1,5 @@
 import { aiAnalysisTriggerService } from '../../../services/ai-analysis-trigger.service';
+import { aiAnalysisBufferService } from '../../../services/ai-analysis-buffer.service';
 import type { Tier2Insights } from '../../../types/ai-analysis.types';
 
 jest.mock('../../../utils/ai-analysis.port.instance', () => ({
@@ -79,6 +80,12 @@ describe('AIAnalysisTriggerService — dual emit to guidance', () => {
     delete process.env.GUIDANCE_TIER1_SUPPRESS_ONTRACK;
     delete process.env.GUIDANCE_TIER2_SHIFT_ENABLED;
     delete process.env.SLI_SESSION_TTL_SECONDS;
+    delete process.env.GUIDANCE_AUTO_PROMPTS;
+    delete process.env.GUIDANCE_CONTEXT_ENRICHMENT;
+    delete process.env.AI_GUIDANCE_DOMAIN_TERMS;
+    delete process.env.AI_GUIDANCE_TITLECASE_TERMS;
+    delete process.env.AI_GUIDANCE_TOPIC_STOPWORDS;
+    delete process.env.AI_GUIDANCE_SUPPORTING_LINE_MAX_CHARS;
   });
 
   it('emits Tier1 insights to guidance namespace (canonical)', async () => {
@@ -95,6 +102,69 @@ describe('AIAnalysisTriggerService — dual emit to guidance', () => {
     expect(emitTier2Insight).toHaveBeenCalled();
     const [, payload] = emitTier2Insight.mock.calls[0];
     expect(payload).toHaveProperty('sessionId', 's-2');
+  });
+
+  it('produces paraphrased context anchored to the session goal', async () => {
+    process.env.GUIDANCE_CONTEXT_ENRICHMENT = '1';
+    process.env.GUIDANCE_AUTO_PROMPTS = '0';
+    process.env.AI_GUIDANCE_DOMAIN_TERMS = 'Tier-2 analysis,Guidance v2,WaveListener engine,teacher insights,transcript evidence';
+    process.env.AI_GUIDANCE_TITLECASE_TERMS = 'tier 2=Tier-2;guidance v2=Guidance v2;wave listener=WaveListener';
+    process.env.AI_GUIDANCE_TOPIC_STOPWORDS = 'right,today,thing,things,like,kind,sort,essentially,uh,um,okay,alright';
+    process.env.AI_GUIDANCE_SUPPORTING_LINE_MAX_CHARS = '80';
+
+    const now = Date.now();
+    const bufferSpy = jest.spyOn(aiAnalysisBufferService, 'getContextWindows').mockReturnValue({
+      aligned: [
+        { speakerLabel: 'Participant 1', text: 'We mapped Guidance v2 improvements for the WaveListener engine earlier.', timestamp: now - 60000 },
+        { speakerLabel: 'Participant 2', text: 'Tier 2 analysis will confirm the new attention metric.', timestamp: now - 45000 },
+      ],
+      tangent: [
+        { speakerLabel: 'Participant 3', text: 'Now we are chatting about weekend plans instead of the engine upgrades.', timestamp: now - 15000 },
+        { speakerLabel: 'Participant 4', text: 'I am waiting for tier 2 analysis results before doing anything.', timestamp: now - 8000 },
+      ],
+    } as any);
+
+    (aiAnalysisPort.analyzeTier1 as jest.Mock).mockResolvedValueOnce({
+      topicalCohesion: 0.35,
+      conceptualDensity: 0.4,
+      confidence: 0.72,
+      offTopicHeat: 0.6,
+      discussionMomentum: -0.1,
+      confusionRisk: 0.3,
+      energyLevel: 0.5,
+      analysisTimestamp: new Date(now).toISOString(),
+      windowStartTime: new Date(now - 30000).toISOString(),
+      windowEndTime: new Date(now).toISOString(),
+      transcriptLength: 320,
+      insights: [],
+    });
+
+    await aiAnalysisTriggerService.triggerTier1Analysis(
+      'group-context',
+      'session-context',
+      'teacher-context',
+      ['students mention guidance v2 improvements repeatedly'],
+      {
+        goals: ['Guidance v2 improvements in WaveListener'],
+      }
+    );
+
+    expect(emitTier1Insight).toHaveBeenCalled();
+    const [, payload] = emitTier1Insight.mock.calls[emitTier1Insight.mock.calls.length - 1];
+    const context = payload.insights?.context;
+    expect(context).toBeDefined();
+    expect(context?.reason).toContain('Guidance v2');
+    expect(context?.reason).toContain('WaveListener');
+    expect((context?.reason?.length || 0)).toBeGreaterThanOrEqual(70);
+    expect(context?.transitionIdea).toContain('Guidance v2');
+    expect(context?.supportingLines).toBeDefined();
+    expect(context?.supportingLines?.length).toBeGreaterThan(0);
+    context?.supportingLines?.forEach((line) => {
+      expect(line.quote).not.toMatch(/["“”]/);
+      expect(line.quote.length).toBeLessThanOrEqual(80);
+    });
+
+    bufferSpy.mockRestore();
   });
 
   it('emits attention analytics when metrics available', async () => {
@@ -118,7 +188,46 @@ describe('AIAnalysisTriggerService — dual emit to guidance', () => {
     expect(emitGuidanceAnalytics).toHaveBeenCalled();
     const analyticsEvent = emitGuidanceAnalytics.mock.calls.find(([event]) => event.category === 'attention');
     expect(analyticsEvent).toBeDefined();
-    expect(analyticsEvent?.[0]).toMatchObject({ category: 'attention', sessionId: 's-attn' });
+    const payload = analyticsEvent?.[0];
+    expect(payload).toMatchObject({ category: 'attention', sessionId: 's-attn' });
+    expect(payload?.metrics).toMatchObject({
+      groupId: 'g-attn',
+      attentionScore: expect.any(Number),
+      topicalCohesion: expect.any(Number),
+      conceptualDensity: expect.any(Number),
+    });
+    expect(() => new Date(payload!.timestamp!).toISOString()).not.toThrow();
+  });
+
+  it('increments redis unavailable metric and falls back when prompt pressure lookup fails', async () => {
+    const nowIso = new Date().toISOString();
+    (aiAnalysisPort.analyzeTier1 as jest.Mock).mockResolvedValueOnce({
+      onTrackScore: 65,
+      topicalCohesion: 0.3,
+      conceptualDensity: 0.5,
+      offTopicHeat: 0.6,
+      discussionMomentum: -0.2,
+      confusionRisk: 0.4,
+      energyLevel: 0.5,
+      analysisTimestamp: nowIso,
+      windowStartTime: nowIso,
+      windowEndTime: nowIso,
+      transcriptLength: 180,
+      confidence: 0.9,
+      insights: [],
+    });
+
+    const incSpy = jest.spyOn((aiAnalysisTriggerService as any).guidanceRedisUnavailable, 'inc');
+    mockRedisClient.hgetall.mockRejectedValueOnce(new Error('redis offline'));
+
+    await aiAnalysisTriggerService.triggerTier1Analysis('g-redis', 's-redis', 't-redis', ['one', 'two', 'three']);
+
+    expect(incSpy).toHaveBeenCalledWith({ component: 'attention_gate' });
+    const attentionCall = mockGuidanceScripts.attentionGate.mock.calls[0]?.[0];
+    expect(attentionCall).toBeDefined();
+    expect(typeof attentionCall.score).toBe('number');
+    expect(attentionCall.score).toBeGreaterThan(0);
+    incSpy.mockRestore();
   });
 
   it('emits tier2 shift analytics when thresholds exceeded', async () => {
@@ -154,6 +263,15 @@ describe('AIAnalysisTriggerService — dual emit to guidance', () => {
 
     const shiftEvent = emitGuidanceAnalytics.mock.calls.find(([event]) => event.category === 'tier2-shift');
     expect(shiftEvent).toBeDefined();
-    expect(shiftEvent?.[0]).toMatchObject({ category: 'tier2-shift', sessionId: 's-shift' });
+    const shiftPayload = shiftEvent?.[0];
+    expect(shiftPayload).toMatchObject({ category: 'tier2-shift', sessionId: 's-shift' });
+    expect(shiftPayload?.metrics).toMatchObject({
+      groupId: 'g-shift',
+      metric: expect.any(String),
+      previous: expect.any(Number),
+      current: expect.any(Number),
+      threshold: expect.any(Number),
+    });
+    expect(() => new Date(shiftPayload!.timestamp!).toISOString()).not.toThrow();
   });
 });

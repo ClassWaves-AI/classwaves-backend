@@ -14,7 +14,7 @@ import { v4 as uuid } from 'uuid';
  */
 export async function listSchools(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('📋 Admin: List Schools endpoint called');
+  logger.debug('📋 Admin: List Schools endpoint called');
   
   try {
     // Verify super admin access
@@ -62,7 +62,7 @@ export async function listSchools(req: Request, res: Response): Promise<Response
     });
 
   } catch (error) {
-    console.error('❌ Error listing schools:', error);
+    logger.error('❌ Error listing schools:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve schools', 500);
   }
 }
@@ -73,7 +73,7 @@ export async function listSchools(req: Request, res: Response): Promise<Response
  */
 export async function createSchool(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('🏫 Admin: Create School endpoint called');
+  logger.debug('🏫 Admin: Create School endpoint called');
   
   try {
     // Verify super admin access
@@ -147,7 +147,7 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
     return ok(res, { school: createdSchool }, 201);
 
   } catch (error) {
-    console.error('❌ Error creating school:', error);
+    logger.error('❌ Error creating school:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to create school', 500);
   }
 }
@@ -159,7 +159,7 @@ export async function createSchool(req: Request, res: Response): Promise<Respons
 export async function updateSchool(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const schoolId = req.params.id;
-  console.log(`🔄 Admin: Update School ${schoolId} endpoint called`);
+  logger.debug(`🔄 Admin: Update School ${schoolId} endpoint called`);
   
   try {
     // Verify super admin access
@@ -258,7 +258,7 @@ export async function updateSchool(req: Request, res: Response): Promise<Respons
     return ok(res, { school: updatedSchool });
 
   } catch (error) {
-    console.error('❌ Error updating school:', error);
+    logger.error('❌ Error updating school:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update school', 500);
   }
 }
@@ -289,7 +289,7 @@ export async function getPromptDeliverySLI(req: Request, res: Response): Promise
     }
     return ok(res, { sessionId, metrics });
   } catch (error) {
-    console.error('❌ Error getting prompt delivery SLI:', error);
+    logger.error('❌ Error getting prompt delivery SLI:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve SLIs', 500);
   }
 }
@@ -300,7 +300,7 @@ export async function getPromptDeliverySLI(req: Request, res: Response): Promise
  */
 export async function listTeachers(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('👥 Admin: List Teachers endpoint called');
+  logger.debug('👥 Admin: List Teachers endpoint called');
   
   try {
     // Check admin access
@@ -313,25 +313,13 @@ export async function listTeachers(req: Request, res: Response): Promise<Respons
     const offset = (page - 1) * limit;
     const schoolId = req.query.schoolId as string;
 
-    // Build WHERE clause based on user role
-    let whereClause = '';
-    let queryParams: any[] = [];
-
-    if (authReq.user!.role === 'super_admin') {
-      // Super admin can see all teachers, optionally filtered by school
-      if (schoolId) {
-        whereClause = 'WHERE t.school_id = ?';
-        queryParams = [schoolId];
-      }
-    } else {
-      // Regular admin can only see their school's teachers
-      whereClause = 'WHERE t.school_id = ?';
-      queryParams = [authReq.school!.id];
-    }
+    // Resolve target school scope for queries
+    const targetSchoolId = authReq.user!.role === 'super_admin' ? schoolId : authReq.school!.id;
+    const filters = targetSchoolId ? { schoolId: targetSchoolId } : {};
 
     const adminRepo = getCompositionRoot().getAdminRepository();
-    const teachers = await adminRepo.listTeachers({ schoolId: queryParams[0] }, limit, offset);
-    const total = await adminRepo.countTeachers({ schoolId: queryParams[0] });
+    const teachers = await adminRepo.listTeachers(filters, limit, offset);
+    const total = await adminRepo.countTeachers(filters);
 
     
     const totalPages = Math.ceil(total / limit);
@@ -365,7 +353,7 @@ export async function listTeachers(req: Request, res: Response): Promise<Respons
     });
 
   } catch (error) {
-    console.error('❌ Error listing teachers:', error);
+    logger.error('❌ Error listing teachers:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve teachers', 500);
   }
 }
@@ -377,7 +365,7 @@ export async function listTeachers(req: Request, res: Response): Promise<Respons
 export async function updateTeacher(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const teacherId = req.params.id;
-  console.log(`🔄 Admin: Update Teacher ${teacherId} endpoint called`);
+  logger.debug(`🔄 Admin: Update Teacher ${teacherId} endpoint called`);
   
   try {
     // Check admin access
@@ -489,7 +477,7 @@ export async function updateTeacher(req: Request, res: Response): Promise<Respon
     return ok(res, { teacher: updatedTeacher });
 
   } catch (error) {
-    console.error('❌ Error updating teacher:', error);
+    logger.error('❌ Error updating teacher:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update teacher', 500);
   }
 }
@@ -578,7 +566,7 @@ export async function inviteTeacher(req: Request, res: Response): Promise<Respon
     }
     return ok(res, { issued: true }, 201);
   } catch (error) {
-    console.error('❌ Error issuing teacher invite:', error);
+    logger.error('❌ Error issuing teacher invite:', error);
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to issue teacher invite', 500);
   }
 }

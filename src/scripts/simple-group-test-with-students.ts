@@ -3,17 +3,18 @@ import { join } from 'path';
 import { databricksService } from '../services/databricks.service';
 import { generateAccessToken, generateSessionId } from '../utils/jwt.utils';
 import { redisService } from '../services/redis.service';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function simpleGroupTestWithStudents() {
   try {
-    console.log('🧪 Simple Group Test with Manual Students...');
+    logger.debug('🧪 Simple Group Test with Manual Students...');
     
     // Connect to services
     await databricksService.connect();
-    console.log('✅ Connected to Databricks SQL Warehouse');
+    logger.debug('✅ Connected to Databricks SQL Warehouse');
     
     // Get the super admin from database to use for testing
     const superAdmin = await databricksService.queryOne(`
@@ -26,13 +27,13 @@ async function simpleGroupTestWithStudents() {
     `);
     
     if (!superAdmin) {
-      console.error('❌ No super admin found');
+      logger.error('❌ No super admin found');
       return;
     }
     
-    console.log('✅ Found super admin:', superAdmin.email);
+    logger.debug('✅ Found super admin:', superAdmin.email);
     
-    console.log('✅ Connected to Redis');
+    logger.debug('✅ Connected to Redis');
     
     // Create a test session
     const sessionId = databricksService.generateId();
@@ -51,7 +52,7 @@ async function simpleGroupTestWithStudents() {
       updated_at: new Date(),
     });
     
-    console.log('✅ Created test session:', sessionId);
+    logger.debug('✅ Created test session:', sessionId);
     
     // Create some test students directly
     const studentData = [
@@ -89,7 +90,7 @@ async function simpleGroupTestWithStudents() {
       });
       
       studentIds.push(studentId);
-      console.log(`✅ Created student: ${student.name} (${studentId})`);
+      logger.debug(`✅ Created student: ${student.name} (${studentId})`);
     }
     
     // Create teacher and school objects for JWT generation
@@ -141,9 +142,9 @@ async function simpleGroupTestWithStudents() {
       userAgent: 'test-script'
     });
     
-    console.log('✅ Generated access token and stored session');
+    logger.debug('✅ Generated access token and stored session');
     
-    console.log('\n🧪 Testing group creation...');
+    logger.debug('\n🧪 Testing group creation...');
     
     const headers = {
       'Authorization': `Bearer ${accessToken}`,
@@ -151,7 +152,7 @@ async function simpleGroupTestWithStudents() {
     };
     
     // Test 1: Create group without leader
-    console.log('\n📝 Test 1: Create group without leader');
+    logger.debug('\n📝 Test 1: Create group without leader');
     const response1 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups`, {
       method: 'POST',
       headers,
@@ -161,13 +162,13 @@ async function simpleGroupTestWithStudents() {
       })
     });
     
-    console.log('Response status:', response1.status);
+    logger.debug('Response status:', response1.status);
     const result1 = await response1.json();
-    console.log('Response:', JSON.stringify(result1, null, 2));
+    logger.debug('Response:', JSON.stringify(result1, null, 2));
     
     // Test 2: Create group with leader
-    console.log('\n📝 Test 2: Create group with leader');
-    console.log('Using student ID as leader:', studentIds[0]);
+    logger.debug('\n📝 Test 2: Create group with leader');
+    logger.debug('Using student ID as leader:', studentIds[0]);
     
     const response2 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups`, {
       method: 'POST',
@@ -179,12 +180,12 @@ async function simpleGroupTestWithStudents() {
       })
     });
     
-    console.log('Response status:', response2.status);
+    logger.debug('Response status:', response2.status);
     const result2 = await response2.json();
-    console.log('Response:', JSON.stringify(result2, null, 2));
+    logger.debug('Response:', JSON.stringify(result2, null, 2));
     
     // Test 3: Auto-generate groups
-    console.log('\n📝 Test 3: Auto-generate groups');
+    logger.debug('\n📝 Test 3: Auto-generate groups');
     
     const response3 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups/auto-generate`, {
       method: 'POST',
@@ -197,26 +198,26 @@ async function simpleGroupTestWithStudents() {
       })
     });
     
-    console.log('Response status:', response3.status);
+    logger.debug('Response status:', response3.status);
     const result3 = await response3.json();
-    console.log('Response:', JSON.stringify(result3, null, 2));
+    logger.debug('Response:', JSON.stringify(result3, null, 2));
     
     // Test 4: List all groups
-    console.log('\n📝 Test 4: List all groups');
+    logger.debug('\n📝 Test 4: List all groups');
     
     const response4 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups`, {
       method: 'GET',
       headers
     });
     
-    console.log('Response status:', response4.status);
+    logger.debug('Response status:', response4.status);
     const result4 = await response4.json();
-    console.log('Response:', JSON.stringify(result4, null, 2));
+    logger.debug('Response:', JSON.stringify(result4, null, 2));
     
-    console.log('\n✅ Simple group test completed');
+    logger.debug('\n✅ Simple group test completed');
     
   } catch (error) {
-    console.error('❌ Error in simple group test:', error);
+    logger.error('❌ Error in simple group test:', error);
   }
 }
 

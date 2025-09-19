@@ -22,18 +22,42 @@ interface RequestInitLite {
 }
 
 type FetchLike = (input: string, init?: RequestInitLite) => Promise<HttpResponse>;
-import { 
-  Tier1Options, 
-  Tier1Insights, 
-  Tier2Options, 
+import {
+  Tier1Options,
+  Tier1Insights,
+  Tier2Options,
   Tier2Insights,
   DatabricksAIRequest,
   DatabricksAIResponse,
   AIAnalysisConfig,
   AIAnalysisError,
-  AnalysisTier
+  AnalysisTier,
+  PromptContextDescriptor,
+  PromptContextQuote,
+  GuidanceContextSummarizerInput,
+  GuidanceDriftSignal,
 } from '../types/ai-analysis.types';
 import type { GroupSummary, SessionSummary } from '../types/ai-summaries.types';
+import { logger } from '../utils/logger';
+
+interface NormalizedGuidanceInput {
+  sessionGoal?: string;
+  aligned: Array<{ text: string }>;
+  current: Array<{ text: string }>;
+  driftSignals: Array<{ metric: string; detail: string; trend?: string }>;
+  domainTerms: string[];
+  titlecaseMap: Array<{ match: string; replacement: string }>;
+}
+
+interface GuidanceBudgets {
+  actionLine: { min: number; max: number };
+  reason: { min: number; max: number };
+  contextSummary: { min: number; max: number };
+  transition: { min: number; max: number };
+  topicMax: number;
+}
+
+const GUIDANCE_VERBATIM_WINDOW = 6;
 
 export class DatabricksAIService {
   private baseConfig: Omit<AIAnalysisConfig, 'tier1' | 'tier2' | 'databricks'> & {
@@ -83,7 +107,7 @@ export class DatabricksAIService {
     const startTime = Date.now();
     
     try {
-      console.log(`🧠 Starting Tier 1 analysis for group ${options.groupId}`);
+      logger.debug(`🧠 Starting Tier 1 analysis for group ${options.groupId}`);
       
       // Build analysis prompt
       const prompt = this.buildTier1Prompt(groupTranscripts, options);
@@ -91,13 +115,17 @@ export class DatabricksAIService {
       const insights = await this.callInsightsEndpoint<Tier1Insights>('tier1', prompt, groupTranscripts, options);
       
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Tier 1 analysis completed for group ${options.groupId} in ${processingTime}ms`);
+      logger.debug(`✅ Tier 1 analysis completed for group ${options.groupId} in ${processingTime}ms`);
       
       return insights;
       
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Tier 1 analysis failed for group ${options.groupId}:`, error);
+      logger.error('❌ Tier 1 analysis failed for group', {
+        groupId: options.groupId,
+        error: error instanceof Error ? error.message : String(error),
+        processingTime,
+      });
       // Preserve original error message for unit tests determinism
       throw error as Error;
     }
@@ -112,6 +140,11 @@ export class DatabricksAIService {
     const ctx = this.sanitizeSessionContext(options.sessionContext);
     const ctxJson = JSON.stringify(ctx);
     const escapedCtx = ctxJson.replace(/`/g, '\`');
+    const evidenceJson = options.evidenceWindows ? JSON.stringify(options.evidenceWindows, null, 2) : null;
+    const escapedEvidence = evidenceJson ? evidenceJson.replace(/`/g, '\`') : null;
+    const summaryLimit = Math.max(80, Math.min(400, parseInt(process.env.AI_GUIDANCE_CONTEXT_SUMMARY_MAX_CHARS || '160', 10)));
+    const topicLimit = Math.max(40, Math.min(120, parseInt(process.env.AI_GUIDANCE_TOPIC_MAX_CHARS || '60', 10)));
+    const supportingLinesMax = Math.max(1, Math.min(5, parseInt(process.env.AI_GUIDANCE_SUPPORTING_LINES_MAX || '3', 10)));
     // Avoid including raw IDs or long numeric sequences in the prompt to prevent input guardrails
     // Context lines keep only non-PII operational info
     return `You are an expert educational AI analyzing group discussion transcripts in real-time.
@@ -122,6 +155,10 @@ export class DatabricksAIService {
 
 **INTENDED SESSION CONTEXT (sanitized JSON):**
 ${escapedCtx}
+
+${escapedEvidence ? `**EVIDENCE WINDOWS (sanitized JSON with aligned/tangent quotes):**
+${escapedEvidence}
+` : ''}
 
 **TRANSCRIPT TO ANALYZE:**
 ${escapedTranscript}
@@ -177,6 +214,14 @@ Provide a JSON response with exactly this structure (omit optional fields when y
 - Prioritize insights that can improve current discussion
 - Focus on providing reasons why the insight is important and how the teacher can help the students improve their discussion
 
+**CONTEXT OUTPUT (PARAPHRASED):**
+- Include the \`context\` object only when you can paraphrase without copying transcript sentences.
+- \`context.reason\`: <= ${summaryLimit} characters, 1-2 sentences, neutral tone, no quotation marks.
+- \`context.priorTopic\` and \`context.currentTopic\`: each <= ${topicLimit} characters, short phrases summarizing earlier vs current focus.
+- \`context.transitionIdea\`: <= ${summaryLimit} characters, actionable bridge back to the goal.
+- \`context.supportingLines\`: up to ${supportingLinesMax} entries as { "speaker": "Participant N", "quote": "<paraphrased point>", "timestamp": <number or ISO string> }.
+- Each supporting line paraphrase <= 80 characters, neutral tone, no names or quotation marks.
+- Never copy six or more consecutive tokens from the transcript. Do not emit student names or identifiers.
 
 Return only valid JSON with no additional text.`;
   }
@@ -194,7 +239,7 @@ Return only valid JSON with no additional text.`;
     const startTime = Date.now();
     
     try {
-      console.log(`🧠 Starting Tier 2 analysis for session ${options.sessionId}`);
+      logger.debug(`🧠 Starting Tier 2 analysis for session ${options.sessionId}`);
       
       // Build comprehensive analysis prompt
       const prompt = this.buildTier2Prompt(sessionTranscripts, options);
@@ -202,13 +247,17 @@ Return only valid JSON with no additional text.`;
       const insights = await this.callInsightsEndpoint<Tier2Insights>('tier2', prompt, sessionTranscripts, options);
       
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Tier 2 analysis completed for session ${options.sessionId} in ${processingTime}ms`);
+      logger.debug(`✅ Tier 2 analysis completed for session ${options.sessionId} in ${processingTime}ms`);
       
       return insights;
       
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Tier 2 analysis failed for session ${options.sessionId}:`, error);
+      logger.error('❌ Tier 2 analysis failed for session', {
+        sessionId: options.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+        processingTime,
+      });
       // Preserve original error message for unit tests determinism
       throw error as Error;
     }
@@ -240,6 +289,524 @@ Return only valid JSON with no additional text.`;
     const parsed = this.toSessionSummary(this.extractSummaryObject(raw));
     parsed.analysisTimestamp = new Date().toISOString();
     return parsed;
+  }
+
+  async summarizeGuidanceContext(
+    input: GuidanceContextSummarizerInput
+  ): Promise<PromptContextDescriptor | undefined> {
+    const normalized = this.normalizeGuidanceInput(input);
+    if (normalized.aligned.length === 0 && normalized.current.length === 0) {
+      return undefined;
+    }
+
+    const budgets = this.resolveGuidanceBudgets();
+    const spanIndex = this.buildGuidanceSpanIndex([...normalized.aligned, ...normalized.current]);
+    const titlecasePatterns = this.compileTitlecasePatterns(normalized.titlecaseMap);
+    const prompt = this.buildGuidanceContextPrompt(normalized, budgets);
+
+    const raw = await this.callSummarizerEndpoint(prompt);
+    const parsed = this.extractSummaryObject(raw);
+
+    return this.validateGuidanceContextPayload(parsed, {
+      budgets,
+      spanIndex,
+      domainTerms: normalized.domainTerms,
+      titlecasePatterns,
+      strict: true,
+    });
+  }
+
+  private normalizeGuidanceInput(input: GuidanceContextSummarizerInput): NormalizedGuidanceInput {
+    const sanitizeText = (value: unknown): string | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const cleaned = this.cleanContextString(value)?.replace(/[\n\r]+/g, ' ');
+      return cleaned && cleaned.length > 0 ? cleaned : undefined;
+    };
+
+    const normalizeLines = (lines?: GuidanceContextSummarizerInput['aligned']) => {
+      if (!Array.isArray(lines)) {
+        return [] as Array<{ text: string }>;
+      }
+      return lines
+        .map((line) => sanitizeText(line?.text))
+        .filter((text): text is string => Boolean(text))
+        .map((text) => ({ text }));
+    };
+
+    const sanitizePair = (pair: { match: string; replacement: string } | undefined) => {
+      if (!pair) return undefined;
+      const match = sanitizeText(pair.match);
+      const replacement = sanitizeText(pair.replacement);
+      if (!match || !replacement) {
+        return undefined;
+      }
+      return { match, replacement };
+    };
+
+    const domainTerms = (Array.isArray(input.domainTerms) && input.domainTerms.length > 0
+      ? input.domainTerms
+      : (process.env.AI_GUIDANCE_DOMAIN_TERMS || 'Tier-2 analysis,Guidance v2,WaveListener engine').split(/[;,]/)
+    )
+      .map((term) => sanitizeText(term))
+      .filter((term): term is string => Boolean(term));
+
+    const titlecaseSource = Array.isArray(input.titlecaseMap) && input.titlecaseMap.length > 0
+      ? input.titlecaseMap
+      : (this.parseTitlecasePairsFromEnv(process.env.AI_GUIDANCE_TITLECASE_TERMS)
+          .filter((pair): pair is { match: string; replacement: string } => Boolean(pair))
+        );
+    const titlecaseMap = titlecaseSource
+      .map(sanitizePair)
+      .filter((pair): pair is { match: string; replacement: string } => Boolean(pair));
+
+    const driftSignals: GuidanceDriftSignal[] = [];
+    if (Array.isArray(input.driftSignals)) {
+      for (const signal of input.driftSignals) {
+        const metric = sanitizeText(signal?.metric);
+        const detail = sanitizeText(signal?.detail);
+        if (!metric || !detail) {
+          continue;
+        }
+        const trendValue = sanitizeText(signal?.trend);
+        const entry: GuidanceDriftSignal = { metric, detail };
+        if (trendValue) {
+          entry.trend = trendValue;
+        }
+        driftSignals.push(entry);
+      }
+    }
+
+    return {
+      sessionGoal: sanitizeText(input.sessionGoal),
+      aligned: normalizeLines(input.aligned),
+      current: normalizeLines(input.current),
+      driftSignals,
+      domainTerms,
+      titlecaseMap,
+    };
+  }
+
+  private resolveGuidanceBudgets(): GuidanceBudgets {
+    const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+    const parseEnv = (raw: string | undefined, fallback: number) => {
+      const parsed = Number.parseInt(raw ?? '', 10);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    const actionMin = clamp(parseEnv(process.env.AI_GUIDANCE_ACTION_MIN_CHARS, 80), 60, 140);
+    const actionMax = clamp(parseEnv(process.env.AI_GUIDANCE_ACTION_MAX_CHARS, 120), Math.max(actionMin + 10, 90), 160);
+
+    const transitionMin = clamp(parseEnv(process.env.AI_GUIDANCE_TRANSITION_MIN_CHARS, 80), 60, 140);
+    const transitionMax = clamp(parseEnv(process.env.AI_GUIDANCE_TRANSITION_MAX_CHARS, 120), Math.max(transitionMin + 10, 90), 160);
+
+    const reasonMin = clamp(parseEnv(process.env.AI_GUIDANCE_SUMMARY_MIN_CHARS, 100), 80, 160);
+    const reasonMax = clamp(parseEnv(process.env.AI_GUIDANCE_CONTEXT_SUMMARY_MAX_CHARS, 160), Math.max(reasonMin + 10, 120), 220);
+
+    const rawContextMin = parseEnv(process.env.AI_GUIDANCE_PARAGRAPH_MIN_CHARS, 140);
+    const rawContextMax = parseEnv(process.env.AI_GUIDANCE_PARAGRAPH_MAX_CHARS, 240);
+    const contextMin = clamp(Math.max(rawContextMin, reasonMin + 30), 120, 240);
+    const contextMax = clamp(Math.max(rawContextMax, contextMin + 10), Math.max(contextMin + 10, 160), 280);
+
+    const topicMax = clamp(parseEnv(process.env.AI_GUIDANCE_TOPIC_MAX_CHARS, 48), 24, 96);
+
+    return {
+      actionLine: { min: actionMin, max: actionMax },
+      reason: { min: reasonMin, max: reasonMax },
+      contextSummary: { min: contextMin, max: contextMax },
+      transition: { min: transitionMin, max: transitionMax },
+      topicMax,
+    };
+  }
+
+  private buildGuidanceContextPrompt(input: NormalizedGuidanceInput, budgets: GuidanceBudgets): string {
+    const formatWindow = (label: string, lines: Array<{ text: string }>) => {
+      if (lines.length === 0) {
+        return `${label}: (empty)`;
+      }
+      return `${label}:\n${lines
+        .map((line, index) => `  ${index + 1}. ${line.text}`)
+        .join('\n')}`;
+    };
+
+    const formatDrift = () => {
+      if (!input.driftSignals.length) {
+        return '- none provided';
+      }
+      return input.driftSignals
+        .map((signal) => `- ${signal.metric}: ${signal.detail}${signal.trend ? ` (trend: ${signal.trend})` : ''}`)
+        .join('\n');
+    };
+
+    const domainTerms = input.domainTerms.length > 0
+      ? input.domainTerms.join(', ')
+      : 'Tier-2 analysis, Guidance v2, WaveListener engine, teacher insights, transcript evidence';
+    const titlecaseTerms = input.titlecaseMap.length > 0
+      ? input.titlecaseMap.map((pair) => `${pair.match}=${pair.replacement}`).join('; ')
+      : 'tier 2=Tier-2;guidance v2=Guidance v2;wave listener=WaveListener';
+
+    const goalLine = input.sessionGoal ? `Session goal: ${input.sessionGoal}` : 'Session goal: (not provided)';
+
+    return `You are WaveListener Guidance, an instructional coach generating actionable teacher prompts.\n\n${goalLine}\nTier-1 drift signals:\n${formatDrift()}\n\nAligned discussion window (paraphrased transcripts):\n${formatWindow('Aligned window', input.aligned)}\n\nCurrent discussion window (paraphrased transcripts):\n${formatWindow('Current window', input.current)}\n\nDomain terms to preserve exactly: ${domainTerms}.\nTitlecase substitutions: ${titlecaseTerms}.\n\nReturn STRICT JSON only with this shape:\n{\n  "actionLine": string,\n  "reason": string,\n  "priorTopic": string,\n  "currentTopic": string,\n  "contextSummary": string,\n  "transitionIdea": string,\n  "confidence": number\n}\n\nConstraints:\n- Paraphrase only; do not copy six or more consecutive words verbatim from inputs.\n- No names, speaker labels, quotation marks, markdown, or bullet formatting.\n- actionLine: imperative teacher guidance, ${budgets.actionLine.min}-${budgets.actionLine.max} characters.\n- reason: neutral tone explaining drift vs. goal, ${budgets.reason.min}-${budgets.reason.max} characters.\n- priorTopic/currentTopic: <= ${budgets.topicMax} characters each, short noun phrases (title or sentence case).\n- contextSummary: single cohesive paragraph, ${budgets.contextSummary.min}-${budgets.contextSummary.max} characters.\n- transitionIdea: next step to recenter discussion, ${budgets.transition.min}-${budgets.transition.max} characters.\n- confidence: number between 0 and 1.\n- If unsure, estimate confidently but keep fields non-empty; otherwise return an error.\n`;
+  }
+
+  private compileTitlecasePatterns(pairs: Array<{ match: string; replacement: string }>): Array<{ regex: RegExp; replacement: string }> {
+    const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return pairs
+      .map((pair) => {
+        const match = this.cleanContextString(pair.match);
+        const replacement = this.cleanContextString(pair.replacement);
+        if (!match || !replacement) {
+          return undefined;
+        }
+        return { regex: new RegExp(`\\b${escape(match)}\\b`, 'gi'), replacement };
+      })
+      .filter((pattern): pattern is { regex: RegExp; replacement: string } => Boolean(pattern));
+  }
+
+  private applyTitlecasePatterns(value: string, patterns: Array<{ regex: RegExp; replacement: string }>): string {
+    let result = value;
+    for (const { regex, replacement } of patterns) {
+      result = result.replace(regex, replacement);
+    }
+    return result;
+  }
+
+  private applyDomainTerms(value: string, terms: string[]): string {
+    let result = value;
+    for (const term of terms) {
+      const cleaned = this.cleanContextString(term);
+      if (!cleaned) {
+        continue;
+      }
+      const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`\\b${escaped}\\b`, 'gi');
+      result = result.replace(pattern, cleaned);
+    }
+    return result;
+  }
+
+  private buildGuidanceSpanIndex(lines: Array<{ text: string }>): Set<string> {
+    const index = new Set<string>();
+    for (const line of lines) {
+      const tokens = this.guidanceTokenize(line.text);
+      if (tokens.length < GUIDANCE_VERBATIM_WINDOW) {
+        continue;
+      }
+      for (let i = 0; i <= tokens.length - GUIDANCE_VERBATIM_WINDOW; i++) {
+        index.add(tokens.slice(i, i + GUIDANCE_VERBATIM_WINDOW).join(' '));
+      }
+    }
+    return index;
+  }
+
+  private guidanceTokenize(value: string): string[] {
+    if (!value) return [];
+    return (value.toLowerCase().match(/\b[\w']+\b/g) ?? []).map((token) => token);
+  }
+
+  private redactTokenSequences(value: string, spanIndex: Set<string>): string {
+    if (!value || spanIndex.size === 0) {
+      return value;
+    }
+
+    const matches = [...value.matchAll(/\b[\w']+\b/g)];
+    if (matches.length < GUIDANCE_VERBATIM_WINDOW) {
+      return value;
+    }
+
+    const lowerTokens = matches.map((match) => match[0].toLowerCase());
+    const spans: Array<{ start: number; end: number }> = [];
+    for (let i = 0; i <= lowerTokens.length - GUIDANCE_VERBATIM_WINDOW; i++) {
+      const span = lowerTokens.slice(i, i + GUIDANCE_VERBATIM_WINDOW).join(' ');
+      if (spanIndex.has(span)) {
+        const start = matches[i].index ?? 0;
+        const last = matches[i + GUIDANCE_VERBATIM_WINDOW - 1];
+        const end = (last.index ?? 0) + last[0].length;
+        spans.push({ start, end });
+      }
+    }
+
+    if (spans.length === 0) {
+      return value;
+    }
+
+    spans.sort((a, b) => a.start - b.start);
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const span of spans) {
+      const previous = merged[merged.length - 1];
+      if (!previous || span.start > previous.end) {
+        merged.push({ ...span });
+      } else {
+        previous.end = Math.max(previous.end, span.end);
+      }
+    }
+
+    let cursor = 0;
+    let result = '';
+    for (const span of merged) {
+      result += value.slice(cursor, span.start);
+      cursor = span.end;
+    }
+    result += value.slice(cursor);
+
+    return result
+      .replace(/\s{2,}/g, ' ')
+      .replace(/\s+([.,;:!?])/g, '$1')
+      .trim();
+  }
+
+  private truncateWithEllipsis(value: string, max: number): string {
+    if (value.length <= max) {
+      return value;
+    }
+    if (max <= 1) {
+      return value.slice(0, Math.max(0, max));
+    }
+    const slice = value.slice(0, max - 1);
+    const lastSpace = slice.lastIndexOf(' ');
+    const base = lastSpace > max / 2 ? slice.slice(0, lastSpace) : slice;
+    return `${base.trim()}…`;
+  }
+
+  private normalizeTopicCase(value: string): string {
+    if (!value) return value;
+    const trimmed = value.trim();
+    if (!trimmed) return trimmed;
+    if (/[A-Z]/.test(trimmed.slice(1))) {
+      return trimmed;
+    }
+    return trimmed.charAt(0).toUpperCase() + trimmed.slice(1).toLowerCase();
+  }
+
+  private validateGuidanceContextPayload(
+    raw: Record<string, unknown>,
+    options: {
+      budgets: GuidanceBudgets;
+      spanIndex: Set<string>;
+      domainTerms: string[];
+      titlecasePatterns: Array<{ regex: RegExp; replacement: string }>;
+      strict?: boolean;
+    }
+  ): PromptContextDescriptor | undefined {
+    if (!raw || typeof raw !== 'object') {
+      throw this.createAIError('INVALID_INPUT', 'Guidance summarizer returned non-object payload', 'tier1');
+    }
+
+    const strict = options.strict !== false;
+
+    try {
+      const descriptor: PromptContextDescriptor = {};
+
+      const actionLine = this.prepareGuidanceField(raw, 'actionLine', options.budgets.actionLine, {
+        spanIndex: options.spanIndex,
+        titlecasePatterns: options.titlecasePatterns,
+        enforceParagraph: false,
+        required: strict,
+        domainTerms: options.domainTerms,
+      });
+      if (actionLine) {
+        descriptor.actionLine = actionLine;
+      }
+
+      const reason = this.prepareGuidanceField(raw, 'reason', options.budgets.reason, {
+        spanIndex: options.spanIndex,
+        titlecasePatterns: options.titlecasePatterns,
+        enforceParagraph: true,
+        required: strict,
+        domainTerms: options.domainTerms,
+      });
+      if (reason) {
+        descriptor.reason = reason;
+      }
+
+      const priorTopic = this.prepareGuidanceField(raw, 'priorTopic', { min: 4, max: options.budgets.topicMax }, {
+        spanIndex: options.spanIndex,
+        titlecasePatterns: options.titlecasePatterns,
+        enforceParagraph: false,
+        required: strict,
+        normalizeTopic: true,
+        domainTerms: options.domainTerms,
+      });
+      if (priorTopic) {
+        descriptor.priorTopic = priorTopic;
+      }
+
+      const currentTopic = this.prepareGuidanceField(raw, 'currentTopic', { min: 4, max: options.budgets.topicMax }, {
+        spanIndex: options.spanIndex,
+        titlecasePatterns: options.titlecasePatterns,
+        enforceParagraph: false,
+        required: strict,
+        normalizeTopic: true,
+        domainTerms: options.domainTerms,
+      });
+      if (currentTopic) {
+        descriptor.currentTopic = currentTopic;
+      }
+
+      const contextSummary = this.prepareGuidanceField(raw, 'contextSummary', options.budgets.contextSummary, {
+        spanIndex: options.spanIndex,
+        titlecasePatterns: options.titlecasePatterns,
+        enforceParagraph: true,
+        required: strict,
+        domainTerms: options.domainTerms,
+      });
+      if (contextSummary) {
+        descriptor.contextSummary = contextSummary;
+        const timestamp = new Date().toISOString();
+        const supportingLine = {
+          speaker: '',
+          speakerLabel: '',
+          quote: contextSummary,
+          text: contextSummary,
+          timestamp,
+        };
+        descriptor.supportingLines = [supportingLine];
+        descriptor.quotes = [
+          {
+            speakerLabel: '',
+            text: contextSummary,
+            timestamp,
+          },
+        ];
+      }
+
+      const transitionIdea = this.prepareGuidanceField(raw, 'transitionIdea', options.budgets.transition, {
+        spanIndex: options.spanIndex,
+        titlecasePatterns: options.titlecasePatterns,
+        enforceParagraph: true,
+        required: strict,
+        domainTerms: options.domainTerms,
+      });
+      if (transitionIdea) {
+        descriptor.transitionIdea = transitionIdea;
+      }
+
+      const confidenceRaw = (raw as any).confidence;
+      if (typeof confidenceRaw === 'number' && Number.isFinite(confidenceRaw)) {
+        descriptor.confidence = Math.max(0, Math.min(1, confidenceRaw));
+      }
+
+      const hasContent = Boolean(
+        descriptor.actionLine ||
+          descriptor.reason ||
+          descriptor.priorTopic ||
+          descriptor.currentTopic ||
+          descriptor.transitionIdea ||
+          descriptor.contextSummary
+      );
+
+      if (!hasContent) {
+        if (strict) {
+          throw new Error('No usable guidance fields present');
+        }
+        return undefined;
+      }
+
+      if (strict) {
+        const requiredFields: Array<keyof PromptContextDescriptor> = [
+          'actionLine',
+          'reason',
+          'priorTopic',
+          'currentTopic',
+          'contextSummary',
+          'transitionIdea',
+        ];
+        for (const field of requiredFields) {
+          if (!descriptor[field]) {
+            throw new Error(`Missing required field: ${field}`);
+          }
+        }
+      }
+
+      return descriptor;
+    } catch (error) {
+      throw this.createAIError(
+        'INVALID_INPUT',
+        `Guidance summarizer schema error: ${error instanceof Error ? error.message : 'unknown error'}`,
+        'tier1',
+        undefined,
+        undefined,
+        { raw }
+      );
+    }
+  }
+
+  private prepareGuidanceField(
+    source: Record<string, unknown>,
+    key: string,
+    budget: { min?: number; max: number },
+    options: {
+      spanIndex: Set<string>;
+      titlecasePatterns: Array<{ regex: RegExp; replacement: string }>;
+      enforceParagraph: boolean;
+      required: boolean;
+      normalizeTopic?: boolean;
+      domainTerms?: string[];
+    }
+  ): string | undefined {
+    const raw = source[key];
+    if (typeof raw !== 'string') {
+      if (options.required) {
+        throw new Error(`Missing ${key}`);
+      }
+      return undefined;
+    }
+
+    let value = this.cleanContextString(raw);
+    if (!value) {
+      if (options.required) {
+        throw new Error(`${key} empty after cleaning`);
+      }
+      return undefined;
+    }
+
+    value = options.enforceParagraph ? value.replace(/[\n\r]+/g, ' ') : value;
+    value = value.replace(/\s{2,}/g, ' ').trim();
+    value = this.applyTitlecasePatterns(value, options.titlecasePatterns);
+    if (options.domainTerms && options.domainTerms.length > 0) {
+      value = this.applyDomainTerms(value, options.domainTerms);
+    }
+    value = this.redactTokenSequences(value, options.spanIndex);
+    value = value.replace(/\s{2,}/g, ' ').trim();
+
+    if (!value) {
+      if (options.required) {
+        throw new Error(`${key} removed by redaction`);
+      }
+      return undefined;
+    }
+
+    if (options.normalizeTopic) {
+      value = this.normalizeTopicCase(value);
+    }
+
+    if (value.length > budget.max) {
+      value = this.truncateWithEllipsis(value, budget.max);
+    }
+
+    if (typeof budget.min === 'number' && value.length < budget.min) {
+      if (options.required) {
+        throw new Error(`${key} below minimum length (${value.length} < ${budget.min})`);
+      }
+      return undefined;
+    }
+
+    return value;
+  }
+
+  private parseTitlecasePairsFromEnv(raw: string | undefined): Array<{ match: string; replacement: string } | undefined> {
+    if (!raw) {
+      return [];
+    }
+    return raw
+      .split(/[;\n]/)
+      .map((segment) => {
+        const [match, replacement] = segment.split('=').map((token) => token?.trim());
+        if (!match || !replacement) {
+          return undefined;
+        }
+        return { match, replacement };
+      });
   }
 
   /**
@@ -384,7 +951,7 @@ Return only valid JSON with no additional text.`;
     
     for (let attempt = 1; attempt <= runtime.retries.maxAttempts; attempt++) {
       try {
-        console.log(`🔄 ${tier.toUpperCase()} API call attempt ${attempt}/${runtime.retries.maxAttempts}`);
+        logger.debug(`🔄 ${tier.toUpperCase()} API call attempt ${attempt}/${runtime.retries.maxAttempts}`);
         
         const response = await this.postWithTimeout(fullUrl, payload, tierCfg.timeout, runtime.databricks.token);
         if (!response.ok) {
@@ -397,12 +964,12 @@ Return only valid JSON with no additional text.`;
           const bodyText = await response.text?.().catch(() => '') ?? '';
           throw this.createAIError('ANALYSIS_FAILED', apiErrorMsg, tier, undefined, undefined, { bodyText });
         }
-        console.log(`✅ ${tier.toUpperCase()} API call successful on attempt ${attempt}`);
+        logger.debug(`✅ ${tier.toUpperCase()} API call successful on attempt ${attempt}`);
         return await response.json();
         
       } catch (error) {
         lastError = error as Error;
-        console.warn(`⚠️  ${tier.toUpperCase()} API call failed on attempt ${attempt}:`, error instanceof Error ? error.message : 'Unknown error');
+        logger.warn(`⚠️  ${tier.toUpperCase()} API call failed on attempt ${attempt}:`, error instanceof Error ? error.message : 'Unknown error');
         
         // Check for specific error types using message heuristics
         const msg = (error as Error)?.message || '';
@@ -432,7 +999,7 @@ Return only valid JSON with no additional text.`;
           const jitter = runtime.retries.jitter ? Math.random() * backoff : 0;
           const delay = backoff + jitter;
           
-          console.log(`⏳ Retrying ${tier.toUpperCase()} in ${Math.round(delay)}ms...`);
+          logger.debug(`⏳ Retrying ${tier.toUpperCase()} in ${Math.round(delay)}ms...`);
           await this.delay(delay);
         }
       }
@@ -453,7 +1020,7 @@ Return only valid JSON with no additional text.`;
 
     return new Promise<HttpResponse>((resolve, reject) => {
       timer = setTimeout(() => {
-        try { controller.abort(); } catch {}
+        try { controller.abort(); } catch { /* intentionally ignored: best effort cleanup */ }
         reject(new Error('Request timeout'));
       }, timeoutMs);
       if (useUnref && typeof timer?.unref === 'function') {
@@ -556,6 +1123,13 @@ Return only valid JSON with no additional text.`;
         insights: Array.isArray(parsed.insights) ? parsed.insights : []
       };
 
+      const contextDescriptor = this.extractContextDescriptor(parsed.context ?? parsed.promptContext ?? null);
+      if (contextDescriptor) {
+        result.context = contextDescriptor;
+      } else if ('context' in result) {
+        delete (result as any).context;
+      }
+
       if (typeof result.offTopicHeat !== 'number' || Number.isNaN(result.offTopicHeat)) {
         const minScore = Math.min(result.topicalCohesion ?? 0, result.conceptualDensity ?? 0);
         result.offTopicHeat = clamp01(1 - minScore);
@@ -564,7 +1138,7 @@ Return only valid JSON with no additional text.`;
       return result;
       
     } catch (error) {
-      console.error('Failed to parse Tier 1 response:', error);
+      logger.error('Failed to parse Tier 1 response:', error);
       throw this.createAIError(
         'ANALYSIS_FAILED',
         `Failed to parse Tier 1 response: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -622,7 +1196,7 @@ Return only valid JSON with no additional text.`;
       return insights;
       
     } catch (error) {
-      console.error('Failed to parse Tier 2 response:', error);
+      logger.error('Failed to parse Tier 2 response:', error);
       throw this.createAIError(
         'ANALYSIS_FAILED',
         `Failed to parse Tier 2 response: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -724,6 +1298,95 @@ Return only valid JSON with no additional text.`;
     throw lastError;
   }
 
+  private extractContextDescriptor(raw: any): PromptContextDescriptor | undefined {
+    if (!raw || typeof raw !== 'object') {
+      return undefined;
+    }
+
+    try {
+      return this.validateGuidanceContextPayload(raw as Record<string, unknown>, {
+        budgets: this.resolveGuidanceBudgets(),
+        spanIndex: new Set<string>(),
+        domainTerms: [],
+        titlecasePatterns: [],
+        strict: false,
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
+  private extractContextQuote(raw: any, index: number): PromptContextQuote | null {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+
+    const textCandidate = typeof raw.text === 'string'
+      ? raw.text
+      : typeof raw.quote === 'string'
+        ? raw.quote
+        : undefined;
+    const text = this.cleanContextString(textCandidate);
+    if (!text) {
+      return null;
+    }
+
+    const speakerLabel = this.normalizeSpeakerLabel((raw as any)?.speakerLabel ?? (raw as any)?.speaker, index);
+
+    return {
+      speakerLabel,
+      text,
+      timestamp: this.normalizeTimestamp(raw.timestamp),
+    };
+  }
+
+  private cleanContextString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const normalized = this.stripQuotes(value).replace(/\s+/g, ' ').trim();
+    return normalized || undefined;
+  }
+
+  private stripQuotes(input: string): string {
+    return input.replace(/["'“”‘’]/g, '');
+  }
+
+  private normalizeSpeakerLabel(value: unknown, index: number): string {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (/^participant\s*\d+$/i.test(trimmed)) {
+        return trimmed.replace(/\s+/g, ' ');
+      }
+    }
+    return `Participant ${index + 1}`;
+  }
+
+  private normalizeTimestamp(value: unknown): string {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return value.toISOString();
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return new Date(value).toISOString();
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return new Date().toISOString();
+      }
+      const numeric = Number(trimmed);
+      if (!Number.isNaN(numeric)) {
+        return new Date(numeric).toISOString();
+      }
+      const parsed = new Date(trimmed);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+      return trimmed;
+    }
+    return new Date().toISOString();
+  }
+
   /**
    * Extracts a JSON summary object from a variety of serving response shapes.
    * Supports:
@@ -737,19 +1400,19 @@ Return only valid JSON with no additional text.`;
       // Chat format
       const content = raw?.choices?.[0]?.message?.content;
       if (typeof content === 'string') {
-        try { return JSON.parse(content); } catch {}
+        try { return JSON.parse(content); } catch { /* intentionally ignored: best effort cleanup */ }
         // Handle markdown code fences and extract JSON substring
         const stripped = content
           .replace(/^```json\s*/i, '')
           .replace(/^```\s*/i, '')
           .replace(/```\s*$/i, '')
           .trim();
-        try { return JSON.parse(stripped); } catch {}
+        try { return JSON.parse(stripped); } catch { /* intentionally ignored: best effort cleanup */ }
         const first = stripped.indexOf('{');
         const last = stripped.lastIndexOf('}');
         if (first !== -1 && last !== -1 && last > first) {
           const slice = stripped.slice(first, last + 1);
-          try { return JSON.parse(slice); } catch {}
+          try { return JSON.parse(slice); } catch { /* intentionally ignored: best effort cleanup */ }
         }
       }
       // Output string

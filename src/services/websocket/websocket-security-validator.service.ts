@@ -8,6 +8,7 @@
 import { Socket } from 'socket.io';
 import { databricksService } from '../databricks.service';
 import { redisService } from '../redis.service';
+import { logger } from '../../utils/logger';
 
 export interface SecurityContext {
   userId: string;
@@ -200,7 +201,7 @@ export class WebSocketSecurityValidator {
 
       return { allowed: true };
     } catch (error) {
-      console.error('Error validating connection limits via adapter enumeration:', error);
+      logger.error('Error validating connection limits via adapter enumeration:', error);
       // Fail open to avoid blocking legitimate connections due to adapter errors
       return { allowed: true };
     }
@@ -243,7 +244,7 @@ export class WebSocketSecurityValidator {
       return { allowed: true };
 
     } catch (error) {
-      console.error('Error validating rate limit:', error);
+      logger.error('Error validating rate limit:', error);
       // Fail open for Redis errors
       return { allowed: true };
     }
@@ -300,7 +301,7 @@ export class WebSocketSecurityValidator {
       return { allowed: true };
 
     } catch (error) {
-      console.error('Error validating school access:', error);
+      logger.error('Error validating school access:', error);
       return {
         allowed: false,
         reason: 'School access validation failed',
@@ -363,7 +364,7 @@ export class WebSocketSecurityValidator {
       return { allowed: true };
 
     } catch (error) {
-      console.error('Error validating session access:', error);
+      logger.error('Error validating session access:', error);
       return {
         allowed: false,
         reason: 'Session access validation failed',
@@ -422,7 +423,7 @@ export class WebSocketSecurityValidator {
       await redisService.set(redisKey, JSON.stringify(securityEvent), 86400); // 24 hour TTL
 
     } catch (error) {
-      console.error('Error logging WebSocket security event:', error);
+      logger.error('Error logging WebSocket security event:', error);
     }
   }
 
@@ -464,7 +465,7 @@ export class WebSocketSecurityValidator {
       );
 
     } catch (error) {
-      console.error('Error handling WebSocket disconnection:', error);
+      logger.error('Error handling WebSocket disconnection:', error);
     }
   }
 }

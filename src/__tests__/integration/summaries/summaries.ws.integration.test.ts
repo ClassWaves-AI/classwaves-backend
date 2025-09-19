@@ -47,8 +47,8 @@ describe('WS: summaries:ready emission to client', () => {
   });
 
   afterAll(async () => {
-    try { (await import('../../../services/websocket/namespaced-websocket.service')).closeNamespacedWebSocket(); } catch {}
-    try { if (server) await new Promise(res => server.close(res)); } catch {}
+    try { (await import('../../../services/websocket/namespaced-websocket.service')).closeNamespacedWebSocket(); } catch { /* intentionally ignored: best effort cleanup */ }
+    try { if (server) await new Promise(res => server.close(res)); } catch { /* intentionally ignored: best effort cleanup */ }
   });
 
   it('delivers summaries:ready to session room listener', async () => {

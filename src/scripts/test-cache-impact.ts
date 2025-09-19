@@ -10,6 +10,7 @@
 
 import { performance } from 'perf_hooks';
 import { queryCacheService } from '../services/query-cache.service';
+import { logger } from '../utils/logger';
 
 interface CacheTestResult {
   endpoint: string;
@@ -23,9 +24,9 @@ class CacheImpactTester {
   private results: CacheTestResult[] = [];
 
   async runCacheImpactTest(): Promise<void> {
-    console.log('🎯 CACHE IMPACT VALIDATION');
-    console.log('===========================');
-    console.log('Testing actual performance gains from our query caching optimization\n');
+    logger.debug('🎯 CACHE IMPACT VALIDATION');
+    logger.debug('===========================');
+    logger.debug('Testing actual performance gains from our query caching optimization\n');
 
     // Clear any existing test cache entries
     await queryCacheService.invalidateCache('test:*');
@@ -41,7 +42,7 @@ class CacheImpactTester {
   }
 
   async testQueryCachePerformance(): Promise<void> {
-    console.log('📊 Testing Query Cache Performance...');
+    logger.debug('📊 Testing Query Cache Performance...');
     
     const testScenarios = [
       {
@@ -71,7 +72,7 @@ class CacheImpactTester {
     ];
 
     for (const scenario of testScenarios) {
-      console.log(`\n  Testing ${scenario.name}...`);
+      logger.debug(`\n  Testing ${scenario.name}...`);
       
       const cacheKey = `test:cache_impact_${Date.now()}`;
       
@@ -111,12 +112,12 @@ class CacheImpactTester {
         cacheHit
       });
 
-      console.log(`    ${cacheHit ? '✅' : '❌'} Cache Hit: ${cachedCallTime.toFixed(2)}ms vs ${firstCallTime.toFixed(2)}ms (${improvementPercent.toFixed(1)}% improvement)`);
+      logger.debug(`    ${cacheHit ? '✅' : '❌'} Cache Hit: ${cachedCallTime.toFixed(2)}ms vs ${firstCallTime.toFixed(2)}ms (${improvementPercent.toFixed(1)}% improvement)`);
     }
   }
 
   async analyzeRedisCacheUtilization(): Promise<void> {
-    console.log('\n🔍 Redis Cache Utilization Analysis...');
+    logger.debug('\n🔍 Redis Cache Utilization Analysis...');
     
     try {
       // Get total Redis operations before
@@ -124,7 +125,7 @@ class CacheImpactTester {
       
       // Make several cached query operations
       const operationsCount = 10;
-      console.log(`  Executing ${operationsCount} cached query operations...`);
+      logger.debug(`  Executing ${operationsCount} cached query operations...`);
       
       for (let i = 0; i < operationsCount; i++) {
         const cacheKey = `benchmark:query_${i}`;
@@ -143,53 +144,53 @@ class CacheImpactTester {
       const operationsDelta = afterInfo.totalCommands - beforeInfo.totalCommands;
       const hitsDelta = afterInfo.keyspaceHits - beforeInfo.keyspaceHits;
       
-      console.log(`  Redis Operations Delta: ${operationsDelta}`);
-      console.log(`  Cache Hits Delta: ${hitsDelta}`);
-      console.log(`  Query Cache Hit Rate: ${operationsDelta > 0 ? ((hitsDelta / operationsDelta) * 100).toFixed(1) : 0}%`);
+      logger.debug(`  Redis Operations Delta: ${operationsDelta}`);
+      logger.debug(`  Cache Hits Delta: ${hitsDelta}`);
+      logger.debug(`  Query Cache Hit Rate: ${operationsDelta > 0 ? ((hitsDelta / operationsDelta) * 100).toFixed(1) : 0}%`);
       
       // Check query cache entries
       const { redisService } = await import('../services/redis.service');
       const client = redisService.getClient();
       const queryCacheKeys = await client.keys('query_cache:*');
       
-      console.log(`  Query Cache Entries: ${queryCacheKeys.length}`);
-      console.log(`  Cache Memory Usage: ~${this.estimateCacheMemoryUsage(queryCacheKeys.length)}KB`);
+      logger.debug(`  Query Cache Entries: ${queryCacheKeys.length}`);
+      logger.debug(`  Cache Memory Usage: ~${this.estimateCacheMemoryUsage(queryCacheKeys.length)}KB`);
       
     } catch (error) {
-      console.log(`  ❌ Redis analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+      logger.debug(`  ❌ Redis analysis failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
   async generateImpactReport(): Promise<void> {
-    console.log('\n📋 CACHE IMPACT REPORT');
-    console.log('======================');
+    logger.debug('\n📋 CACHE IMPACT REPORT');
+    logger.debug('======================');
     
     const successfulTests = this.results.filter(r => r.cacheHit);
     const avgImprovement = successfulTests.reduce((sum, r) => sum + r.improvementPercent, 0) / successfulTests.length;
     const avgFirstCall = this.results.reduce((sum, r) => sum + r.firstCallTime, 0) / this.results.length;
     const avgCachedCall = successfulTests.reduce((sum, r) => sum + r.cachedCallTime, 0) / successfulTests.length;
     
-    console.log(`📈 Performance Improvements:`);
-    console.log(`  Cache Hit Rate (Query-Specific): ${successfulTests.length}/${this.results.length} (${((successfulTests.length/this.results.length)*100).toFixed(1)}%)`);
-    console.log(`  Average Query Time Reduction: ${avgImprovement.toFixed(1)}%`);
-    console.log(`  Avg Database Query Time: ${avgFirstCall.toFixed(2)}ms`);
-    console.log(`  Avg Cached Query Time: ${avgCachedCall.toFixed(2)}ms`);
+    logger.debug(`📈 Performance Improvements:`);
+    logger.debug(`  Cache Hit Rate (Query-Specific): ${successfulTests.length}/${this.results.length} (${((successfulTests.length/this.results.length)*100).toFixed(1)}%)`);
+    logger.debug(`  Average Query Time Reduction: ${avgImprovement.toFixed(1)}%`);
+    logger.debug(`  Avg Database Query Time: ${avgFirstCall.toFixed(2)}ms`);
+    logger.debug(`  Avg Cached Query Time: ${avgCachedCall.toFixed(2)}ms`);
     
-    console.log(`\n🔍 Per-Endpoint Results:`);
+    logger.debug(`\n🔍 Per-Endpoint Results:`);
     for (const result of this.results) {
-      console.log(`  ${result.cacheHit ? '✅' : '❌'} ${result.endpoint}: ${result.improvementPercent.toFixed(1)}% faster`);
+      logger.debug(`  ${result.cacheHit ? '✅' : '❌'} ${result.endpoint}: ${result.improvementPercent.toFixed(1)}% faster`);
     }
     
-    console.log(`\n💡 Key Insights:`);
-    console.log(`  • Overall Redis hit rate (8.89%) includes ALL operations (auth, sessions, etc.)`);
-    console.log(`  • Our QUERY CACHE has a ${((successfulTests.length/this.results.length)*100).toFixed(1)}% hit rate on optimized endpoints`);
-    console.log(`  • Query-specific caching provides ${avgImprovement.toFixed(1)}% performance improvement`);
-    console.log(`  • Combined with field reduction (46.4%), total optimization = ~${(46.4 + avgImprovement).toFixed(1)}%`);
+    logger.debug(`\n💡 Key Insights:`);
+    logger.debug(`  • Overall Redis hit rate (8.89%) includes ALL operations (auth, sessions, etc.)`);
+    logger.debug(`  • Our QUERY CACHE has a ${((successfulTests.length/this.results.length)*100).toFixed(1)}% hit rate on optimized endpoints`);
+    logger.debug(`  • Query-specific caching provides ${avgImprovement.toFixed(1)}% performance improvement`);
+    logger.debug(`  • Combined with field reduction (46.4%), total optimization = ~${(46.4 + avgImprovement).toFixed(1)}%`);
     
     if (avgImprovement >= 50) {
-      console.log(`\n🎉 SUCCESS: Cache optimization achieved target performance goals!`);
+      logger.debug(`\n🎉 SUCCESS: Cache optimization achieved target performance goals!`);
     } else {
-      console.log(`\n⚠️  PARTIAL SUCCESS: Cache working but may need tuning for optimal performance`);
+      logger.debug(`\n⚠️  PARTIAL SUCCESS: Cache working but may need tuning for optimal performance`);
     }
     
     // Cleanup test entries

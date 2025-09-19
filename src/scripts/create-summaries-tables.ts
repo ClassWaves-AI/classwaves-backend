@@ -1,8 +1,9 @@
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { logger } from '../utils/logger';
 
 async function main() {
-  console.log('Creating ai_insights group_summaries and session_summaries tables...');
+  logger.debug('Creating ai_insights group_summaries and session_summaries tables...');
   const catalog = databricksConfig.catalog;
   const schema = 'ai_insights';
   try {
@@ -19,8 +20,8 @@ async function main() {
       ) USING DELTA
     `);
     // Delta Lake does not support traditional indexes; Unity Catalog may emulate; keep as no-op if unsupported
-    try { await databricksService.query(`CREATE INDEX IF NOT EXISTS idx_group_summaries_session ON ${catalog}.ai_insights.group_summaries (session_id)`); } catch {}
-    try { await databricksService.query(`CREATE INDEX IF NOT EXISTS idx_group_summaries_group ON ${catalog}.ai_insights.group_summaries (group_id)`); } catch {}
+    try { await databricksService.query(`CREATE INDEX IF NOT EXISTS idx_group_summaries_session ON ${catalog}.ai_insights.group_summaries (session_id)`); } catch { /* intentionally ignored: best effort cleanup */ }
+    try { await databricksService.query(`CREATE INDEX IF NOT EXISTS idx_group_summaries_group ON ${catalog}.ai_insights.group_summaries (group_id)`); } catch { /* intentionally ignored: best effort cleanup */ }
 
     await databricksService.query(`
       CREATE TABLE IF NOT EXISTS ${catalog}.ai_insights.session_summaries (
@@ -31,16 +32,15 @@ async function main() {
         created_at TIMESTAMP NOT NULL
       ) USING DELTA
     `);
-    try { await databricksService.query(`CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON ${catalog}.ai_insights.session_summaries (session_id)`); } catch {}
+    try { await databricksService.query(`CREATE INDEX IF NOT EXISTS idx_session_summaries_session ON ${catalog}.ai_insights.session_summaries (session_id)`); } catch { /* intentionally ignored: best effort cleanup */ }
 
-    console.log('✅ Summaries tables ensured.');
+    logger.debug('✅ Summaries tables ensured.');
   } catch (error) {
-    console.error('❌ Failed to create summaries tables:', error);
+    logger.error('❌ Failed to create summaries tables:', error);
     process.exitCode = 1;
   } finally {
-    try { await databricksService.disconnect(); } catch {}
+    try { await databricksService.disconnect(); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 }
 
 main();
-

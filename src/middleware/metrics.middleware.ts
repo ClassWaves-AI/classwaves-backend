@@ -41,7 +41,7 @@ export function httpMetricsMiddleware(req: Request, res: Response, next: NextFun
       const route = routeLabel(req);
       httpRequestCounter.inc({ method, route, status });
       endTimer({ method, route, status });
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   });
 
   next();

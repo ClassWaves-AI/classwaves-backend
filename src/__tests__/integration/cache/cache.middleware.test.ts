@@ -41,7 +41,7 @@ describe('Cache Middleware Integration - Sessions List', () => {
           cursor = next;
         } while (cursor !== '0');
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   });
 
   it('serves from cache on second call (miss → hit)', async () => {

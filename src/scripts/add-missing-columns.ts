@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function addMissingColumns() {
   try {
-    console.log('🔧 Adding missing columns to database...');
+    logger.debug('🔧 Adding missing columns to database...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -23,8 +24,8 @@ async function addMissingColumns() {
     
     // Function to execute SQL statement
     async function executeSQL(sql: string, description: string) {
-      console.log(`\n📝 ${description}...`);
-      console.log(`SQL: ${sql}`);
+      logger.debug(`\n📝 ${description}...`);
+      logger.debug(`SQL: ${sql}`);
       
       const response = await fetch(`${host}/api/2.0/sql/statements`, {
         method: 'POST',
@@ -38,12 +39,12 @@ async function addMissingColumns() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ Failed to ${description}:`, response.status, error);
+        logger.error(`❌ Failed to ${description}:`, response.status, error);
         return false;
       }
       
       const result = await response.json();
-      console.log(`✅ ${description} completed successfully`);
+      logger.debug(`✅ ${description} completed successfully`);
       return true;
     }
     
@@ -72,14 +73,14 @@ async function addMissingColumns() {
       if (success) {
         successCount++;
       } else {
-        console.log(`⚠️ Column might already exist for: ${alteration.description}`);
+        logger.debug(`⚠️ Column might already exist for: ${alteration.description}`);
       }
     }
     
-    console.log(`\n🎉 Schema update complete! ${successCount}/${alterations.length} alterations processed.`);
+    logger.debug(`\n🎉 Schema update complete! ${successCount}/${alterations.length} alterations processed.`);
     
   } catch (error) {
-    console.error('❌ Error updating schema:', error);
+    logger.error('❌ Error updating schema:', error);
   }
 }
 

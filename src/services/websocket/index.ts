@@ -20,13 +20,13 @@ export const websocketService = {
     try {
       const svc = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getSessionsService();
       svc?.emitToSession(sessionId, event, data);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   },
   emitToGroup(groupId: string, event: string, data: any) {
     try {
       const svc = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getSessionsService();
       svc?.emitToGroup(groupId, event, data);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   },
   notifySessionUpdate(sessionId: string, payload: any) {
     this.emitToSession(sessionId, 'session:status_changed', payload);
@@ -38,12 +38,12 @@ export const websocketService = {
     try {
       const io = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getIO();
       (io as any)?.on?.(event as any, callback as any);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   },
   emit(event: string, data: any) {
     try {
       const io = (require('./namespaced-websocket.service') as typeof import('./namespaced-websocket.service')).getNamespacedWebSocketService()?.getIO();
       (io as any)?.emit?.(event as any, data);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   },
 };

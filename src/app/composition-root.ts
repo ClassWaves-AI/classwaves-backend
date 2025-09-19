@@ -1,4 +1,6 @@
 import type { SessionRepositoryPort } from '../services/ports/session.repository.port';
+import type { DbProvider } from '@classwaves/shared';
+import { FeatureFlags } from '@classwaves/shared';
 import { sessionRepository as databricksSessionRepository } from '../adapters/repositories/databricks-session.repository';
 import type { GroupRepositoryPort } from '../services/ports/group.repository.port';
 import { groupRepository as databricksGroupRepository } from '../adapters/repositories/databricks-group.repository';
@@ -32,8 +34,53 @@ import type { GuidanceInsightsRepositoryPort } from '../services/ports/guidance-
 import { guidanceInsightsRepository as databricksGuidanceInsightsRepository } from '../adapters/repositories/databricks-guidance-insights.repository';
 import type { GuidanceEventsRepositoryPort } from '../services/ports/guidance-events.repository.port';
 import { guidanceEventsRepository as databricksGuidanceEventsRepository } from '../adapters/repositories/databricks-guidance-events.repository';
+import type { DbPort } from '../services/ports/db.port';
+import { createPostgresDbAdapter } from '../adapters/db/postgres.adapter';
+import { createDatabricksDbAdapter } from '../adapters/db/databricks.adapter';
+import { createDbSessionRepository } from '../adapters/repositories/db-session.repository';
+import { createDbGroupRepository } from '../adapters/repositories/db-group.repository';
+import { logger } from '../utils/logger';
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function resolveDbProvider(): { provider: DbProvider; details: { envProvider?: string | null; flagEnabled: boolean; enforcedProvider?: DbProvider } } {
+  const rawEnvProvider = process.env.DB_PROVIDER?.toLowerCase() ?? null;
+  const flagKey = FeatureFlags.DB_USE_LOCAL_POSTGRES;
+  const flagRawDirect = process.env[flagKey];
+  const flagRawEnv = process.env.CW_DB_USE_LOCAL_POSTGRES;
+  const flagEnabled = isTruthyEnv(flagRawDirect) || isTruthyEnv(flagRawEnv);
+
+  let provider: DbProvider = 'databricks';
+  if (rawEnvProvider === 'postgres') {
+    provider = 'postgres';
+  }
+  if (flagEnabled) {
+    provider = 'postgres';
+  }
+
+  const environment = (process.env.NODE_ENV || 'development').toLowerCase();
+  const allowPostgres = environment === 'development' || environment === 'test';
+  if (provider === 'postgres' && !allowPostgres) {
+    logger.warn('postgres-provider-forbidden', {
+      environment,
+      requestedProvider: rawEnvProvider,
+    });
+    provider = 'databricks';
+  }
+
+  return {
+    provider,
+    details: { envProvider: rawEnvProvider, flagEnabled, enforcedProvider: provider },
+  };
+}
 
 class CompositionRoot {
+  private readonly _dbProvider: DbProvider;
+  private readonly _dbPort: DbPort;
   private _sessionRepository: SessionRepositoryPort;
   private _groupRepository: GroupRepositoryPort;
   private _sessionStatsRepository: SessionStatsRepositoryPort;
@@ -53,6 +100,15 @@ class CompositionRoot {
   private _guidanceEventsRepository: GuidanceEventsRepositoryPort;
 
   constructor() {
+    const { provider, details } = resolveDbProvider();
+    this._dbProvider = provider;
+    this._dbPort = provider === 'postgres' ? createPostgresDbAdapter() : createDatabricksDbAdapter();
+    logger.info('db-provider-selected', {
+      provider: this._dbProvider,
+      envProvider: details.envProvider,
+      flagEnabled: details.flagEnabled,
+    });
+
     // Wire default adapters
     this._sessionRepository = databricksSessionRepository;
     this._groupRepository = databricksGroupRepository;
@@ -71,6 +127,11 @@ class CompositionRoot {
     this._summariesRepository = databricksSummariesRepository;
     this._guidanceInsightsRepository = databricksGuidanceInsightsRepository;
     this._guidanceEventsRepository = databricksGuidanceEventsRepository;
+
+    if (this._dbProvider === 'postgres') {
+      this._sessionRepository = createDbSessionRepository(this._dbPort);
+      this._groupRepository = createDbGroupRepository(this._dbPort);
+    }
   }
 
   getSessionRepository(): SessionRepositoryPort {
@@ -139,6 +200,14 @@ class CompositionRoot {
 
   getGuidanceEventsRepository(): GuidanceEventsRepositoryPort {
     return this._guidanceEventsRepository;
+  }
+
+  getDbProvider(): DbProvider {
+    return this._dbProvider;
+  }
+
+  getDbPort(): DbPort {
+    return this._dbPort;
   }
 }
 

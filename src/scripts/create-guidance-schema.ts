@@ -15,6 +15,7 @@
 
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Schema Creation Interface
@@ -42,7 +43,7 @@ interface IndexDefinition {
 // ============================================================================
 
 export async function createGuidanceSchema(): Promise<void> {
-  console.log('🏗️ Starting Teacher Guidance Schema Creation...');
+  logger.debug('🏗️ Starting Teacher Guidance Schema Creation...');
   
   try {
     // ✅ COMPLIANCE: Audit logging for schema changes
@@ -67,10 +68,10 @@ export async function createGuidanceSchema(): Promise<void> {
     // Verify table creation
     await verifyTablesCreated();
     
-    console.log('✅ Teacher Guidance Schema Creation Completed Successfully');
+    logger.debug('✅ Teacher Guidance Schema Creation Completed Successfully');
     
   } catch (error) {
-    console.error('❌ Teacher Guidance Schema Creation Failed:', error);
+    logger.error('❌ Teacher Guidance Schema Creation Failed:', error);
     
     // ✅ COMPLIANCE: Audit log for errors
     await auditLog({
@@ -92,7 +93,7 @@ export async function createGuidanceSchema(): Promise<void> {
 // ============================================================================
 
 async function createTeacherGuidanceTables(): Promise<void> {
-  console.log('📋 Creating teacher guidance tables...');
+  logger.debug('📋 Creating teacher guidance tables...');
   
   const tables: TableDefinition[] = [
     // Event stream for guidance system (WS emits, prompts, insights)
@@ -391,13 +392,13 @@ async function createTeacherGuidanceTables(): Promise<void> {
 
   // Create each table
   for (const table of tables) {
-    console.log(`📋 Creating table: ${table.catalog}.${table.schema}.${table.name}`);
+    logger.debug(`📋 Creating table: ${table.catalog}.${table.schema}.${table.name}`);
     
     try {
       // ✅ SECURITY: Use parameterized queries
       await databricksService.query(table.ddl);
       
-      console.log(`✅ Created table: ${table.name}`);
+      logger.debug(`✅ Created table: ${table.name}`);
       
       // Add table comment
       await databricksService.query(`
@@ -406,7 +407,7 @@ async function createTeacherGuidanceTables(): Promise<void> {
       `);
       
     } catch (error) {
-      console.error(`❌ Failed to create table ${table.name}:`, error);
+      logger.error(`❌ Failed to create table ${table.name}:`, error);
       throw error;
     }
   }
@@ -417,7 +418,7 @@ async function createTeacherGuidanceTables(): Promise<void> {
 // ============================================================================
 
 async function createTableIndexes(): Promise<void> {
-  console.log('📊 Creating performance indexes...');
+  logger.debug('📊 Creating performance indexes...');
   
   const indexes: IndexDefinition[] = [
     {
@@ -466,10 +467,10 @@ async function createTableIndexes(): Promise<void> {
         )
       `);
       
-      console.log(`✅ Optimized table: ${index.tableName}`);
+      logger.debug(`✅ Optimized table: ${index.tableName}`);
       
     } catch (error) {
-      console.warn(`⚠️ Failed to optimize table ${index.tableName}:`, error);
+      logger.warn(`⚠️ Failed to optimize table ${index.tableName}:`, error);
       // Don't fail the entire process for index creation issues
     }
   }
@@ -480,7 +481,7 @@ async function createTableIndexes(): Promise<void> {
 // ============================================================================
 
 async function setupDataRetentionPolicies(): Promise<void> {
-  console.log('🗓️ Setting up data retention policies...');
+  logger.debug('🗓️ Setting up data retention policies...');
   
   const retentionPolicies = [
     {
@@ -520,10 +521,10 @@ async function setupDataRetentionPolicies(): Promise<void> {
         )
       `);
       
-      console.log(`✅ Set retention policy for ${policy.table}: ${policy.retentionYears} years`);
+      logger.debug(`✅ Set retention policy for ${policy.table}: ${policy.retentionYears} years`);
       
     } catch (error) {
-      console.error(`❌ Failed to set retention policy for ${policy.table}:`, error);
+      logger.error(`❌ Failed to set retention policy for ${policy.table}:`, error);
       throw error;
     }
   }
@@ -534,7 +535,7 @@ async function setupDataRetentionPolicies(): Promise<void> {
 // ============================================================================
 
 async function verifyTablesCreated(): Promise<void> {
-  console.log('🔍 Verifying table creation...');
+  logger.debug('🔍 Verifying table creation...');
   
   const expectedTables = [
     'teacher_guidance_metrics',
@@ -550,13 +551,13 @@ async function verifyTablesCreated(): Promise<void> {
       `);
       
       if (result && result.length > 0) {
-        console.log(`✅ Verified table: ${tableName} (${result.length} columns)`);
+        logger.debug(`✅ Verified table: ${tableName} (${result.length} columns)`);
       } else {
         throw new Error(`Table ${tableName} exists but has no columns`);
       }
       
     } catch (error) {
-      console.error(`❌ Table verification failed for ${tableName}:`, error);
+      logger.error(`❌ Table verification failed for ${tableName}:`, error);
       throw error;
     }
   }
@@ -590,7 +591,7 @@ async function auditLog(data: {
       dataAccessed: data.error ? `error: ${data.error}` : 'schema_metadata'
     }).catch(() => {});
   } catch (error) {
-    console.warn('⚠️ Audit logging failed in schema creation:', error);
+    logger.warn('⚠️ Audit logging failed in schema creation:', error);
   }
 }
 
@@ -605,11 +606,11 @@ export default createGuidanceSchema;
 if (require.main === module) {
   createGuidanceSchema()
     .then(() => {
-      console.log('🎉 Teacher Guidance Schema Creation Complete!');
+      logger.debug('🎉 Teacher Guidance Schema Creation Complete!');
       process.exit(0);
     })
     .catch((error) => {
-      console.error('💥 Schema creation failed:', error);
+      logger.error('💥 Schema creation failed:', error);
       process.exit(1);
     });
 }

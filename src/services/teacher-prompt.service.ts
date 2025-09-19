@@ -9,11 +9,21 @@
  */
 
 import crypto from 'crypto';
-import { databricksService } from './databricks.service';
 import { redisService } from './redis.service';
 import * as client from 'prom-client';
+import { getGuidanceRedisUnavailableCounter } from '../metrics/guidance.metrics';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
 import type { TeacherPrompt, PromptCategory, PromptPriority, PromptTiming, SessionPhase, SubjectArea } from '../types/teacher-guidance.types';
+import { logger } from '../utils/logger';
+import { getCompositionRoot } from '../app/composition-root';
+import type { DbPort } from './ports/db.port';
+
+function logMetricFailure(operation: string, error: unknown): void {
+  logger.debug('teacher-prompt metric operation failed', {
+    operation,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
 
 // Validation moved to edges (routes/controllers/websocket). Domain service assumes
 // inputs are pre-validated. Types below reflect expected shapes.
@@ -31,6 +41,42 @@ interface PromptGenerationContext {
   learningObjectives: string[];
   groupSize: number;
   sessionDuration: number;
+}
+
+type PromptContextQuote = {
+  speakerLabel: string;
+  text: string;
+  timestamp: string;
+};
+
+interface PromptExtras {
+  context?: {
+    actionLine?: string;
+    reason?: string;
+    priorTopic?: string;
+    currentTopic?: string;
+    transitionIdea?: string;
+    contextSummary?: string;
+    quotes?: Array<PromptContextQuote>;
+    supportingLines?: Array<{
+      speaker?: string;
+      speakerLabel?: string;
+      quote?: string;
+      text?: string;
+      timestamp: string;
+    }>;
+    confidence?: number;
+  };
+  bridgingPrompt?: string;
+  onTrackSummary?: string;
+}
+
+interface PromptGenerationOptions {
+  maxPrompts?: number;
+  priorityFilter?: 'all' | 'high' | 'medium' | 'low';
+  categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>;
+  includeEffectivenessScore?: boolean;
+  extras?: PromptExtras;
 }
 
 interface PromptMetrics {
@@ -53,9 +99,14 @@ export class TeacherPromptService {
     enableHighPrioritySound: process.env.TEACHER_ALERT_HIGH_PRIORITY_SOUND === 'true'
   };
 
+  private readonly contextCharLimit = Math.max(120, Math.min(1600, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS || '1200', 10)));
+  private readonly summaryCharLimit = Math.max(60, Math.min(240, parseInt(process.env.AI_ONTRACK_SUMMARY_MAX_CHARS || '160', 10)));
+
   private promptCache = new Map<string, TeacherPrompt[]>();
   private sessionMetrics = new Map<string, PromptMetrics>();
   private teacherGuidanceMetricsImpactConfidenceSupport: boolean | null = null;
+  private teacherGuidanceContextColumnsSupport: boolean | null = null;
+  private cachedDbPort: DbPort | null = null;
 
   // Observability metrics
   private readonly promptLatency = (() => {
@@ -66,7 +117,8 @@ export class TeacherPromptService {
         buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000],
         labelNames: ['subject', 'phase']
       });
-    } catch {
+    } catch (error) {
+      logMetricFailure('register:teacher_prompt_generation_latency_ms', error);
       return client.register.getSingleMetric('teacher_prompt_generation_latency_ms') as client.Histogram<string>;
     }
   })();
@@ -77,48 +129,59 @@ export class TeacherPromptService {
         help: 'Total teacher prompt generations by result',
         labelNames: ['result']
       });
-    } catch {
+    } catch (error) {
+      logMetricFailure('register:teacher_prompt_generation_total', error);
       return client.register.getSingleMetric('teacher_prompt_generation_total') as client.Counter<string>;
     }
   })();
-  private readonly promptCooldownRedisUnavailable = (() => {
-    try {
-      return new client.Counter({ name: 'guidance_autoprompt_redis_unavailable_total', help: 'Autoprompt cooldown/dedupe skipped due to Redis unavailable' });
-    } catch {
-      return client.register.getSingleMetric('guidance_autoprompt_redis_unavailable_total') as client.Counter<string>;
-    }
-  })();
-  private readonly promptStatsRedisUnavailable = (() => {
-    try {
-      return new client.Counter({ name: 'guidance_prompt_stats_redis_unavailable_total', help: 'Prompt learning stats updates skipped due to Redis unavailable' });
-    } catch {
-      return client.register.getSingleMetric('guidance_prompt_stats_redis_unavailable_total') as client.Counter<string>;
-    }
-  })();
+  private readonly guidanceRedisUnavailable = getGuidanceRedisUnavailableCounter();
   private readonly promptLearningUpdates = (() => {
     try {
       return new client.Counter({ name: 'guidance_prompt_learning_updates_total', help: 'Total prompt learning loop updates', labelNames: ['category'] });
-    } catch {
+    } catch (error) {
+      logMetricFailure('register:guidance_prompt_learning_updates_total', error);
       return client.register.getSingleMetric('guidance_prompt_learning_updates_total') as client.Counter<string>;
     }
   })();
   private readonly promptLearningLatency = (() => {
     try {
       return new client.Histogram({ name: 'guidance_prompt_learning_update_latency_ms', help: 'Latency between prompt generation and learning update', buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000] });
-    } catch {
+    } catch (error) {
+      logMetricFailure('register:guidance_prompt_learning_update_latency_ms', error);
       return client.register.getSingleMetric('guidance_prompt_learning_update_latency_ms') as client.Histogram<string>;
     }
   })();
   private readonly promptEffectivenessWeightedSuccess = (() => {
     try {
       return new client.Counter({ name: 'guidance_prompt_effectiveness_weighted_success_total', help: 'Weighted success contributions from prompt interactions', labelNames: ['category'] });
-    } catch {
+    } catch (error) {
+      logMetricFailure('register:guidance_prompt_effectiveness_weighted_success_total', error);
       return client.register.getSingleMetric('guidance_prompt_effectiveness_weighted_success_total') as client.Counter<string>;
+    }
+  })();
+  private readonly promptActionCounter = (() => {
+    try {
+      return new client.Counter({ name: 'guidance_prompt_action_total', help: 'Total prompt interactions by action', labelNames: ['action'] });
+    } catch (error) {
+      logMetricFailure('register:guidance_prompt_action_total', error);
+      return client.register.getSingleMetric('guidance_prompt_action_total') as client.Counter<string>;
+    }
+  })();
+  private readonly promptTimeToFirstAction = (() => {
+    try {
+      return new client.Histogram({
+        name: 'guidance_time_to_first_action_ms',
+        help: 'Time from prompt generation to first teacher action',
+        buckets: [2000, 5000, 15000, 30000, 60000, 120000, 180000, 300000],
+      });
+    } catch (error) {
+      logMetricFailure('register:guidance_time_to_first_action_ms', error);
+      return client.register.getSingleMetric('guidance_time_to_first_action_ms') as client.Histogram<string>;
     }
   })();
 
   constructor() {
-    console.log('🧠 Teacher Prompt Service initialized', {
+    logger.debug('🧠 Teacher Prompt Service initialized', {
       maxPromptsPerSession: this.config.maxPromptsPerSession,
       subjectAware: this.config.subjectAware,
       effectivenessScoreWeight: this.config.effectivenessScoreWeight
@@ -131,7 +194,7 @@ export class TeacherPromptService {
     }
 
     try {
-      const supported = await databricksService.tableHasColumns(
+      const supported = await this.getDbPort().tableHasColumns(
         'ai_insights',
         'teacher_guidance_metrics',
         ['impact_confidence']
@@ -139,8 +202,37 @@ export class TeacherPromptService {
       this.teacherGuidanceMetricsImpactConfidenceSupport = supported;
       return supported;
     } catch (error) {
-      console.warn('TeacherPromptService: failed to detect impact_confidence column; defaulting to disabled', error);
+      logger.warn('TeacherPromptService: failed to detect impact_confidence column; defaulting to disabled', error);
       this.teacherGuidanceMetricsImpactConfidenceSupport = false;
+      return false;
+    }
+  }
+
+  private async supportsContextColumns(): Promise<boolean> {
+    if (this.teacherGuidanceContextColumnsSupport != null) {
+      return this.teacherGuidanceContextColumnsSupport;
+    }
+
+    try {
+      const supported = await this.getDbPort().tableHasColumns(
+        'ai_insights',
+        'teacher_guidance_metrics',
+        [
+          'context_reason',
+          'context_prior_topic',
+          'context_current_topic',
+          'context_transition_idea',
+          'context_supporting_lines',
+          'bridging_prompt',
+          'context_confidence',
+          'on_track_summary',
+        ]
+      );
+      this.teacherGuidanceContextColumnsSupport = supported;
+      return supported;
+    } catch (error) {
+      logger.warn('TeacherPromptService: failed to detect context columns; defaulting to disabled', error);
+      this.teacherGuidanceContextColumnsSupport = false;
       return false;
     }
   }
@@ -160,7 +252,7 @@ export class TeacherPromptService {
   async generatePrompts(
     insights: Tier1Insights | Tier2Insights,
     context: PromptGenerationContext,
-    options?: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
+    options?: PromptGenerationOptions
   ): Promise<TeacherPrompt[]> {
     const startTime = Date.now();
     const cooldownTimestamp = Date.now();
@@ -173,6 +265,7 @@ export class TeacherPromptService {
         priorityFilter: options?.priorityFilter ?? 'all',
         categoryFilter: options?.categoryFilter,
         includeEffectivenessScore: options?.includeEffectivenessScore ?? true,
+        extras: options?.extras,
       };
 
       // ✅ RATE LIMITING: Check session prompt limit
@@ -205,17 +298,29 @@ export class TeacherPromptService {
 
       prompts = await this.applyPromptDedupe(prompts, validatedContext);
 
+      if (validatedOptions.extras) {
+        prompts = this.enrichPromptsWithExtras(prompts, validatedOptions.extras);
+      }
+
       if (prompts.length === 0) {
-        try { this.promptResultCounter.inc({ result: 'deduped' }); } catch {}
+        try {
+          this.promptResultCounter.inc({ result: 'deduped' });
+        } catch (error) {
+          logMetricFailure('promptResultCounter.inc:deduped', error);
+        }
         return [];
       }
 
       if (!(await this.isAutopromptCooldownSatisfied(validatedContext, cooldownTimestamp))) {
-        console.log('⏳ Auto prompts in cooldown window; skipping generation for', {
+        logger.debug('⏳ Auto prompts in cooldown window; skipping generation for', {
           sessionId: validatedContext.sessionId,
           groupId: validatedContext.groupId
         });
-        try { this.promptResultCounter.inc({ result: 'cooldown' }); } catch {}
+        try {
+          this.promptResultCounter.inc({ result: 'cooldown' });
+        } catch (error) {
+          logMetricFailure('promptResultCounter.inc:cooldown', error);
+        }
         return [];
       }
 
@@ -229,20 +334,29 @@ export class TeacherPromptService {
       await this.updateSessionMetrics(validatedContext.sessionId, prompts);
 
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Generated ${prompts.length} prompts for session ${validatedContext.sessionId} in ${processingTime}ms`);
+      logger.debug(`✅ Generated ${prompts.length} prompts for session ${validatedContext.sessionId} in ${processingTime}ms`);
 
       // Observability
       try {
         this.promptLatency.observe({ subject: validatedContext.subject, phase: validatedContext.sessionPhase }, processingTime);
         this.promptResultCounter.inc({ result: 'success' });
-      } catch {}
+      } catch (error) {
+        logMetricFailure('promptMetrics.observe-success', error);
+      }
 
       return prompts;
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Failed to generate prompts for session ${context.sessionId}:`, error);
-      try { this.promptResultCounter.inc({ result: 'failure' }); } catch {}
+      logger.error(`❌ Failed to generate prompts for session ${context.sessionId}`, {
+        error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
+        processingTime,
+      });
+      try {
+        this.promptResultCounter.inc({ result: 'failure' });
+      } catch (metricError) {
+        logMetricFailure('promptResultCounter.inc:failure', metricError);
+      }
 
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -291,11 +405,19 @@ export class TeacherPromptService {
         feedbackRating: feedback?.rating
       });
 
+      try {
+        this.promptActionCounter.inc({ action: interactionType });
+      } catch (metricError) {
+        logMetricFailure('promptActionCounter.inc', metricError);
+      }
+
       // Store interaction in database for analytics
       await this.recordPromptInteractionToDB(promptId, sessionId, teacherId, interactionType, feedback);
 
+      this.updatePromptCacheAfterInteraction(sessionId, promptId, interactionType);
+
     } catch (error) {
-      console.error(`❌ Failed to record prompt interaction:`, error);
+      logger.error(`❌ Failed to record prompt interaction:`, error);
       throw error;
     }
   }
@@ -349,32 +471,49 @@ export class TeacherPromptService {
       // Step 2: Get prompts from database for persistence/recovery
       let dbPrompts: TeacherPrompt[] = [];
       try {
-        const dbResults = await databricksService.query(
-          `SELECT 
-             id,
-             session_id,
-             teacher_id,
-             prompt_id,
-             group_id,
-             prompt_category,
-             priority_level,
-             prompt_message,
-             prompt_context,
-             suggested_timing,
-             session_phase,
-             subject_area,
-             target_metric,
-             learning_objectives,
-             generated_at,
-             acknowledged_at,
-             used_at,
-             dismissed_at,
-             expires_at,
-             effectiveness_score,
-             feedback_rating,
-             feedback_text,
-             created_at,
-             updated_at
+        const supportsContextColumns = await this.supportsContextColumns();
+        const selectColumns = [
+          'id',
+          'session_id',
+          'teacher_id',
+          'prompt_id',
+          'group_id',
+          'prompt_category',
+          'priority_level',
+          'prompt_message',
+          'prompt_context',
+          'suggested_timing',
+          'session_phase',
+          'subject_area',
+          'target_metric',
+          'learning_objectives',
+          'generated_at',
+          'acknowledged_at',
+          'used_at',
+          'dismissed_at',
+          'expires_at',
+          'effectiveness_score',
+          'feedback_rating',
+          'feedback_text',
+          'created_at',
+          'updated_at',
+        ];
+
+        if (supportsContextColumns) {
+          selectColumns.push(
+            'context_reason',
+            'context_prior_topic',
+            'context_current_topic',
+            'context_transition_idea',
+            'context_supporting_lines',
+            'bridging_prompt',
+            'context_confidence',
+            'on_track_summary'
+          );
+        }
+
+        const dbResults = await this.getDbPort().query(
+          `SELECT ${selectColumns.join(', ')}
            FROM classwaves.ai_insights.teacher_guidance_metrics 
            WHERE session_id = ? 
            AND generated_at >= ?
@@ -387,9 +526,9 @@ export class TeacherPromptService {
         );
 
         // Transform database results to TeacherPrompt objects
-        dbPrompts = dbResults.map(row => this.transformDbToPrompt(row));
+        dbPrompts = dbResults.map(row => this.transformDbToPrompt(row, supportsContextColumns));
       } catch (dbError) {
-        console.warn('⚠️ Database query failed for active prompts, using cache only:', dbError);
+        logger.warn('⚠️ Database query failed for active prompts, using cache only:', dbError);
         // Continue with cache-only results for graceful degradation
       }
 
@@ -436,13 +575,16 @@ export class TeacherPromptService {
       });
 
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Retrieved ${filteredPrompts.length} active prompts for session ${sessionId} in ${processingTime}ms`);
+      logger.debug(`✅ Retrieved ${filteredPrompts.length} active prompts for session ${sessionId} in ${processingTime}ms`);
 
       return filteredPrompts;
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Failed to get active prompts for session ${sessionId}:`, error);
+      logger.error(`❌ Failed to get active prompts for session ${sessionId}`, {
+        error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error),
+        processingTime,
+      });
 
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -463,8 +605,9 @@ export class TeacherPromptService {
   /**
    * Transform database row to TeacherPrompt object
    */
-  private transformDbToPrompt(row: any): TeacherPrompt {
-    return {
+  private transformDbToPrompt(row: any, includeContext: boolean): TeacherPrompt {
+    const contextEvidence = includeContext ? this.deserializeContextEvidence(row) : undefined;
+    const prompt: TeacherPrompt = {
       id: row.prompt_id || row.id,
       sessionId: row.session_id,
       teacherId: row.teacher_id,
@@ -487,8 +630,25 @@ export class TeacherPromptService {
       feedbackRating: row.feedback_rating,
       feedbackText: row.feedback_text,
       createdAt: new Date(row.created_at),
-      updatedAt: new Date(row.updated_at)
+      updatedAt: new Date(row.updated_at),
+      contextEvidence,
+      bridgingPrompt: includeContext ? row.bridging_prompt ?? undefined : undefined,
+      onTrackSummary: includeContext ? row.on_track_summary ?? undefined : undefined,
     };
+    if (contextEvidence?.actionLine) {
+      prompt.message = contextEvidence.actionLine;
+    }
+    if (contextEvidence?.contextSummary) {
+      prompt.contextSummary = contextEvidence.contextSummary;
+    }
+    return prompt;
+  }
+
+  private getDbPort(): DbPort {
+    if (!this.cachedDbPort) {
+      this.cachedDbPort = getCompositionRoot().getDbPort();
+    }
+    return this.cachedDbPort;
   }
 
   /**
@@ -512,7 +672,7 @@ export class TeacherPromptService {
     }
 
     if (cleanedCount > 0) {
-      console.log(`🧹 Cleaned up ${cleanedCount} expired prompts`);
+      logger.debug(`🧹 Cleaned up ${cleanedCount} expired prompts`);
     }
   }
 
@@ -523,7 +683,7 @@ export class TeacherPromptService {
   private async generateFromTier1Insights(
     insights: Tier1Insights,
     context: PromptGenerationContext,
-    options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
+    _options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
   ): Promise<TeacherPrompt[]> {
     const prompts: TeacherPrompt[] = [];
 
@@ -578,7 +738,7 @@ export class TeacherPromptService {
   private async generateFromTier2Insights(
     insights: Tier2Insights,
     context: PromptGenerationContext,
-    options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
+    _options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }>
   ): Promise<TeacherPrompt[]> {
     const prompts: TeacherPrompt[] = [];
 
@@ -753,7 +913,7 @@ export class TeacherPromptService {
     return subjectSpecificPrompts[context.subject] || subjectSpecificPrompts.general;
   }
 
-  private getArgumentationPrompt(argQuality: any, context: PromptGenerationContext): string {
+  private getArgumentationPrompt(argQuality: any, _context: PromptGenerationContext): string {
     if (argQuality.claimEvidence < 0.5) {
       return "Students need to support their claims with evidence. Try asking: 'What evidence supports that idea?'";
     }
@@ -763,11 +923,11 @@ export class TeacherPromptService {
     return "Help students build stronger arguments. Try: 'Can you explain the reasoning behind that?'";
   }
 
-  private getInclusivityPrompt(collaboration: any, context: PromptGenerationContext): string {
+  private getInclusivityPrompt(_collaboration: any, _context: PromptGenerationContext): string {
     return "Some group members may not be participating fully. Try: 'Let's hear from everyone on this' or 'What do you think, [name]?'";
   }
 
-  private getEnergyPrompt(emotionalArc: any, context: PromptGenerationContext): string {
+  private getEnergyPrompt(_emotionalArc: any, _context: PromptGenerationContext): string {
     return "The group's energy seems to be declining. Consider a brief energizer or change of pace to re-engage students.";
   }
 
@@ -789,8 +949,8 @@ export class TeacherPromptService {
   }
 
   private applyFilters(
-    prompts: TeacherPrompt[], 
-    options: Partial<{ maxPrompts: number; priorityFilter: 'all' | 'high' | 'medium' | 'low'; categoryFilter?: Array<'facilitation' | 'deepening' | 'redirection' | 'collaboration' | 'assessment' | 'energy' | 'clarity'>; includeEffectivenessScore: boolean }> | {}
+    prompts: TeacherPrompt[],
+    options: PromptGenerationOptions | Record<string, never>
   ): TeacherPrompt[] {
     let filtered = prompts;
 
@@ -837,6 +997,326 @@ export class TeacherPromptService {
   private cachePrompts(sessionId: string, prompts: TeacherPrompt[]): void {
     const existing = this.promptCache.get(sessionId) || [];
     this.promptCache.set(sessionId, [...existing, ...prompts]);
+  }
+
+  private enrichPromptsWithExtras(prompts: TeacherPrompt[], extras: PromptExtras): TeacherPrompt[] {
+    if (!extras) {
+      return prompts;
+    }
+
+    return prompts.map((prompt) => {
+      const enriched: TeacherPrompt = { ...prompt };
+
+      if (extras.context) {
+        enriched.contextEvidence = this.normalizeContextEvidence(extras.context);
+        if (enriched.contextEvidence?.actionLine) {
+          enriched.message = enriched.contextEvidence.actionLine;
+        }
+        if (enriched.contextEvidence?.contextSummary) {
+          enriched.contextSummary = enriched.contextEvidence.contextSummary;
+        }
+      }
+
+      const bridgingSource = extras.bridgingPrompt || extras.context?.transitionIdea;
+      if (bridgingSource) {
+        enriched.bridgingPrompt = this.truncateString(bridgingSource, this.summaryCharLimit);
+      }
+
+      if (extras.onTrackSummary) {
+        enriched.onTrackSummary = this.truncateString(extras.onTrackSummary, this.summaryCharLimit);
+      }
+
+      return enriched;
+    });
+  }
+
+  private normalizeContextEvidence(context: PromptExtras['context']): TeacherPrompt['contextEvidence'] | undefined {
+    if (!context) {
+      return undefined;
+    }
+
+    const actionLine = this.truncateString(context.actionLine, this.contextCharLimit);
+    const reason = this.truncateString(context.reason, this.contextCharLimit);
+    const priorTopic = this.truncateString(context.priorTopic, this.contextCharLimit);
+    const currentTopic = this.truncateString(context.currentTopic, this.contextCharLimit);
+    const transitionIdea = this.truncateString(context.transitionIdea, this.contextCharLimit);
+
+    const quotes = this.normalizeContextQuotes(context);
+    const supportingLines = this.normalizeSupportingLines(context, quotes);
+    const summaryLimit = Math.min(240, this.contextCharLimit);
+    const rawSummary = context.contextSummary || supportingLines?.[0]?.quote || quotes?.[0]?.text;
+    const contextSummary = this.truncateString(rawSummary, summaryLimit);
+
+    return {
+      actionLine,
+      reason,
+      priorTopic,
+      currentTopic,
+      transitionIdea,
+      contextSummary,
+      quotes,
+      supportingLines,
+      confidence: typeof context.confidence === 'number' ? this.clamp01(context.confidence) : undefined,
+    };
+  }
+
+  private normalizeContextQuotes(context: PromptExtras['context']): PromptContextQuote[] | undefined {
+    const legacySupportingLines = (context as { supportingLines?: Array<{ speaker?: string; quote?: string; timestamp?: unknown }> }).supportingLines;
+    const legacyQuotes: Array<Partial<PromptContextQuote> & { timestamp?: unknown }> | undefined = Array.isArray(legacySupportingLines)
+      ? legacySupportingLines.map((line) => ({
+          speakerLabel: typeof line.speaker === 'string' ? line.speaker : undefined,
+          text: typeof line.quote === 'string' ? line.quote : undefined,
+          timestamp: line.timestamp ?? undefined,
+        })) as Array<Partial<PromptContextQuote> & { timestamp?: unknown }>
+      : undefined;
+
+    const rawQuotes: Array<Partial<PromptContextQuote> & { timestamp?: unknown }> | undefined = Array.isArray(context?.quotes)
+      ? context.quotes
+      : legacyQuotes;
+
+    if (!rawQuotes || rawQuotes.length === 0) {
+      return undefined;
+    }
+
+    return rawQuotes
+      .slice(0, 6)
+      .map((line, index) => {
+        const text = this.truncateString(line?.text, Math.min(240, this.contextCharLimit));
+        if (!text) {
+          return undefined;
+        }
+
+        const speaker = this.normalizeSpeakerLabel(line?.speakerLabel, index);
+        const timestamp = this.normalizeTimestampToString(line?.timestamp);
+
+        return {
+          speakerLabel: speaker,
+          text: this.removeQuoteCharacters(text),
+          timestamp,
+        };
+      })
+      .filter((line): line is PromptContextQuote => Boolean(line));
+  }
+
+  private normalizeSupportingLines(
+    context: PromptExtras['context'],
+    quotes?: PromptContextQuote[]
+  ): Array<{ speaker: string; quote: string; timestamp: string }> | undefined {
+    if (!context) {
+      return quotes
+        ? quotes.map((line) => ({ speaker: line.speakerLabel ?? '', quote: line.text, timestamp: line.timestamp }))
+        : undefined;
+    }
+    const rawSupporting = Array.isArray(context?.supportingLines) ? context.supportingLines : undefined;
+    if (rawSupporting && rawSupporting.length > 0) {
+      return rawSupporting
+        .slice(0, 6)
+        .map((line) => {
+          const quote = this.truncateString(line?.quote ?? line?.text, Math.min(240, this.contextCharLimit));
+          if (!quote) {
+            return undefined;
+          }
+          const timestamp = this.normalizeTimestampToString(line?.timestamp ?? new Date().toISOString());
+          return {
+            speaker: typeof line?.speaker === 'string' ? line.speaker : '',
+            quote,
+            timestamp,
+          };
+        })
+        .filter((line): line is { speaker: string; quote: string; timestamp: string } => Boolean(line));
+    }
+
+    if (quotes && quotes.length > 0) {
+      return quotes.map((line) => ({
+        speaker: line.speakerLabel ?? '',
+        quote: line.text,
+        timestamp: line.timestamp,
+      }));
+    }
+
+    const summary = context.contextSummary;
+    if (summary) {
+      return [
+        {
+          speaker: '',
+          quote: this.truncateString(summary, Math.min(240, this.contextCharLimit)) ?? summary,
+          timestamp: new Date().toISOString(),
+        },
+      ];
+    }
+
+    return undefined;
+  }
+
+  private removeQuoteCharacters(input: string): string {
+    return input.replace(/["'“”‘’]/g, '').trim();
+  }
+
+  private normalizeSpeakerLabel(label: unknown, index: number): string {
+    if (typeof label === 'string') {
+      const trimmed = label.trim();
+      if (!trimmed) {
+        return '';
+      }
+      if (/^participant\s*\d+$/i.test(trimmed)) {
+        return trimmed.replace(/\s+/g, ' ');
+      }
+      return this.truncateString(trimmed, 48) ?? trimmed;
+    }
+    return index >= 0 ? `Participant ${index + 1}` : '';
+  }
+
+  private normalizeTimestampToString(value: unknown): string {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+      return value.toISOString();
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return new Date(value).toISOString();
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return new Date().toISOString();
+      }
+      const numeric = Number(trimmed);
+      if (!Number.isNaN(numeric)) {
+        return new Date(numeric).toISOString();
+      }
+      const parsed = new Date(trimmed);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+      return trimmed;
+    }
+    return new Date().toISOString();
+  }
+
+  private truncateString(value: string | undefined, limit: number): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    if (trimmed.length <= limit) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, Math.max(0, limit - 1))}…`;
+  }
+
+  private deserializeContextEvidence(row: any): TeacherPrompt['contextEvidence'] | undefined {
+    const hasValues =
+      row.context_action_line ||
+      row.context_reason ||
+      row.context_prior_topic ||
+      row.context_current_topic ||
+      row.context_transition_idea ||
+      row.context_confidence ||
+      row.context_supporting_lines;
+
+    if (!hasValues) {
+      return undefined;
+    }
+
+    const quotes = this.deserializeContextQuotes(row.context_supporting_lines);
+    const supportingLines = quotes?.map((line) => ({
+      speaker: line.speakerLabel ?? '',
+      quote: line.text,
+      timestamp: line.timestamp,
+    }));
+    const summaryLimit = Math.min(240, this.contextCharLimit);
+    const summarySource = row.context_summary || supportingLines?.[0]?.quote || quotes?.[0]?.text;
+
+    return {
+      actionLine: this.truncateString(row.context_action_line, this.contextCharLimit),
+      reason: this.truncateString(row.context_reason, this.contextCharLimit),
+      priorTopic: this.truncateString(row.context_prior_topic, this.contextCharLimit),
+      currentTopic: this.truncateString(row.context_current_topic, this.contextCharLimit),
+      transitionIdea: this.truncateString(row.context_transition_idea, this.contextCharLimit),
+      contextSummary: this.truncateString(summarySource, summaryLimit),
+      quotes,
+      supportingLines,
+      confidence: typeof row.context_confidence === 'number' ? this.clamp01(row.context_confidence) : undefined,
+    };
+  }
+
+  private deserializeContextQuotes(raw: unknown): PromptContextQuote[] | undefined {
+    const rows = this.extractQuoteRows(raw);
+    if (!rows || rows.length === 0) {
+      return undefined;
+    }
+
+    return rows
+      .slice(0, 6)
+      .map((line, index) => this.toPromptContextQuote(line, index))
+      .filter((line): line is PromptContextQuote => Boolean(line));
+  }
+
+  private extractQuoteRows(raw: unknown): Array<Record<string, unknown>> | undefined {
+    if (Array.isArray(raw)) {
+      return raw as Array<Record<string, unknown>>;
+    }
+
+    if (typeof raw === 'string' && raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed as Array<Record<string, unknown>>;
+        }
+      } catch (error) {
+        if (process.env.API_DEBUG === '1') {
+          logger.warn('Failed to parse context_supporting_lines JSON', error);
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private toPromptContextQuote(line: Record<string, unknown>, index: number): PromptContextQuote | undefined {
+    const textCandidate = typeof line.text === 'string'
+      ? line.text
+      : typeof line.quote === 'string'
+        ? line.quote
+        : undefined;
+
+    const text = this.removeQuoteCharacters(this.truncateString(textCandidate, Math.min(240, this.contextCharLimit)) ?? '');
+    if (!text) {
+      return undefined;
+    }
+
+    const speakerLabel = this.normalizeSpeakerLabel(line.speakerLabel ?? line.speaker, index);
+    const timestampSource = line.timestamp ?? line.timestampMs ?? line.timestampIso;
+    const timestamp = this.normalizeTimestampToString(timestampSource);
+
+    return {
+      speakerLabel,
+      text,
+      timestamp,
+    };
+  }
+
+  private updatePromptCacheAfterInteraction(sessionId: string, promptId: string, interactionType: string): void {
+    const cachedPrompts = this.promptCache.get(sessionId);
+    if (!cachedPrompts || cachedPrompts.length === 0) {
+      return;
+    }
+    const index = cachedPrompts.findIndex((prompt) => prompt.id === promptId);
+    if (index === -1) {
+      return;
+    }
+    const updatedPrompt = { ...cachedPrompts[index] };
+    const now = new Date();
+    if (interactionType === 'acknowledged') {
+      updatedPrompt.acknowledgedAt = now;
+    } else if (interactionType === 'used') {
+      updatedPrompt.usedAt = now;
+    } else if (interactionType === 'dismissed') {
+      updatedPrompt.dismissedAt = now;
+    }
+    cachedPrompts[index] = updatedPrompt;
+    this.promptCache.set(sessionId, cachedPrompts);
   }
 
   private async updateSessionMetrics(sessionId: string, prompts: TeacherPrompt[]): Promise<void> {
@@ -933,9 +1413,13 @@ export class TeacherPromptService {
         ttlMs,
       });
     } catch (error) {
-      try { this.promptCooldownRedisUnavailable.inc(); } catch {}
+      try {
+        this.guidanceRedisUnavailable.inc({ component: 'autoprompt' });
+      } catch (metricError) {
+        logMetricFailure('guidanceRedisUnavailable.inc:autoprompt', metricError);
+      }
       if (process.env.API_DEBUG === '1') {
-        console.warn('Autoprompt cooldown fail-open', error instanceof Error ? error.message : error);
+        logger.warn('Autoprompt cooldown fail-open', error instanceof Error ? error.message : error);
       }
       return true;
     }
@@ -964,13 +1448,17 @@ export class TeacherPromptService {
         await client.expire(dedupeKey, ttlSeconds);
       }
       if (filtered.length < prompts.length) {
-        console.log(`♻️ Deduped ${prompts.length - filtered.length} prompts for session ${context.sessionId}`);
+        logger.debug(`♻️ Deduped ${prompts.length - filtered.length} prompts for session ${context.sessionId}`);
       }
       return filtered;
     } catch (error) {
-      try { this.promptCooldownRedisUnavailable.inc(); } catch {}
+      try {
+        this.guidanceRedisUnavailable.inc({ component: 'autoprompt' });
+      } catch (metricError) {
+        logMetricFailure('guidanceRedisUnavailable.inc:autoprompt', metricError);
+      }
       if (process.env.API_DEBUG === '1') {
-        console.warn('Prompt dedupe fail-open', error instanceof Error ? error.message : error);
+        logger.warn('Prompt dedupe fail-open', error instanceof Error ? error.message : error);
       }
       return prompts;
     }
@@ -1019,9 +1507,13 @@ export class TeacherPromptService {
       }
       return this.clamp01(successSum / weightSum);
     } catch (error) {
-      try { this.promptStatsRedisUnavailable.inc(); } catch {}
+      try {
+        this.guidanceRedisUnavailable.inc({ component: 'autoprompt' });
+      } catch (metricError) {
+        logMetricFailure('guidanceRedisUnavailable.inc:autoprompt', metricError);
+      }
       if (process.env.API_DEBUG === '1') {
-        console.warn('Historical success lookup failed', error instanceof Error ? error.message : error);
+        logger.warn('Historical success lookup failed', error instanceof Error ? error.message : error);
       }
       return 0.5;
     }
@@ -1048,15 +1540,31 @@ export class TeacherPromptService {
       });
       const successRate = this.clamp01(result?.successRate ?? 0.5);
       const categoryLabel = category || 'unknown';
-      try { this.promptLearningUpdates.inc({ category: categoryLabel }); } catch {}
-      try { this.promptEffectivenessWeightedSuccess.inc({ category: categoryLabel }, successRate); } catch {}
+      try {
+        this.promptLearningUpdates.inc({ category: categoryLabel });
+      } catch (metricError) {
+        logMetricFailure('promptLearningUpdates.inc', metricError);
+      }
+      try {
+        this.promptEffectivenessWeightedSuccess.inc({ category: categoryLabel }, successRate);
+      } catch (metricError) {
+        logMetricFailure('promptEffectivenessWeightedSuccess.inc', metricError);
+      }
       if (typeof responseTimeMs === 'number' && responseTimeMs >= 0) {
-        try { this.promptLearningLatency.observe(responseTimeMs); } catch {}
+        try {
+          this.promptLearningLatency.observe(responseTimeMs);
+        } catch (metricError) {
+          logMetricFailure('promptLearningLatency.observe', metricError);
+        }
       }
     } catch (error) {
-      try { this.promptStatsRedisUnavailable.inc(); } catch {}
+      try {
+        this.guidanceRedisUnavailable.inc({ component: 'autoprompt' });
+      } catch (metricError) {
+        logMetricFailure('guidanceRedisUnavailable.inc:autoprompt', metricError);
+      }
       if (process.env.API_DEBUG === '1') {
-        console.warn('Prompt learning update failed', error instanceof Error ? error.message : error);
+        logger.warn('Prompt learning update failed', error instanceof Error ? error.message : error);
       }
     }
   }
@@ -1090,15 +1598,15 @@ export class TeacherPromptService {
       };
 
       // Insert into database
-      await databricksService.insert('teacher_guidance_metrics', interactionData);
+      await this.getDbPort().insert('classwaves.ai_insights.teacher_guidance_metrics', interactionData);
 
       // Update effectiveness metrics
       await this.updateEffectivenessMetrics(promptId, sessionId, teacherId, interactionType, feedback);
 
-      console.log(`📊 Prompt interaction stored in database: ${promptId} - ${interactionType}`);
+      logger.debug(`📊 Prompt interaction stored in database: ${promptId} - ${interactionType}`);
 
     } catch (error) {
-      console.error(`❌ Failed to store prompt interaction in database:`, error);
+      logger.error(`❌ Failed to store prompt interaction in database:`, error);
       // Don't throw error to avoid breaking the main flow
     }
   }
@@ -1113,6 +1621,7 @@ export class TeacherPromptService {
         return;
       }
       const supportsImpactConfidence = await this.supportsImpactConfidenceColumn();
+      const supportsContextColumns = await this.supportsContextColumns();
 
       for (const prompt of prompts) {
         // ✅ DATABASE: Store prompt in teacher_guidance_metrics table
@@ -1141,19 +1650,58 @@ export class TeacherPromptService {
           updated_at: new Date()
         };
 
+        if (supportsContextColumns) {
+          promptData.context_reason = prompt.contextEvidence?.reason ?? null;
+          promptData.context_prior_topic = prompt.contextEvidence?.priorTopic ?? null;
+          promptData.context_current_topic = prompt.contextEvidence?.currentTopic ?? null;
+          promptData.context_transition_idea = prompt.contextEvidence?.transitionIdea ?? null;
+          promptData.bridging_prompt = prompt.bridgingPrompt ?? null;
+          promptData.context_confidence = typeof prompt.contextEvidence?.confidence === 'number' ? this.clamp01(prompt.contextEvidence.confidence) : null;
+          promptData.on_track_summary = prompt.onTrackSummary ?? null;
+
+          const rawSupportingLines = prompt.contextEvidence?.supportingLines;
+          const quoteFallback = prompt.contextEvidence?.quotes;
+          const sourceLines = rawSupportingLines && rawSupportingLines.length > 0 ? rawSupportingLines : quoteFallback;
+          const normalizedLines = (sourceLines ?? []).reduce<{ speaker: string; quote: string; timestamp: string }[]>((acc, line, index) => {
+            const quoteText = (line as any)?.quote ?? (line as any)?.text;
+            if (!quoteText) {
+              return acc;
+            }
+            const sanitizedQuote = this.removeQuoteCharacters(this.truncateString(String(quoteText), Math.min(240, this.contextCharLimit)) ?? '');
+            if (!sanitizedQuote) {
+              return acc;
+            }
+            const speaker = this.normalizeSpeakerLabel((line as any)?.speaker ?? (line as any)?.speakerLabel, index);
+            const timestampValue = (line as any)?.timestamp;
+            acc.push({
+              speaker,
+              quote: sanitizedQuote,
+              timestamp: this.normalizeTimestampToString(timestampValue),
+            });
+            return acc;
+          }, []);
+
+          if (normalizedLines && normalizedLines.length > 0) {
+            const json = JSON.stringify(normalizedLines).replace(/'/g, "''");
+            promptData.context_supporting_lines = { __rawSql: `from_json('${json}', 'array<struct<speaker string, quote string, timestamp timestamp>>')` };
+          } else {
+            promptData.context_supporting_lines = null;
+          }
+        }
+
         if (supportsImpactConfidence) {
           promptData.impact_confidence = typeof prompt.impactConfidence === 'number'
             ? prompt.impactConfidence
             : null;
         }
 
-        await databricksService.insert('teacher_guidance_metrics', promptData);
+        await this.getDbPort().insert('classwaves.ai_insights.teacher_guidance_metrics', promptData);
       }
 
-      console.log(`✅ Stored ${prompts.length} prompts in database for session ${context.sessionId}`);
+      logger.debug(`✅ Stored ${prompts.length} prompts in database for session ${context.sessionId}`);
 
     } catch (error) {
-      console.error(`❌ Failed to store prompts in database:`, error);
+      logger.error(`❌ Failed to store prompts in database:`, error);
       // Don't throw error to avoid breaking the main flow
     }
   }
@@ -1188,14 +1736,19 @@ export class TeacherPromptService {
 
       const promptRecord = await this.getPromptFromDatabase(promptId);
       let responseTimeMs: number | undefined;
+      let firstAction = false;
       if (promptRecord && promptRecord.generated_at) {
-        const responseTimeSeconds = (Date.now() - new Date(promptRecord.generated_at).getTime()) / 1000;
-        updateData.response_time_seconds = Math.round(responseTimeSeconds);
-        responseTimeMs = Math.max(0, responseTimeSeconds * 1000);
+        const alreadyActed = promptRecord.acknowledged_at || promptRecord.used_at || promptRecord.dismissed_at;
+        if (!alreadyActed) {
+          const responseTimeSeconds = (Date.now() - new Date(promptRecord.generated_at).getTime()) / 1000;
+          updateData.response_time_seconds = Math.round(responseTimeSeconds);
+          responseTimeMs = Math.max(0, responseTimeSeconds * 1000);
+          firstAction = true;
+        }
       }
 
       // Update the record
-      await databricksService.update('teacher_guidance_metrics', promptId, updateData);
+      await this.getDbPort().update('classwaves.ai_insights.teacher_guidance_metrics', promptId, updateData);
 
       // Update aggregated effectiveness metrics
       await this.updatePromptEffectivenessTable(promptId, sessionId, teacherId, interactionType, feedback);
@@ -1206,10 +1759,18 @@ export class TeacherPromptService {
         await this.updatePromptTemplateStats(category, message, interactionType, responseTimeMs);
       }
 
-      console.log(`✅ Updated effectiveness metrics for prompt ${promptId}`);
+      if (firstAction && typeof responseTimeMs === 'number') {
+        try {
+          this.promptTimeToFirstAction.observe(responseTimeMs);
+        } catch (metricError) {
+          logMetricFailure('promptTimeToFirstAction.observe', metricError);
+        }
+      }
+
+      logger.debug(`✅ Updated effectiveness metrics for prompt ${promptId}`);
 
     } catch (error) {
-      console.error(`❌ Failed to update effectiveness metrics:`, error);
+      logger.error(`❌ Failed to update effectiveness metrics:`, error);
     }
   }
 
@@ -1219,17 +1780,17 @@ export class TeacherPromptService {
         return null;
       }
       const query = `
-        SELECT generated_at, prompt_category, prompt_message, priority_level, subject_area, session_phase
+        SELECT generated_at, prompt_category, prompt_message, priority_level, subject_area, session_phase,
+               acknowledged_at, used_at, dismissed_at
         FROM classwaves.ai_insights.teacher_guidance_metrics
         WHERE id = ?
         LIMIT 1
       `;
       
-      const results = await databricksService.query(query, [promptId]);
-      return results.length > 0 ? results[0] : null;
+      return await this.getDbPort().queryOne(query, [promptId]);
 
     } catch (error) {
-      console.error(`❌ Failed to get prompt from database:`, error);
+      logger.error(`❌ Failed to get prompt from database:`, error);
       return null;
     }
   }
@@ -1262,7 +1823,7 @@ export class TeacherPromptService {
         LIMIT 1
       `;
 
-      const existing = await databricksService.query(existingQuery, [prompt_category, subject_area, session_phase]);
+      const existing = await this.getDbPort().query(existingQuery, [prompt_category, subject_area, session_phase]);
 
       if (existing.length > 0) {
         // Update existing record
@@ -1290,7 +1851,7 @@ export class TeacherPromptService {
           updateData.data_points = newDataPoints;
         }
 
-        await databricksService.update('teacher_prompt_effectiveness', record.id, updateData);
+        await this.getDbPort().update('classwaves.ai_insights.teacher_prompt_effectiveness', record.id, updateData);
 
       } else {
         // Create new effectiveness record
@@ -1316,13 +1877,13 @@ export class TeacherPromptService {
           updated_at: new Date()
         };
 
-        await databricksService.insert('teacher_prompt_effectiveness', newRecord);
+        await this.getDbPort().insert('classwaves.ai_insights.teacher_prompt_effectiveness', newRecord);
       }
 
-      console.log(`✅ Updated prompt effectiveness table for category: ${prompt_category}`);
+      logger.debug(`✅ Updated prompt effectiveness table for category: ${prompt_category}`);
 
     } catch (error) {
-      console.error(`❌ Failed to update prompt effectiveness table:`, error);
+      logger.error(`❌ Failed to update prompt effectiveness table:`, error);
     }
   }
 
@@ -1361,7 +1922,7 @@ export class TeacherPromptService {
       }).catch(() => {});
     } catch (error) {
       // Don't fail the main operation if audit logging fails
-      console.warn('⚠️ Audit logging failed in teacher prompt service:', error);
+      logger.warn('⚠️ Audit logging failed in teacher prompt service:', error);
     }
   }
 }
@@ -1376,7 +1937,7 @@ export const teacherPromptService = new TeacherPromptService();
 if (process.env.NODE_ENV !== 'test') {
   setInterval(() => {
     teacherPromptService.cleanup().catch(error => {
-      console.error('❌ Teacher prompt cleanup failed:', error);
+      logger.error('❌ Teacher prompt cleanup failed:', error);
     });
   }, 15 * 60 * 1000); // Every 15 minutes
 }

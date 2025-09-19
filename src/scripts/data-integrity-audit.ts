@@ -41,6 +41,7 @@
 
 import { DatabricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { logger } from '../utils/logger';
 
 interface AuditResult {
   category: string;
@@ -59,23 +60,23 @@ class DataIntegrityAuditor {
   }
 
   async runFullAudit(): Promise<AuditResult[]> {
-    console.log('🔍 Starting ClassWaves Data Integrity Audit...\n');
+    logger.debug('🔍 Starting ClassWaves Data Integrity Audit...\n');
     
     const results: AuditResult[] = [];
 
     // Test database connection before running audit
     try {
-      console.log('🔗 Testing database connection...');
+      logger.debug('🔗 Testing database connection...');
       await this.databricksService.query('SELECT 1 as test_connection LIMIT 1');
-      console.log('✅ Database connection successful\n');
+      logger.debug('✅ Database connection successful\n');
     } catch (connectionError) {
-      console.error('❌ Database connection failed:', connectionError);
-      console.log('\n🔧 TROUBLESHOOTING:\n');
-      console.log('   1. Ensure DATABRICKS_TOKEN is set in your .env file');
-      console.log('   2. Verify DATABRICKS_HOST and DATABRICKS_WAREHOUSE_ID are correct');
-      console.log('   3. Check that your Databricks token has not expired');
-      console.log('   4. Ensure the Unity Catalog "classwaves" exists and is accessible\n');
-      console.log('💡 This script requires a live Databricks connection to scan for data integrity issues.');
+      logger.error('❌ Database connection failed:', connectionError);
+      logger.debug('\n🔧 TROUBLESHOOTING:\n');
+      logger.debug('   1. Ensure DATABRICKS_TOKEN is set in your .env file');
+      logger.debug('   2. Verify DATABRICKS_HOST and DATABRICKS_WAREHOUSE_ID are correct');
+      logger.debug('   3. Check that your Databricks token has not expired');
+      logger.debug('   4. Ensure the Unity Catalog "classwaves" exists and is accessible\n');
+      logger.debug('💡 This script requires a live Databricks connection to scan for data integrity issues.');
       process.exit(1);
     }
 
@@ -107,7 +108,7 @@ class DataIntegrityAuditor {
       await this.generateReport(results);
       
     } catch (error) {
-      console.error('❌ Audit failed:', error);
+      logger.error('❌ Audit failed:', error);
       process.exit(1);
     }
 
@@ -115,7 +116,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditStuckActiveSessions(): Promise<AuditResult> {
-    console.log('🔄 Checking for sessions stuck in active state...');
+    logger.debug('🔄 Checking for sessions stuck in active state...');
     
     // Sessions active for more than 6 hours are likely stuck
     const sixHoursAgo = new Date();
@@ -149,7 +150,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditOrphanedGroups(): Promise<AuditResult> {
-    console.log('🔗 Checking for orphaned student groups...');
+    logger.debug('🔗 Checking for orphaned student groups...');
     
     const orphanedGroups = await this.databricksService.query(`
       SELECT 
@@ -177,7 +178,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditOrphanedGroupMembers(): Promise<AuditResult> {
-    console.log('👥 Checking for orphaned group members...');
+    logger.debug('👥 Checking for orphaned group members...');
     
     const orphanedMembers = await this.databricksService.query(`
       SELECT 
@@ -215,7 +216,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditGroupSizeInconsistencies(): Promise<AuditResult> {
-    console.log('📊 Checking for group size inconsistencies...');
+    logger.debug('📊 Checking for group size inconsistencies...');
     
     const sizeInconsistencies = await this.databricksService.query(`
       SELECT 
@@ -245,7 +246,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditLeaderInconsistencies(): Promise<AuditResult> {
-    console.log('👑 Checking for leader inconsistencies...');
+    logger.debug('👑 Checking for leader inconsistencies...');
     
     const leaderInconsistencies = await this.databricksService.query(`
       SELECT 
@@ -277,7 +278,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditOrphanedParticipants(): Promise<AuditResult> {
-    console.log('🎭 Checking for orphaned participants...');
+    logger.debug('🎭 Checking for orphaned participants...');
     
     const orphanedParticipants = await this.databricksService.query(`
       SELECT 
@@ -313,7 +314,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditInvalidSessionTimes(): Promise<AuditResult> {
-    console.log('⏰ Checking for invalid session time ranges...');
+    logger.debug('⏰ Checking for invalid session time ranges...');
     
     const invalidTimes = await this.databricksService.query(`
       SELECT 
@@ -349,7 +350,7 @@ class DataIntegrityAuditor {
   }
 
   private async auditGroupTimestampConsistency(): Promise<AuditResult> {
-    console.log('🕐 Checking group timestamp consistency with sessions...');
+    logger.debug('🕐 Checking group timestamp consistency with sessions...');
     
     const timestampInconsistencies = await this.databricksService.query(`
       SELECT 
@@ -389,54 +390,54 @@ class DataIntegrityAuditor {
   }
 
   private async generateReport(results: AuditResult[]): Promise<void> {
-    console.log('\n' + '='.repeat(80));
-    console.log('📋 CLASSW AVES DATA INTEGRITY AUDIT REPORT');
-    console.log('='.repeat(80) + '\n');
+    logger.debug('\n' + '='.repeat(80));
+    logger.debug('📋 CLASSW AVES DATA INTEGRITY AUDIT REPORT');
+    logger.debug('='.repeat(80) + '\n');
 
     const highSeverity = results.filter(r => r.severity === 'HIGH');
     const mediumSeverity = results.filter(r => r.severity === 'MEDIUM');
     const lowSeverity = results.filter(r => r.severity === 'LOW');
 
-    console.log('🚨 HIGH PRIORITY ISSUES:');
+    logger.debug('🚨 HIGH PRIORITY ISSUES:');
     if (highSeverity.length === 0) {
-      console.log('   ✅ No high priority issues found\n');
+      logger.debug('   ✅ No high priority issues found\n');
     } else {
       highSeverity.forEach(result => {
-        console.log(`   ❌ ${result.category}: ${result.count} issues`);
-        console.log(`      ${result.description}`);
-        console.log(`      Action: ${result.suggestedAction}\n`);
+        logger.debug(`   ❌ ${result.category}: ${result.count} issues`);
+        logger.debug(`      ${result.description}`);
+        logger.debug(`      Action: ${result.suggestedAction}\n`);
       });
     }
 
-    console.log('⚠️  MEDIUM PRIORITY ISSUES:');
+    logger.debug('⚠️  MEDIUM PRIORITY ISSUES:');
     if (mediumSeverity.length === 0) {
-      console.log('   ✅ No medium priority issues found\n');
+      logger.debug('   ✅ No medium priority issues found\n');
     } else {
       mediumSeverity.forEach(result => {
-        console.log(`   🟡 ${result.category}: ${result.count} issues`);
-        console.log(`      ${result.description}`);
-        console.log(`      Action: ${result.suggestedAction}\n`);
+        logger.debug(`   🟡 ${result.category}: ${result.count} issues`);
+        logger.debug(`      ${result.description}`);
+        logger.debug(`      Action: ${result.suggestedAction}\n`);
       });
     }
 
-    console.log('ℹ️  LOW PRIORITY ISSUES:');
+    logger.debug('ℹ️  LOW PRIORITY ISSUES:');
     if (lowSeverity.length === 0) {
-      console.log('   ✅ No low priority issues found\n');
+      logger.debug('   ✅ No low priority issues found\n');
     } else {
       lowSeverity.forEach(result => {
-        console.log(`   🔵 ${result.category}: ${result.count} issues`);
-        console.log(`      ${result.description}`);
-        console.log(`      Action: ${result.suggestedAction}\n`);
+        logger.debug(`   🔵 ${result.category}: ${result.count} issues`);
+        logger.debug(`      ${result.description}`);
+        logger.debug(`      Action: ${result.suggestedAction}\n`);
       });
     }
 
     // Summary statistics
     const totalIssues = results.reduce((sum, r) => sum + r.count, 0);
-    console.log('📊 AUDIT SUMMARY:');
-    console.log(`   Total Issues Found: ${totalIssues}`);
-    console.log(`   High Priority: ${highSeverity.reduce((sum, r) => sum + r.count, 0)}`);
-    console.log(`   Medium Priority: ${mediumSeverity.reduce((sum, r) => sum + r.count, 0)}`);
-    console.log(`   Low Priority: ${lowSeverity.reduce((sum, r) => sum + r.count, 0)}`);
+    logger.debug('📊 AUDIT SUMMARY:');
+    logger.debug(`   Total Issues Found: ${totalIssues}`);
+    logger.debug(`   High Priority: ${highSeverity.reduce((sum, r) => sum + r.count, 0)}`);
+    logger.debug(`   Medium Priority: ${mediumSeverity.reduce((sum, r) => sum + r.count, 0)}`);
+    logger.debug(`   Low Priority: ${lowSeverity.reduce((sum, r) => sum + r.count, 0)}`);
 
     // Save detailed report to file
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -462,16 +463,16 @@ class DataIntegrityAuditor {
     }
     
     fs.writeFileSync(reportPath, JSON.stringify(reportData, null, 2));
-    console.log(`\n📄 Detailed report saved to: ${reportPath}`);
+    logger.debug(`\n📄 Detailed report saved to: ${reportPath}`);
 
     if (totalIssues > 0) {
-      console.log('\n🎯 RECOMMENDED NEXT STEPS:');
-      console.log('   1. Address HIGH priority issues immediately');
-      console.log('   2. Schedule cleanup for MEDIUM priority issues');
-      console.log('   3. Review LOW priority issues during regular maintenance');
-      console.log('   4. Run this audit regularly to prevent data degradation\n');
+      logger.debug('\n🎯 RECOMMENDED NEXT STEPS:');
+      logger.debug('   1. Address HIGH priority issues immediately');
+      logger.debug('   2. Schedule cleanup for MEDIUM priority issues');
+      logger.debug('   3. Review LOW priority issues during regular maintenance');
+      logger.debug('   4. Run this audit regularly to prevent data degradation\n');
     } else {
-      console.log('\n🎉 EXCELLENT! No data integrity issues found. The database is in good health.\n');
+      logger.debug('\n🎉 EXCELLENT! No data integrity issues found. The database is in good health.\n');
     }
   }
 }
@@ -482,10 +483,10 @@ async function main() {
   
   try {
     await auditor.runFullAudit();
-    console.log('✅ Data integrity audit completed successfully!');
+    logger.debug('✅ Data integrity audit completed successfully!');
     process.exit(0);
   } catch (error) {
-    console.error('❌ Audit failed:', error);
+    logger.error('❌ Audit failed:', error);
     process.exit(1);
   }
 }

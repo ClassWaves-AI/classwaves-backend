@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 import { Worker } from 'bullmq';
 import * as client from 'prom-client';
 import { redisService } from '../services/redis.service';
@@ -5,6 +7,16 @@ import { openAIWhisperService } from '../services/openai-whisper.service';
 import { maybeTranscodeToWav } from '../services/audio/transcode.util';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { getTeacherIdForSessionCached } from '../services/utils/teacher-id-cache.service';
+
+if (!process.env.NODE_ENV || process.env.NODE_ENV === 'development') {
+  try {
+    dotenv.config();
+  } catch (error) {
+    logger.debug('stt worker dotenv load failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 type AudioJob = {
   chunkId: string;
@@ -32,6 +44,12 @@ function getHistogram(name: string, help: string, buckets: number[], labelNames?
 }
 
 const sttJobsSuccessTotal = getCounter('stt_jobs_success_total', 'Total STT jobs processed successfully');
+
+const logSuppressedError = (scope: string, error: unknown) => {
+  logger.debug(scope, {
+    error: error instanceof Error ? error.message : String(error),
+  });
+};
 const sttJobsFailedTotal = getCounter('stt_jobs_failed_total', 'Total STT jobs failed');
 const transcriptEmitLatencyMs = getHistogram('transcript_emit_latency_ms', 'Latency from upload to WS emit', [50,100,200,500,1000,2000,5000,10000]);
 const aiTriggersSuppressedEndingTotal = getCounter('ai_triggers_suppressed_ending_total', 'AI triggers suppressed due to session ending/ended');
@@ -53,7 +71,7 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
         const hdr = webmHeaderCache.get(data.groupId);
         if (hdr && hdr.length > 0) {
           if (process.env.API_DEBUG === '1') {
-            try { console.log(JSON.stringify({ event: 'webm_header_prepended', groupId: data.groupId, header_bytes: hdr.length, window_bytes: buf.length })); } catch {}
+            logger.debug(JSON.stringify({ event: 'webm_header_prepended', groupId: data.groupId, header_bytes: hdr.length, window_bytes: buf.length }));
           }
           buf = Buffer.concat([hdr, buf], hdr.length + buf.length);
         }
@@ -65,16 +83,19 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
         const hdr = oggHeaderCache.get(data.groupId);
         if (hdr && hdr.length > 0) {
           if (process.env.API_DEBUG === '1') {
-            try { console.log(JSON.stringify({ event: 'ogg_header_prepended', groupId: data.groupId, header_bytes: hdr.length, window_bytes: buf.length })); } catch {}
+            logger.debug(JSON.stringify({ event: 'ogg_header_prepended', groupId: data.groupId, header_bytes: hdr.length, window_bytes: buf.length }));
           }
           buf = Buffer.concat([hdr, buf], hdr.length + buf.length);
         }
       }
     }
-  } catch {}
+  } catch (error) {
+    logSuppressedError('audio-stt.header_normalization_failed', error);
+  }
 
   // Resolve language hint (session-level hook can be added later); fallback to env
-  const languageHint = (() => { try { const v = (process.env.STT_LANGUAGE_HINT || '').trim(); return v || undefined; } catch { return undefined; } })();
+  const languageHintRaw = (process.env.STT_LANGUAGE_HINT || '').trim();
+  const languageHint = languageHintRaw ? languageHintRaw : undefined;
 
   const tryTranscribe = async (b: Buffer, m: string) => {
     return openAIWhisperService.transcribeBuffer(
@@ -92,7 +113,7 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
     const msg: string = e?.message || '';
     const is400 = msg.includes('400') || msg.toLowerCase().includes('invalid');
     if (is400 && process.env.STT_TRANSCODE_TO_WAV === '1') {
-      if (process.env.API_DEBUG === '1') console.warn('🎛️  Whisper 400 decode error — attempting WAV transcode fallback');
+      if (process.env.API_DEBUG === '1') logger.warn('🎛️  Whisper 400 decode error — attempting WAV transcode fallback');
       const transcoded = await maybeTranscodeToWav(buf, mime);
       mime = transcoded.mime;
       result = await tryTranscribe(transcoded.buffer, transcoded.mime);
@@ -113,14 +134,16 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
   const trimmed = (segment.text || '').trim();
   if (trimmed.length === 0) {
     if (process.env.API_DEBUG === '1') {
-      try { console.log('🧹 Dropping empty transcript (REST path)', { chunkId: data.chunkId, groupId: data.groupId }); } catch {}
-    }
+    logger.debug('🧹 Dropping empty transcript (REST path)', { chunkId: data.chunkId, groupId: data.groupId });
+}
     // Increment global empty transcript drop counter
     try {
       const existing = client.register.getSingleMetric('stt_empty_transcripts_dropped_total') as client.Counter<string> | undefined;
       const counter = existing || new client.Counter({ name: 'stt_empty_transcripts_dropped_total', help: 'Total empty transcripts dropped before emission', labelNames: ['path'] });
       counter.inc({ path: 'rest' });
-    } catch {}
+    } catch (error) {
+      logSuppressedError('audio-stt.metrics.empty_transcript_counter_failed', error);
+    }
     sttJobsSuccessTotal.inc();
     const base = data.receivedAt || start;
     transcriptEmitLatencyMs.observe(Date.now() - base);
@@ -139,16 +162,17 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
         const status = await clientR.get(`ws:session:status:${data.sessionId}`);
         if (ending === '1' || status === 'ended') {
           aiTriggersSuppressedEndingTotal.inc();
-          if (process.env.API_DEBUG === '1') {
-            try { console.log('🛑 Suppressing AI buffer/trigger due to session end flags', { sessionId: data.sessionId, groupId: data.groupId }); } catch {}
-          }
+if (process.env.API_DEBUG === '1') {
+    logger.debug('🛑 Suppressing AI buffer/trigger due to session end flags', { sessionId: data.sessionId, groupId: data.groupId });
+}
           // Do not buffer or trigger AI for post-end jobs
           sttJobsSuccessTotal.inc();
           const base = data.receivedAt || start;
           transcriptEmitLatencyMs.observe(Date.now() - base);
           return;
         }
-      } catch {
+      } catch (error) {
+        logSuppressedError('audio-stt.redis.session_status_check_failed', error);
         // If gating check itself failed (Redis issue), continue best-effort
       }
       // Only reached when not suppressed
@@ -166,7 +190,7 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg !== 'AI_SUPPRESSED_DUE_TO_END') {
       if (process.env.API_DEBUG === '1') {
-        console.warn('⚠️ AI buffer/trigger failed (non-blocking):', msg);
+        logger.warn('⚠️ AI buffer/trigger failed (non-blocking):', msg);
       }
     }
   }
@@ -181,23 +205,23 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
     if (current) {
       try { arr = JSON.parse(current); } catch { arr = []; }
     }
-    // Idempotent append: skip if chunkId exists
     if (!arr.some((s) => s?.id === segment.id)) {
       arr.push(segment);
       arr.sort((a, b) => (a.startTs || 0) - (b.startTs || 0));
     }
     await clientR.set(key, JSON.stringify(arr));
     await clientR.expire(key, ttlHours * 3600);
-  } catch {}
+  } catch (error) {
+    logSuppressedError('audio-stt.redis.transcript_cache_failed', error);
+  }
 
   // Emit WS event with overlap-aware merging on server side
   try {
     const ns = getNamespacedWebSocketService();
-    // Prefer merged emission if available; fallback to direct emit
     const svc: any = ns?.getSessionsService();
     if (svc && typeof svc.emitMergedGroupTranscript === 'function') {
       if (process.env.API_DEBUG === '1') {
-        try { console.log('📡 Emitting transcription:group:new (merged)', { sessionId: data.sessionId, groupId: data.groupId, chunkId: data.chunkId }); } catch {}
+        logger.debug('📡 Emitting transcription:group:new (merged)', { sessionId: data.sessionId, groupId: data.groupId, chunkId: data.chunkId });
       }
       svc.emitMergedGroupTranscript(data.sessionId, data.groupId, segment.text, {
         traceId: data.traceId,
@@ -205,7 +229,7 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
       });
     } else {
       if (process.env.API_DEBUG === '1') {
-        try { console.log('📡 Emitting transcription:group:new', { sessionId: data.sessionId, groupId: data.groupId, chunkId: data.chunkId }); } catch {}
+        logger.debug('📡 Emitting transcription:group:new', { sessionId: data.sessionId, groupId: data.groupId, chunkId: data.chunkId });
       }
       svc?.emitToGroup(data.groupId, 'transcription:group:new', {
         sessionId: data.sessionId,
@@ -216,7 +240,9 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
         traceId: data.traceId,
       });
     }
-  } catch {}
+  } catch (error) {
+    logSuppressedError('audio-stt.ws.emit_failed', error);
+  }
 
   sttJobsSuccessTotal.inc();
   const base = data.receivedAt || start;
@@ -258,17 +284,15 @@ export function startAudioSttWorker(): Worker {
   (baseOpts as any).maxRetriesPerRequest = null;
   const worker = new Worker('audio-stt', async (job) => {
     if (process.env.API_DEBUG === '1') {
-      try { console.log('🎧 STT worker picked job', { id: job.id, name: job.name, bytes: (job.data?.bytes || 0), mime: job.data?.mime }); } catch {}
+      logger.debug('🎧 STT worker picked job', { id: job.id, name: job.name, bytes: job.data?.bytes || 0, mime: job.data?.mime });
     }
     try {
       await processAudioJob(job.data as AudioJob);
     } catch (e) {
       if (process.env.API_DEBUG === '1') {
-        try {
-          const d = job.data as AudioJob;
-          const msg = e instanceof Error ? e.message : String(e);
-          console.warn('🟠 STT job failed', { chunkId: d?.chunkId, mime: d?.mime, bytes: d?.bytes, error: msg });
-        } catch {}
+        const d = job.data as AudioJob;
+        const msg = e instanceof Error ? e.message : String(e);
+        logger.warn('🟠 STT job failed', { chunkId: d?.chunkId, mime: d?.mime, bytes: d?.bytes, error: msg });
       }
       sttJobsFailedTotal.inc();
       // Dev safeguard: if STT_FORCE_MOCK=1, synthesize a minimal segment to keep UX moving
@@ -282,15 +306,18 @@ export function startAudioSttWorker(): Worker {
           const arr = raw ? (() => { try { return JSON.parse(raw); } catch { return []; } })() : [];
           if (!arr.some((s: any) => s?.id === segment.id)) arr.push(segment);
           await clientR.set(key, JSON.stringify(arr));
-          await clientR.expire(key, (parseInt(process.env.TRANSCRIPT_REDIS_TTL_HOURS || '12', 10)) * 3600);
-          // emit merged transcript via WS if inline
+          await clientR.expire(key, parseInt(process.env.TRANSCRIPT_REDIS_TTL_HOURS || '12', 10) * 3600);
           try {
             const ns = getNamespacedWebSocketService();
             const svc: any = ns?.getSessionsService();
             svc?.emitMergedGroupTranscript?.(data.sessionId, data.groupId, segment.text, { window: { startTs: data.startTs, endTs: data.endTs, chunkId: data.chunkId } });
-          } catch {}
+          } catch (emitError) {
+            logSuppressedError('audio-stt.worker.mock_emit_failed', emitError);
+          }
           return; // swallow error in dev mock
-        } catch { /* ignore */ }
+        } catch (mockError) {
+          logSuppressedError('audio-stt.worker.mock_fallback_failed', mockError);
+        }
       }
       throw e;
     }
@@ -299,30 +326,27 @@ export function startAudioSttWorker(): Worker {
   // Observability hooks
   try {
     worker.on('ready', () => {
-      if (process.env.API_DEBUG === '1') console.log('🎧 STT worker ready');
+      if (process.env.API_DEBUG === '1') logger.debug('🎧 STT worker ready');
     });
     worker.on('active', (job) => {
-      if (process.env.API_DEBUG === '1') console.log('🎧 STT worker active', { id: job.id });
+      if (process.env.API_DEBUG === '1') logger.debug('🎧 STT worker active', { id: job.id });
     });
     worker.on('completed', (job) => {
-      if (process.env.API_DEBUG === '1') console.log('✅ STT job completed', { id: job.id });
+      if (process.env.API_DEBUG === '1') logger.debug('✅ STT job completed', { id: job.id });
     });
     worker.on('failed', (job, err) => {
-      console.warn('❌ STT job failed (event)', { id: job?.id, err: err?.message });
+      logger.warn('❌ STT job failed (event)', { id: job?.id, error: err?.message });
     });
     worker.on('error', (err) => {
-      console.error('❌ STT worker error', err);
+      logger.error('❌ STT worker error', { error: err instanceof Error ? err.message : String(err) });
     });
-  } catch {}
+  } catch (error) {
+    logSuppressedError('audio-stt.worker.event_binding_failed', error);
+  }
   return worker;
 }
 
 // If run directly, start worker
 if (require.main === module) {
   startAudioSttWorker();
-}
-import dotenv from 'dotenv';
-// Ensure environment variables are loaded when running worker standalone
-if (!process.env.NODE_ENV || process.env.NODE_ENV === 'development') {
-  try { dotenv.config(); } catch {}
 }

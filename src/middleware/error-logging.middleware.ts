@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { databricksService } from '../services/databricks.service';
 import { redisService } from '../services/redis.service';
+import { logger } from '../utils/logger';
 
 interface ErrorLogContext {
   timestamp: string;
@@ -49,7 +50,7 @@ class ErrorLoggingMiddleware {
       await redisService.ping();
       health.redis = true;
     } catch (error) {
-      console.warn('⚠️ Redis health check failed:', error);
+      logger.warn('⚠️ Redis health check failed:', error);
     }
 
     try {
@@ -57,7 +58,7 @@ class ErrorLoggingMiddleware {
       await databricksService.query('SELECT 1 as health_check');
       health.databricks = true;
     } catch (error) {
-      console.warn('⚠️ Databricks health check failed:', error);
+      logger.warn('⚠️ Databricks health check failed:', error);
     }
 
     return health;
@@ -126,13 +127,13 @@ class ErrorLoggingMiddleware {
       }
 
       // Log to console with structured format
-      console.error('🚨 ERROR LOG:', JSON.stringify(errorContext, null, 2));
+      logger.error('🚨 ERROR LOG:', JSON.stringify(errorContext, null, 2));
 
       // Log to file for persistence
       this.persistErrorLog(errorContext);
 
     } catch (loggingError) {
-      console.error('⚠️ Error logging failed:', loggingError);
+      logger.error('⚠️ Error logging failed:', loggingError);
     }
 
     next(error);
@@ -166,7 +167,7 @@ class ErrorLoggingMiddleware {
       );
 
     } catch (persistError) {
-      console.warn('⚠️ Failed to persist error log:', persistError);
+      logger.warn('⚠️ Failed to persist error log:', persistError);
     }
   }
 

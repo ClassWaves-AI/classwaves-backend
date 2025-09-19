@@ -46,7 +46,7 @@ describe('SecureSession dual-read/write (prefixed/legacy)', () => {
               lastActivity: new Date(obj.lastActivity),
             };
           }
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
         // Simulate decrypt failure for non-plain data
         return null;
       });

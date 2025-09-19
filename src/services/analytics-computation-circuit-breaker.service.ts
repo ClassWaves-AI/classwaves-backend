@@ -6,6 +6,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { logger } from '../utils/logger';
 
 interface CircuitBreakerConfig {
   failureThreshold: number;
@@ -51,7 +52,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
       minimumRequests: config?.minimumRequests || 10
     };
 
-    console.log(`🔧 Analytics Circuit Breaker initialized for ${serviceName}`, this.config);
+    logger.debug(`🔧 Analytics Circuit Breaker initialized for ${serviceName}`, this.config);
   }
 
   /**
@@ -74,7 +75,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
     }
 
     this.metrics.requestCount++;
-    console.log(`⚡ Circuit Breaker: Executing ${operationId} (state: ${this.metrics.state}, attempt: ${this.metrics.requestCount})`);
+    logger.debug(`⚡ Circuit Breaker: Executing ${operationId} (state: ${this.metrics.state}, attempt: ${this.metrics.requestCount})`);
 
     try {
       const result = await Promise.race([
@@ -117,7 +118,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
       this.transitionTo('CLOSED', 'Successful operation in HALF_OPEN state');
     }
 
-    console.log(`✅ Circuit Breaker Success: ${operationId} completed in ${duration}ms`);
+    logger.debug(`✅ Circuit Breaker Success: ${operationId} completed in ${duration}ms`);
     
     this.emit('success', {
       serviceName: this.serviceName,
@@ -138,7 +139,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
     this.metrics.consecutiveFailures++;
     this.metrics.lastFailureTime = Date.now();
 
-    console.error(`❌ Circuit Breaker Failure: ${operationId} failed after ${duration}ms`, {
+    logger.error(`❌ Circuit Breaker Failure: ${operationId} failed after ${duration}ms`, {
       error: error.message,
       consecutiveFailures: this.metrics.consecutiveFailures,
       state: this.metrics.state,
@@ -208,7 +209,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
     this.metrics.state = newState;
     this.metrics.stateChangedAt = Date.now();
 
-    console.log(`🔄 Circuit Breaker State Transition: ${this.serviceName} ${oldState} → ${newState} (${reason})`);
+    logger.debug(`🔄 Circuit Breaker State Transition: ${this.serviceName} ${oldState} → ${newState} (${reason})`);
 
     // Reset metrics on state transitions
     if (newState === 'CLOSED') {
@@ -261,7 +262,7 @@ export class AnalyticsComputationCircuitBreaker extends EventEmitter {
    * Manually reset circuit breaker (for admin/debugging purposes)
    */
   reset(reason: string = 'Manual reset'): void {
-    console.log(`🔧 Circuit Breaker Manual Reset: ${this.serviceName} (${reason})`);
+    logger.debug(`🔧 Circuit Breaker Manual Reset: ${this.serviceName} (${reason})`);
     
     this.metrics = {
       requestCount: 0,
@@ -298,15 +299,15 @@ export const analyticsComputationCircuitBreaker = new AnalyticsComputationCircui
 // Set up monitoring and health reporting
 analyticsComputationCircuitBreaker.on('stateChange', (event) => {
   if (event.newState === 'OPEN') {
-    console.error(`🚨 ANALYTICS CIRCUIT BREAKER OPENED: ${event.reason}`);
+    logger.error(`🚨 ANALYTICS CIRCUIT BREAKER OPENED: ${event.reason}`);
     // In production, this would trigger alerts/notifications
   } else if (event.newState === 'CLOSED' && event.oldState === 'OPEN') {
-    console.log(`🎉 ANALYTICS CIRCUIT BREAKER RECOVERED: Service operational again`);
+    logger.debug(`🎉 ANALYTICS CIRCUIT BREAKER RECOVERED: Service operational again`);
   }
 });
 
 analyticsComputationCircuitBreaker.on('failure', (event) => {
   if (event.consecutiveFailures >= 3) {
-    console.warn(`⚠️ ANALYTICS SERVICE DEGRADED: ${event.consecutiveFailures} consecutive failures for ${event.serviceName}`);
+    logger.warn(`⚠️ ANALYTICS SERVICE DEGRADED: ${event.consecutiveFailures} consecutive failures for ${event.serviceName}`);
   }
 });

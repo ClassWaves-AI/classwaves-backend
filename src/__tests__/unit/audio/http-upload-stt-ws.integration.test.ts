@@ -47,7 +47,7 @@ describe('HTTP upload → queue/worker → WS emit → GET transcripts', () => {
   });
 
   afterAll(async () => {
-    try { await closeNamespacedWebSocket(); } catch {}
+    try { await closeNamespacedWebSocket(); } catch { /* intentionally ignored: best effort cleanup */ }
     if (teacherSocket) teacherSocket.close();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
   });

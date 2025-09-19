@@ -22,6 +22,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { databricksService } from '../../services/databricks.service';
+import { logger } from '../../utils/logger';
 
 /**
  * Unity Catalog Performance Optimization Queries
@@ -61,65 +62,65 @@ const verificationQueries = [
  * Executes the authentication performance indexes migration
  */
 async function runMigration(): Promise<void> {
-  console.log('🚀 Starting ClassWaves Authentication Performance Migration (Unity Catalog)');
-  console.log('📋 Migration: 001_add_auth_indexes (Unity Catalog Optimization)');
-  console.log('🎯 Goal: Optimize queries using Unity Catalog features for 70% faster login times');
-  console.log('=' .repeat(80));
+  logger.debug('🚀 Starting ClassWaves Authentication Performance Migration (Unity Catalog)');
+  logger.debug('📋 Migration: 001_add_auth_indexes (Unity Catalog Optimization)');
+  logger.debug('🎯 Goal: Optimize queries using Unity Catalog features for 70% faster login times');
+  logger.debug('=' .repeat(80));
   
   try {
-    console.log('📊 Pre-migration: Current authentication performance baseline');
+    logger.debug('📊 Pre-migration: Current authentication performance baseline');
     
     // Execute each migration query
     for (let i = 0; i < migrationQueries.length; i++) {
       const query = migrationQueries[i];
-      console.log(`\n⚡ Executing migration ${i + 1}/${migrationQueries.length}:`);
-      console.log(`   ${query}`);
+      logger.debug(`\n⚡ Executing migration ${i + 1}/${migrationQueries.length}:`);
+      logger.debug(`   ${query}`);
       
       try {
         // NOTE: Executing the migration against Databricks
         await databricksService.query(query);
         
-        console.log('   ✅ Migration query executed successfully');
+        logger.debug('   ✅ Migration query executed successfully');
       } catch (error) {
-        console.error(`   ❌ Error in migration ${i + 1}:`, error);
+        logger.error(`   ❌ Error in migration ${i + 1}:`, error);
         throw error;
       }
     }
     
-    console.log('\n🔍 Post-migration verification:');
+    logger.debug('\n🔍 Post-migration verification:');
     
     // Verify indexes were created successfully
     for (const verificationQuery of verificationQueries) {
-      console.log(`   📋 Checking: ${verificationQuery}`);
+      logger.debug(`   📋 Checking: ${verificationQuery}`);
       try {
         // NOTE: Executing verification against Databricks
         const result = await databricksService.query(verificationQuery);
-        console.log('   ✅ Verification successful:', result);
+        logger.debug('   ✅ Verification successful:', result);
         
       } catch (error) {
-        console.warn(`   ⚠️ Verification warning for ${verificationQuery}:`, error);
+        logger.warn(`   ⚠️ Verification warning for ${verificationQuery}:`, error);
       }
     }
     
-    console.log('\n' + '=' .repeat(80));
-    console.log('🎉 MIGRATION COMPLETED SUCCESSFULLY');
-    console.log('📈 Expected Result: 70% improvement in authentication performance');
-    console.log('⏱️  Expected Login Times: Reduced from 2-5s to 0.8-1.2s');
-    console.log('🔧 Next Steps:');
-    console.log('   1. Remove DRY RUN mode by uncommenting execution lines');
-    console.log('   2. Execute migration against your Databricks instance');
-    console.log('   3. Monitor authentication performance metrics');
-    console.log('   4. Run performance validation tests');
-    console.log('=' .repeat(80));
+    logger.debug('\n' + '=' .repeat(80));
+    logger.debug('🎉 MIGRATION COMPLETED SUCCESSFULLY');
+    logger.debug('📈 Expected Result: 70% improvement in authentication performance');
+    logger.debug('⏱️  Expected Login Times: Reduced from 2-5s to 0.8-1.2s');
+    logger.debug('🔧 Next Steps:');
+    logger.debug('   1. Remove DRY RUN mode by uncommenting execution lines');
+    logger.debug('   2. Execute migration against your Databricks instance');
+    logger.debug('   3. Monitor authentication performance metrics');
+    logger.debug('   4. Run performance validation tests');
+    logger.debug('=' .repeat(80));
     
   } catch (error) {
-    console.error('\n💥 MIGRATION FAILED:');
-    console.error('Error details:', error);
-    console.error('\n🔧 Troubleshooting:');
-    console.error('1. Verify Databricks connection and credentials');
-    console.error('2. Check table schemas and column names');
-    console.error('3. Ensure proper permissions for index creation');
-    console.error('4. Review Databricks error logs');
+    logger.error('\n💥 MIGRATION FAILED:');
+    logger.error('Error details:', error);
+    logger.error('\n🔧 Troubleshooting:');
+    logger.error('1. Verify Databricks connection and credentials');
+    logger.error('2. Check table schemas and column names');
+    logger.error('3. Ensure proper permissions for index creation');
+    logger.error('4. Review Databricks error logs');
     
     process.exit(1);
   }
@@ -130,7 +131,7 @@ async function runMigration(): Promise<void> {
  * Use this to measure authentication performance before and after migration
  */
 async function measureAuthPerformance(): Promise<void> {
-  console.log('\n⏱️  Measuring authentication performance...');
+  logger.debug('\n⏱️  Measuring authentication performance...');
   
   try {
     const testDomain = 'example.edu';
@@ -140,23 +141,23 @@ async function measureAuthPerformance(): Promise<void> {
     const schoolStart = performance.now();
     // const school = await databricksService.query('SELECT * FROM schools WHERE domain = ?', [testDomain]);
     const schoolTime = performance.now() - schoolStart;
-    console.log(`   📊 School lookup time: ${schoolTime.toFixed(2)}ms (DRY RUN)`);
+    logger.debug(`   📊 School lookup time: ${schoolTime.toFixed(2)}ms (DRY RUN)`);
     
     // Test teacher lookup performance
     const teacherStart = performance.now();
     // const teacher = await databricksService.query('SELECT * FROM teachers WHERE google_id = ?', [testGoogleId]);
     const teacherTime = performance.now() - teacherStart;
-    console.log(`   📊 Teacher lookup time: ${teacherTime.toFixed(2)}ms (DRY RUN)`);
+    logger.debug(`   📊 Teacher lookup time: ${teacherTime.toFixed(2)}ms (DRY RUN)`);
     
     // Test composite query performance
     const compositeStart = performance.now();
     // const composite = await databricksService.query('SELECT * FROM teachers WHERE google_id = ? AND school_id = ?', [testGoogleId, 'test-school-id']);
     const compositeTime = performance.now() - compositeStart;
-    console.log(`   📊 Composite query time: ${compositeTime.toFixed(2)}ms (DRY RUN)`);
+    logger.debug(`   📊 Composite query time: ${compositeTime.toFixed(2)}ms (DRY RUN)`);
     
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.warn('   ⚠️ Performance measurement failed (expected in DRY RUN mode):', errorMessage);
+    logger.warn('   ⚠️ Performance measurement failed (expected in DRY RUN mode):', errorMessage);
   }
 }
 
@@ -165,7 +166,7 @@ async function measureAuthPerformance(): Promise<void> {
  * Drops the created indexes if migration needs to be reverted
  */
 async function rollbackMigration(): Promise<void> {
-  console.log('🔄 Rolling back authentication indexes migration...');
+  logger.debug('🔄 Rolling back authentication indexes migration...');
   
   const rollbackQueries = [
     'DROP INDEX IF EXISTS idx_schools_domain;',
@@ -176,18 +177,18 @@ async function rollbackMigration(): Promise<void> {
   ];
   
   for (const query of rollbackQueries) {
-    console.log(`   🗑️ Rolling back: ${query}`);
+    logger.debug(`   🗑️ Rolling back: ${query}`);
     try {
       // NOTE: Uncomment to execute rollback
       // await databricksService.query(query);
-      console.log('   ✅ Rollback query prepared (DRY RUN MODE)');
+      logger.debug('   ✅ Rollback query prepared (DRY RUN MODE)');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.warn(`   ⚠️ Rollback warning: ${errorMessage}`);
+      logger.warn(`   ⚠️ Rollback warning: ${errorMessage}`);
     }
   }
   
-  console.log('✅ Rollback completed');
+  logger.debug('✅ Rollback completed');
 }
 
 // Main execution
@@ -198,21 +199,21 @@ if (require.main === module) {
     rollbackMigration()
       .then(() => process.exit(0))
       .catch((error) => {
-        console.error('Rollback failed:', error);
+        logger.error('Rollback failed:', error);
         process.exit(1);
       });
   } else if (args.includes('--performance')) {
     measureAuthPerformance()
       .then(() => process.exit(0))
       .catch((error) => {
-        console.error('Performance measurement failed:', error);
+        logger.error('Performance measurement failed:', error);
         process.exit(1);
       });
   } else {
     runMigration()
       .then(() => process.exit(0))
       .catch((error) => {
-        console.error('Migration failed:', error);
+        logger.error('Migration failed:', error);
         process.exit(1);
       });
   }

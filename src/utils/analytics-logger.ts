@@ -1,3 +1,4 @@
+import { logger } from './logger';
 /**
  * Analytics Operations Structured Logger
  * 
@@ -89,7 +90,7 @@ class AnalyticsLogger {
 
     // Output structured log
     if (success) {
-      console.log('📊 Analytics operation completed:', {
+      logger.debug('📊 Analytics operation completed:', {
         operation,
         table,
         duration: `${duration}ms`,
@@ -98,7 +99,7 @@ class AnalyticsLogger {
         metadata: options.metadata
       });
     } else {
-      console.error('❌ Analytics operation failed:', {
+      logger.error('❌ Analytics operation failed:', {
         operation,
         table,
         duration: `${duration}ms`,
@@ -110,7 +111,7 @@ class AnalyticsLogger {
 
     // Log performance warnings
     if (duration > 5000) { // Warn if operation takes > 5 seconds
-      console.warn('⚠️ Slow analytics operation detected:', {
+      logger.warn('⚠️ Slow analytics operation detected:', {
         operation,
         table,
         duration: `${duration}ms`,
@@ -279,14 +280,14 @@ class AnalyticsLogger {
     if (olderThan.getTime() <= 0) {
       this.logEntries = [];
       this.performanceMetrics.clear();
-      console.log(`🧹 Analytics logger cleanup: removed ${beforeCount} old entries`);
+      logger.debug(`🧹 Analytics logger cleanup: removed ${beforeCount} old entries`);
       return;
     }
     this.logEntries = this.logEntries.filter(entry => new Date(entry.timestamp) >= olderThan);
     const afterCount = this.logEntries.length;
 
     if (beforeCount !== afterCount) {
-      console.log(`🧹 Analytics logger cleanup: removed ${beforeCount - afterCount} old entries`);
+      logger.debug(`🧹 Analytics logger cleanup: removed ${beforeCount - afterCount} old entries`);
     }
   }
 
@@ -306,7 +307,7 @@ class AnalyticsLogger {
       throw new Error('Sample rate must be between 0 and 1');
     }
     (this as any).DEFAULT_SAMPLE_RATE = rate;
-    console.log(`📊 Analytics logging sample rate set to ${rate * 100}%`);
+    logger.debug(`📊 Analytics logging sample rate set to ${rate * 100}%`);
   }
 }
 

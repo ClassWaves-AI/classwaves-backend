@@ -2,6 +2,7 @@ import { cacheManager } from './cache-manager.service';
 import { cacheEventBus } from './cache-event-bus.service';
 import { redisService } from './redis.service';
 import { queryCacheService } from './query-cache.service';
+import { logger } from '../utils/logger';
 
 /**
  * Cache Health Monitoring and Alerting System
@@ -140,12 +141,12 @@ export class CacheHealthMonitor {
    */
   startMonitoring(intervalMs: number = 30000): void {
     if (this.isMonitoring) {
-      console.log('Cache health monitoring already running');
+      logger.debug('Cache health monitoring already running');
       return;
     }
 
     this.isMonitoring = true;
-    console.log(`🏥 Starting cache health monitoring (interval: ${intervalMs}ms)`);
+    logger.debug(`🏥 Starting cache health monitoring (interval: ${intervalMs}ms)`);
 
     this.monitoringInterval = setInterval(async () => {
       try {
@@ -153,7 +154,7 @@ export class CacheHealthMonitor {
       } catch (error) {
         // Downgrade to warning to avoid noisy logs on transient Redis hiccups
         const msg = error instanceof Error ? error.message : String(error);
-        console.warn('Health check degraded:', msg);
+        logger.warn('Health check degraded:', msg);
       }
     }, intervalMs);
 
@@ -170,7 +171,7 @@ export class CacheHealthMonitor {
       this.monitoringInterval = undefined;
     }
     this.isMonitoring = false;
-    console.log('🏥 Cache health monitoring stopped');
+    logger.debug('🏥 Cache health monitoring stopped');
   }
 
   /**
@@ -240,7 +241,7 @@ export class CacheHealthMonitor {
       return healthMetrics;
 
     } catch (error) {
-      console.error('Health check failed:', error);
+      logger.error('Health check failed:', error);
       
       // Return degraded health on check failure
       return {
@@ -307,7 +308,7 @@ export class CacheHealthMonitor {
     } catch (error) {
       // Reduce noise; report degraded without stack
       const msg = error instanceof Error ? error.message : String(error);
-      console.warn('Redis health check degraded:', msg);
+      logger.warn('Redis health check degraded:', msg);
       return {
         connected: false,
         latency: -1,
@@ -487,7 +488,7 @@ export class CacheHealthMonitor {
     const existing = this.alerts.find(a => a.id === alert.id && !a.resolved);
     if (!existing) {
       this.alerts.push(alert);
-      console.warn(`🚨 CACHE ALERT [${alert.level.toUpperCase()}]: ${alert.message}`);
+      logger.warn(`🚨 CACHE ALERT [${alert.level.toUpperCase()}]: ${alert.message}`);
     }
   }
 
@@ -527,7 +528,7 @@ export class CacheHealthMonitor {
       if (shouldResolve) {
         alert.resolved = true;
         alert.resolvedAt = now;
-        console.log(`✅ CACHE ALERT RESOLVED: ${alert.message}`);
+        logger.debug(`✅ CACHE ALERT RESOLVED: ${alert.message}`);
       }
     }
   }
@@ -550,7 +551,7 @@ export class CacheHealthMonitor {
 
     // Listen to cache event bus
     cacheEventBus.on('error', (error: Error) => {
-      console.error('Cache event bus error:', error);
+      logger.error('Cache event bus error:', error);
     });
   }
 
@@ -573,7 +574,7 @@ export class CacheHealthMonitor {
    */
   clearAlerts(): void {
     this.alerts = [];
-    console.log('🧹 Cache alerts cleared');
+    logger.debug('🧹 Cache alerts cleared');
   }
 
   /**
@@ -581,7 +582,7 @@ export class CacheHealthMonitor {
    */
   updateThresholds(thresholds: Partial<CacheHealthThresholds>): void {
     this.thresholds = { ...this.thresholds, ...thresholds };
-    console.log('📊 Cache monitoring thresholds updated');
+    logger.debug('📊 Cache monitoring thresholds updated');
   }
 }
 

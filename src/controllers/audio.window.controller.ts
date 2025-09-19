@@ -5,6 +5,7 @@ import { AudioWindowUploadSchema, isSupportedAudioMime } from '../utils/zod-sche
 import { idempotencyPort } from '../utils/idempotency.port.instance';
 import { redisService } from '../services/redis.service';
 import { RedisRateLimiter } from '../services/websocket/utils/rate-limiter.util';
+import { logger } from '../utils/logger';
 
 // Lazy import bullmq to allow tests to mock easily
 type BullQueue = { add: (name: string, data: any, opts?: any) => Promise<{ id?: string }> };
@@ -60,7 +61,7 @@ export async function processAudioWindow(input: { sessionId: string; groupId: st
       return { ok: true, dedup: true, receivedAt, traceId };
     }
   } catch (e) {
-    if (process.env.API_DEBUG === '1') console.warn('dedupe skipped:', e);
+    if (process.env.API_DEBUG === '1') logger.warn('dedupe skipped:', e);
   }
 
   const payload = {
@@ -93,7 +94,6 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
   audioUploadTotal.inc();
 
   const traceId = (res.locals as any)?.traceId || (req as any)?.traceId || req.headers['x-trace-id'] || undefined;
-  const receivedAt = Date.now();
 
   try {
     // Validate fields
@@ -139,13 +139,18 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
           audioUploadRateLimitedTotal.inc();
           res.setHeader('Retry-After', String(minIntervalSec));
           if (process.env.API_DEBUG === '1') {
-            try { console.warn('🛑 REST upload rate-limited (min-interval)', { groupId, minIntervalMs }); } catch {}
+            logger.warn('🛑 REST upload rate-limited (min-interval)', { groupId, minIntervalMs });
           }
           const status = parseInt(process.env.AUDIO_WINDOW_RATE_LIMIT_STATUS || '429', 10);
           return res.status(status).json({ ok: false, error: 'RATE_LIMITED' });
         }
       }
-    } catch {}
+    } catch (error) {
+      logger.warn('audio window min-interval check failed', {
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     // Optional simple rate cap (legacy config) — keeps compatibility with existing envs
     try {
@@ -158,22 +163,33 @@ export async function handleAudioWindowUpload(req: Request, res: Response) {
           audioUploadRateLimitedTotal.inc();
           res.setHeader('Retry-After', String(windowSec));
           if (process.env.API_DEBUG === '1') {
-            try { console.warn('🛑 REST upload rate-limited (rate-cap)', { groupId, maxPerWindow, windowSec }); } catch {}
+            logger.warn('🛑 REST upload rate-limited (rate-cap)', { groupId, maxPerWindow, windowSec });
           }
           const status = parseInt(process.env.AUDIO_WINDOW_RATE_LIMIT_STATUS || '429', 10);
           return res.status(status).json({ ok: false, error: 'RATE_LIMITED' });
         }
       }
-    } catch {}
+    } catch (error) {
+      logger.warn('audio window rate-cap check failed', {
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const result = await processAudioWindow({ sessionId, groupId, chunkId, startTs, endTs, file, traceId });
     // Update WS namespace ingress timestamp for stall detection (REST path)
     try {
       const { getNamespacedWebSocketService } = await import('../services/websocket/namespaced-websocket.service');
       getNamespacedWebSocketService()?.getSessionsService()?.updateLastIngestAt(sessionId, groupId);
-    } catch {}
+    } catch (error) {
+      logger.debug('audio window WS ingest update failed', {
+        sessionId,
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     if (process.env.API_DEBUG === '1') {
-      console.log('🎙️ AUDIO WINDOW ACCEPTED', { sessionId, groupId, chunkId, bytes: file.buffer.length, queuedJobId: (result as any)?.queuedJobId, dedup: (result as any)?.dedup });
+      logger.debug('🎙️ AUDIO WINDOW ACCEPTED', { sessionId, groupId, chunkId, bytes: file.buffer.length, queuedJobId: (result as any)?.queuedJobId, dedup: (result as any)?.dedup });
     }
     audioUploadLabeled.inc({ result: (result as any)?.dedup ? 'dedup' : 'ok' });
     return res.json(result);

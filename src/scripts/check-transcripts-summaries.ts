@@ -3,6 +3,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 async function columnExists(fullTable: string, name: string): Promise<boolean> {
   const rows = await databricksService.query(`DESCRIBE ${fullTable}`);
@@ -65,16 +66,16 @@ async function run(sessionId: string, groupId: string) {
     out.groupSummaries = { error: (e as Error).message };
   }
 
-  console.log(JSON.stringify(out, null, 2));
+  logger.debug(JSON.stringify(out, null, 2));
 }
 
 const [, , sessionId, groupId] = process.argv;
 if (!sessionId || !groupId) {
-  console.error('Usage: ts-node src/scripts/check-transcripts-summaries.ts <sessionId> <groupId>');
+  logger.error('Usage: ts-node src/scripts/check-transcripts-summaries.ts <sessionId> <groupId>');
   process.exit(1);
 }
 
 run(sessionId, groupId).catch((e) => {
-  console.error('Failed:', e);
+  logger.error('Failed:', e);
   process.exit(1);
 });

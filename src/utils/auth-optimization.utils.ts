@@ -3,7 +3,9 @@ import { Request } from 'express';
 import { Teacher, School, GoogleUser } from '../types/auth.types';
 import { redisService } from '../services/redis.service';
 import { SecureSessionService } from '../services/secure-session.service';
+import { databricksService } from '../services/databricks.service';
 import { getExpiresInSeconds } from './jwt.utils';
+import { logger } from './logger';
 
 /**
  * Verify Google token with timeout and enhanced error handling
@@ -21,7 +23,7 @@ export async function verifyGoogleTokenWithTimeout(
     
     if (code) {
       // Handle authorization code flow (PKCE-aware)
-      console.log('🔑 Exchanging authorization code...', { pkce: true, hasCodeVerifier: Boolean(codeVerifier) });
+      logger.debug('🔑 Exchanging authorization code...', { pkce: true, hasCodeVerifier: Boolean(codeVerifier) });
       const tokenParams = codeVerifier || redirectUri
         ? { code, codeVerifier, redirect_uri: redirectUri || process.env.GOOGLE_REDIRECT_URI }
         : (code as unknown as { code: string });
@@ -43,7 +45,7 @@ export async function verifyGoogleTokenWithTimeout(
     }
 
     // Map JWT payload to GoogleUser interface
-    console.log('🔄 Mapping Google JWT payload to GoogleUser object');
+    logger.debug('🔄 Mapping Google JWT payload to GoogleUser object');
     return {
       id: payload.sub!, // THIS IS THE KEY MAPPING: sub -> id -> google_id
       email: payload.email!,
@@ -67,7 +69,7 @@ export async function verifyGoogleTokenWithTimeout(
     const googleUser = await Promise.race([verificationPromise, timeoutPromise]);
     return googleUser as GoogleUser;
   } catch (error) {
-    console.error('❌ Google token verification failed:', error);
+    logger.error('❌ Google token verification failed:', error);
     
     // Enhanced error categorization
     if (error instanceof Error) {
@@ -99,9 +101,9 @@ export async function storeSessionOptimized(
     // Use SecureSessionService for encrypted storage with security features
     await SecureSessionService.storeSecureSession(sessionId, teacher, school, req);
     
-    console.log(`🔒 Secure session storage completed: ${sessionId} (${(performance.now() - storeStart).toFixed(2)}ms)`);
+    logger.debug(`🔒 Secure session storage completed: ${sessionId} (${(performance.now() - storeStart).toFixed(2)}ms)`);
   } catch (error) {
-    console.error(`❌ Secure session storage failed for ${sessionId}:`, error);
+    logger.error(`❌ Secure session storage failed for ${sessionId}:`, error);
     throw new Error(`Session storage failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -120,21 +122,12 @@ export async function executeParallelAuthOperations(
   sessionStored: boolean;
   refreshTokenStored: boolean;
 }> {
-  console.log('🚀 PARALLEL AUTH OPERATIONS START');
+  logger.debug('🚀 PARALLEL AUTH OPERATIONS START');
   const parallelStart = performance.now();
   
   try {
     // Execute database operations and token generation in parallel
-    const [
-      // Database operations
-      { school, teacher },
-      // Session storage preparation (we'll store after we have teacher data)
-    ] = await Promise.all([
-      // 1. Get school and teacher data using the existing optimized batch operation
-      import('../services/databricks.service').then(({ databricksService }) => 
-        databricksService.batchAuthOperations(googleUser, domain)
-      ),
-    ]);
+    const { school, teacher } = await databricksService.batchAuthOperations(googleUser, domain);
 
     // Now execute session and refresh token storage in parallel
     const [sessionResult, refreshTokenResult] = await Promise.allSettled([
@@ -154,13 +147,13 @@ export async function executeParallelAuthOperations(
 
     // Log any storage failures but don't fail the auth if one storage operation fails
     if (sessionResult.status === 'rejected') {
-      console.error('❌ Session storage failed:', sessionResult.reason);
+      logger.error('❌ Session storage failed:', sessionResult.reason);
     }
     if (refreshTokenResult.status === 'rejected') {
-      console.error('❌ Refresh token storage failed:', refreshTokenResult.reason);
+      logger.error('❌ Refresh token storage failed:', refreshTokenResult.reason);
     }
 
-    console.log(`🎉 PARALLEL AUTH OPERATIONS COMPLETE (${(performance.now() - parallelStart).toFixed(2)}ms)`);
+    logger.debug(`🎉 PARALLEL AUTH OPERATIONS COMPLETE (${(performance.now() - parallelStart).toFixed(2)}ms)`);
     
     return {
       school,
@@ -169,7 +162,7 @@ export async function executeParallelAuthOperations(
       refreshTokenStored,
     };
   } catch (error) {
-    console.error('❌ Parallel auth operations failed:', error);
+    logger.error('❌ Parallel auth operations failed:', error);
     throw error;
   }
 }
@@ -255,7 +248,7 @@ export class AuthCircuitBreaker {
   private onFailure(): void {
     this.failures++;
     this.lastFailureTime = Date.now();
-    console.warn(`⚠️  Circuit breaker failure count: ${this.failures}/${this.maxFailures}`);
+    logger.warn(`⚠️  Circuit breaker failure count: ${this.failures}/${this.maxFailures}`);
   }
 
   getStatus(): { failures: number; isOpen: boolean; maxFailures: number } {

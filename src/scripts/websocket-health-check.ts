@@ -33,6 +33,7 @@ import { InfrastructureValidationResult } from './validate-integration-infrastru
 import dotenv from 'dotenv';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -57,23 +58,23 @@ export class WebSocketHealthChecker {
    */
   async validateWebSocketHealth(): Promise<InfrastructureValidationResult> {
     const startTime = performance.now();
-    console.log('   🔍 Validating WebSocket server infrastructure...');
+    logger.debug('   🔍 Validating WebSocket server infrastructure...');
 
     try {
       const errors: string[] = [];
       const warnings: string[] = [];
 
       // 1. Test WebSocket server availability
-      console.log('   🌐 Testing WebSocket server availability...');
+      logger.debug('   🌐 Testing WebSocket server availability...');
       const serverHealthy = await this.testWebSocketServerHealth();
       if (!serverHealthy) {
         errors.push('WebSocket server not responding or not available');
       } else {
-        console.log('   ✅ WebSocket server responding');
+        logger.debug('   ✅ WebSocket server responding');
       }
 
       // 2. Validate namespace infrastructure
-      console.log('   🏗️ Validating namespace infrastructure...');
+      logger.debug('   🏗️ Validating namespace infrastructure...');
       const namespaceResult = await this.validateNamespaceInfrastructure();
       if (!namespaceResult.success) {
         errors.push(...namespaceResult.errors);
@@ -83,25 +84,25 @@ export class WebSocketHealthChecker {
       }
 
       // 3. Test room management capabilities
-      console.log('   🏠 Testing room management capabilities...');
+      logger.debug('   🏠 Testing room management capabilities...');
       const roomManagementHealthy = await this.testRoomManagement();
       if (!roomManagementHealthy) {
         warnings.push('Room management capabilities may have issues');
       } else {
-        console.log('   ✅ Room management operational');
+        logger.debug('   ✅ Room management operational');
       }
 
       // 4. Validate security integration
-      console.log('   🔐 Validating WebSocket security integration...');
+      logger.debug('   🔐 Validating WebSocket security integration...');
       const securityHealthy = await this.testWebSocketSecurity();
       if (!securityHealthy) {
         warnings.push('WebSocket security validation may have issues');
       } else {
-        console.log('   ✅ WebSocket security integration operational');
+        logger.debug('   ✅ WebSocket security integration operational');
       }
 
       // 5. Test real-time communication infrastructure
-      console.log('   ⚡ Testing real-time communication infrastructure...');
+      logger.debug('   ⚡ Testing real-time communication infrastructure...');
       const realtimeResult = await this.testRealtimeCommunication();
       if (realtimeResult.responseTime > 1000) {
         warnings.push(`WebSocket response time ${realtimeResult.responseTime}ms exceeds target <1000ms`);
@@ -148,7 +149,7 @@ export class WebSocketHealthChecker {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        console.log('   ❌ Backend server (WebSocket host) not responding');
+        logger.debug('   ❌ Backend server (WebSocket host) not responding');
         return false;
       }
 
@@ -158,7 +159,7 @@ export class WebSocketHealthChecker {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ❌ WebSocket server health test failed: ${errorMessage}`);
+      logger.debug(`   ❌ WebSocket server health test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -192,7 +193,7 @@ export class WebSocketHealthChecker {
         }
       ];
 
-      console.log(`   📊 Validating ${expectedNamespaces.length} WebSocket namespaces`);
+      logger.debug(`   📊 Validating ${expectedNamespaces.length} WebSocket namespaces`);
 
       // In a full implementation, this would validate each namespace exists
       // and has proper configuration. For infrastructure validation,
@@ -243,7 +244,7 @@ export class WebSocketHealthChecker {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ❌ Room management test failed: ${errorMessage}`);
+      logger.debug(`   ❌ Room management test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -264,7 +265,7 @@ export class WebSocketHealthChecker {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ❌ WebSocket security test failed: ${errorMessage}`);
+      logger.debug(`   ❌ WebSocket security test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -286,7 +287,7 @@ export class WebSocketHealthChecker {
       await new Promise(resolve => setTimeout(resolve, 50)); // Simulate 50ms latency
       
       const responseTime = performance.now() - startTime;
-      console.log(`   ⚡ WebSocket communication: ~${Math.round(responseTime)}ms response time`);
+      logger.debug(`   ⚡ WebSocket communication: ~${Math.round(responseTime)}ms response time`);
 
       return { responseTime };
 
@@ -306,7 +307,7 @@ export class WebSocketHealthChecker {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ⚠️ Could not test namespace accessibility: ${errorMessage}`);
+      logger.debug(`   ⚠️ Could not test namespace accessibility: ${errorMessage}`);
       return 0;
     }
   }
@@ -332,7 +333,7 @@ export class WebSocketHealthChecker {
 
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.log(`   ❌ Test connection to ${namespace} failed: ${errorMessage}`);
+        logger.debug(`   ❌ Test connection to ${namespace} failed: ${errorMessage}`);
         resolve(false);
       }
     });
@@ -350,7 +351,7 @@ export class WebSocketHealthChecker {
     };
     recommendations: string[];
   }> {
-    console.log('📊 Generating WebSocket infrastructure report...');
+    logger.debug('📊 Generating WebSocket infrastructure report...');
 
     const serverHealthy = await this.testWebSocketServerHealth();
     const realtimeResult = await this.testRealtimeCommunication();
@@ -401,37 +402,37 @@ async function main() {
   try {
     const result = await checker.validateWebSocketHealth();
     
-    console.log('\n📊 WebSocket Health Check Result:');
-    console.log(`   Status: ${result.status}`);
-    console.log(`   Details: ${result.details}`);
-    console.log(`   Response Time: ${Math.round(result.responseTime || 0)}ms`);
+    logger.debug('\n📊 WebSocket Health Check Result:');
+    logger.debug(`   Status: ${result.status}`);
+    logger.debug(`   Details: ${result.details}`);
+    logger.debug(`   Response Time: ${Math.round(result.responseTime || 0)}ms`);
     
     if (result.errors?.length) {
-      console.log('   ❌ Errors:');
-      result.errors.forEach(error => console.log(`      ${error}`));
+      logger.debug('   ❌ Errors:');
+      result.errors.forEach(error => logger.debug(`      ${error}`));
     }
     
     if (result.warnings?.length) {
-      console.log('   ⚠️ Warnings:');  
-      result.warnings.forEach(warning => console.log(`      ${warning}`));
+      logger.debug('   ⚠️ Warnings:');  
+      result.warnings.forEach(warning => logger.debug(`      ${warning}`));
     }
 
     // Generate detailed report
     const report = await checker.generateInfrastructureReport();
-    console.log('\n🏗️ Infrastructure Report:');
-    console.log(`   Server Status: ${report.serverStatus}`);
-    console.log(`   Namespaces: ${report.namespaces.length} configured`);
-    console.log(`   Performance: ${Math.round(report.performance.responseTime)}ms response time`);
+    logger.debug('\n🏗️ Infrastructure Report:');
+    logger.debug(`   Server Status: ${report.serverStatus}`);
+    logger.debug(`   Namespaces: ${report.namespaces.length} configured`);
+    logger.debug(`   Performance: ${Math.round(report.performance.responseTime)}ms response time`);
 
     if (report.recommendations.length > 0) {
-      console.log('   📝 Recommendations:');
-      report.recommendations.forEach(rec => console.log(`      ${rec}`));
+      logger.debug('   📝 Recommendations:');
+      report.recommendations.forEach(rec => logger.debug(`      ${rec}`));
     }
 
     process.exit(result.status === 'FAILED' ? 1 : 0);
     
   } catch (error) {
-    console.error('💥 FATAL ERROR during WebSocket health validation:', error);
+    logger.error('💥 FATAL ERROR during WebSocket health validation:', error);
     process.exit(1);
   }
 }

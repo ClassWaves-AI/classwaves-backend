@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -80,13 +81,13 @@ class CatalogFixer {
   }
 
   async fix() {
-    console.log('🔧 Fixing catalog issues...\n');
+    logger.debug('🔧 Fixing catalog issues...\n');
     
     // Set catalog
     await this.executeStatement(`USE CATALOG ${this.catalog}`);
     
     // 1. Create school_settings table
-    console.log('Creating school_settings table...');
+    logger.debug('Creating school_settings table...');
     const createTableResult = await this.executeStatement(`
       CREATE TABLE IF NOT EXISTS admin.school_settings (
         id STRING NOT NULL,
@@ -102,13 +103,13 @@ class CatalogFixer {
     `);
     
     if (createTableResult.success) {
-      console.log('✅ school_settings table created');
+      logger.debug('✅ school_settings table created');
     } else {
-      console.error('❌ Failed to create school_settings:', createTableResult.error);
+      logger.error('❌ Failed to create school_settings:', createTableResult.error);
     }
     
     // 2. Insert demo data
-    console.log('\nInserting demo data...');
+    logger.debug('\nInserting demo data...');
     
     const demoStatements = [
       `INSERT INTO ${this.catalog}.users.schools (
@@ -143,14 +144,14 @@ class CatalogFixer {
     for (const stmt of demoStatements) {
       const result = await this.executeStatement(stmt);
       if (result.success) {
-        console.log('✅ Demo data inserted');
+        logger.debug('✅ Demo data inserted');
       } else {
-        console.error('❌ Failed to insert demo data:', result.error);
+        logger.error('❌ Failed to insert demo data:', result.error);
       }
     }
     
     // 3. Verify structure
-    console.log('\n📋 Verifying final structure...');
+    logger.debug('\n📋 Verifying final structure...');
     
     const verifyQueries = [
       { name: 'Schools', query: 'SELECT COUNT(*) as count FROM users.schools' },
@@ -162,13 +163,13 @@ class CatalogFixer {
     for (const { name, query } of verifyQueries) {
       const result = await this.executeStatement(query);
       if (result.success) {
-        console.log(`✅ ${name} - verified`);
+        logger.debug(`✅ ${name} - verified`);
       } else {
-        console.log(`❌ ${name} - failed`);
+        logger.debug(`❌ ${name} - failed`);
       }
     }
     
-    console.log('\n✨ Catalog fixes completed!');
+    logger.debug('\n✨ Catalog fixes completed!');
   }
 }
 
@@ -179,7 +180,7 @@ async function main() {
     await fixer.fix();
     process.exit(0);
   } catch (error) {
-    console.error('❌ Failed:', error);
+    logger.error('❌ Failed:', error);
     process.exit(1);
   }
 }

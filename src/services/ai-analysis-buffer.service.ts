@@ -9,7 +9,8 @@
  */
 
 import { databricksService } from './databricks.service';
-import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
+import type { Tier1Insights, Tier2Insights, PromptContextQuote } from '../types/ai-analysis.types';
+import { logger } from '../utils/logger';
 
 // Validation moved to edges (routes/controllers/websocket). This service assumes
 // inputs are pre-validated and focuses on buffering and analytics logic.
@@ -38,6 +39,22 @@ interface BufferStats {
   memoryUsageBytes: number;
   oldestBuffer?: Date;
   newestBuffer?: Date;
+}
+
+const COMMON_FIRST_NAMES = new Set(
+  [
+    'alex','alexa','alexis','andrew','angel','anna','anthony','aria','ashley','ben','benjamin','carla','caroline','carlos','charlie','christian','daniel','david','dylan','ella','emily','emma','ethan','felix','grace','hannah','isabella','jack','jackson','jacob','james','jasmine','jayden','jessica','joel','john','jonathan','jordan','jose','josh','joshua','kate','katie','kevin','laura','lily','lucas','luke','madison','maria','mason','matt','matthew','mia','michael','natalie','nathan','noah','olivia','oscar','paul','rachel','ryan','samantha','sarah','sofia','sophia','steven','thomas','victoria','will','william','zoe'
+  ]
+);
+
+const COMMON_NAME_EXCEPTIONS = new Set([
+  'analysis','answer','bridge','celebrate','concept','concepts','context','density','discussion','energy','essay','evidence','focus','goal','learning','momentum','photosynthesis','reason','science','summary','topic','transition'
+]);
+
+interface ContextQuote {
+  speakerLabel: string;
+  text: string;
+  timestamp: number;
 }
 
 // ============================================================================
@@ -97,13 +114,18 @@ export class AIAnalysisBufferService {
     cleanupIntervalMs: parseInt(process.env.AI_BUFFER_CLEANUP_INTERVAL_MS || '30000'),
   };
 
+  private readonly contextConfig = {
+    maxChars: Math.max(200, Math.min(2400, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS || '1200'))),
+    windowUtteranceLimit: Math.max(1, Math.min(8, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_LINES || '6')))
+  };
+
   constructor() {
     // Start automatic cleanup process (skip in test to avoid open handles)
     if (process.env.NODE_ENV !== 'test') {
       this.startCleanupProcess();
     }
 
-    console.log('🔄 AI Analysis Buffer Service initialized', {
+    logger.debug('🔄 AI Analysis Buffer Service initialized', {
       maxBufferSize: this.config.maxBufferSize,
       tier1WindowMs: this.config.tier1WindowMs,
       tier2WindowMs: this.config.tier2WindowMs,
@@ -163,11 +185,11 @@ export class AIAnalysisBufferService {
       }
 
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Buffered transcription for group ${groupId} in ${processingTime}ms`);
+      logger.debug(`✅ Buffered transcription for group ${groupId} in ${processingTime}ms`);
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Failed to buffer transcription for group ${groupId}:`, error);
+      logger.error(`❌ Failed to buffer transcription for group ${groupId}:`, error);
       
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -221,9 +243,73 @@ export class AIAnalysisBufferService {
       return buffer.transcripts.map(t => t.content);
 
     } catch (error) {
-      console.error(`❌ Failed to get buffered transcripts for group ${groupId}:`, error);
+      logger.error(`❌ Failed to get buffered transcripts for group ${groupId}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Build sanitized transcript slices for contextual prompts (aligned vs tangent windows).
+   * Returns empty arrays when buffers are unavailable or below minimum threshold.
+   */
+  getContextWindows(sessionId: string, groupId: string): {
+    aligned: ContextQuote[];
+    tangent: ContextQuote[];
+  } {
+    const buffers = this.tier1Buffers;
+    const bufferKey = `${sessionId}:${groupId}`;
+    const buffer = buffers.get(bufferKey);
+
+    if (!buffer || buffer.transcripts.length === 0) {
+      return { aligned: [], tangent: [] };
+    }
+
+    const sanitized = buffer.transcripts
+      .slice()
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      .map((entry, idx) => this.sanitizeTranscriptEntry(entry.content, entry.timestamp, idx))
+      .filter((line): line is ContextQuote => Boolean(line));
+
+    if (sanitized.length === 0) {
+      return { aligned: [], tangent: [] };
+    }
+
+    const maxChars = this.contextConfig.maxChars;
+    const lineLimit = this.contextConfig.windowUtteranceLimit;
+
+    const tangent: ContextQuote[] = [];
+    const aligned: ContextQuote[] = [];
+
+    let usedChars = 0;
+    let pointer = sanitized.length - 1;
+
+    for (; pointer >= 0 && tangent.length < lineLimit; pointer--) {
+      const candidate = sanitized[pointer];
+      if (!candidate.text) continue;
+      const projected = usedChars + candidate.text.length;
+      if (projected > maxChars && tangent.length > 0) {
+        break;
+      }
+      tangent.unshift(candidate);
+      usedChars = Math.min(maxChars, projected);
+      if (usedChars >= maxChars) {
+        pointer--;
+        break;
+      }
+    }
+
+    for (; pointer >= 0 && aligned.length < lineLimit && usedChars < maxChars; pointer--) {
+      const candidate = sanitized[pointer];
+      if (!candidate.text) continue;
+      const projected = usedChars + candidate.text.length;
+      if (projected > maxChars) {
+        continue;
+      }
+      aligned.unshift(candidate);
+      usedChars = projected;
+    }
+
+    return { aligned, tangent };
   }
 
   /**
@@ -319,7 +405,7 @@ export class AIAnalysisBufferService {
       // Step 1: Check cache for recent insights
       const cached = this.insightsCache.get(sessionId);
       if (cached && (now.getTime() - cached.timestamp.getTime()) < maxAge) {
-        console.log(`✅ Retrieved cached insights for session ${sessionId}`);
+        logger.debug(`✅ Retrieved cached insights for session ${sessionId}`);
         return {
           ...cached.insights,
           metadata: {
@@ -340,7 +426,7 @@ export class AIAnalysisBufferService {
       });
 
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Built fresh insights for session ${sessionId} in ${processingTime}ms`);
+      logger.debug(`✅ Built fresh insights for session ${sessionId} in ${processingTime}ms`);
 
       return {
         ...insights,
@@ -353,7 +439,7 @@ export class AIAnalysisBufferService {
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Failed to get current insights for session ${sessionId}:`, error);
+      logger.error(`❌ Failed to get current insights for session ${sessionId}:`, error);
 
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -412,7 +498,7 @@ export class AIAnalysisBufferService {
           }
         } catch (error) {
           // Gracefully degrade for partial group failures; record and continue
-          console.warn(`⚠️ Failed to load Tier 1 analysis for group ${buffer.groupId}:`, (error as Error)?.message || error);
+          logger.warn(`⚠️ Failed to load Tier 1 analysis for group ${buffer.groupId}:`, (error as Error)?.message || error);
           errors.push(error as Error);
           failures++;
           continue;
@@ -438,7 +524,7 @@ export class AIAnalysisBufferService {
         }
       }
     } catch (e) {
-      console.warn('⚠️ Failed to load per-group Tier 2 insights:', (e as Error)?.message || e);
+      logger.warn('⚠️ Failed to load per-group Tier 2 insights:', (e as Error)?.message || e);
     }
 
     // Step 3: Build summary metrics
@@ -611,7 +697,7 @@ export class AIAnalysisBufferService {
       global.gc();
     }
     
-    console.log('🛑 AI Analysis Buffer Service shutdown completed');
+    logger.debug('🛑 AI Analysis Buffer Service shutdown completed');
   }
 
   // ============================================================================
@@ -656,6 +742,93 @@ export class AIAnalysisBufferService {
     }
   }
 
+  private sanitizeTranscriptEntry(content: string, timestamp: Date, fallbackIndex: number): ContextQuote | null {
+    const normalized = typeof content === 'string' ? content.trim() : '';
+    if (!normalized) return null;
+
+    const colonIndex = normalized.indexOf(':');
+    const utterance = colonIndex > -1 && colonIndex < 40
+      ? normalized.slice(colonIndex + 1).trim()
+      : normalized;
+
+    const text = this.sanitizeQuote(utterance);
+    if (!text) return null;
+
+    const timestampMs = Number.isFinite(timestamp?.getTime?.()) ? timestamp.getTime() : Date.now();
+
+    return {
+      speakerLabel: `Participant ${fallbackIndex + 1}`,
+      text,
+      timestamp: timestampMs
+    };
+  }
+
+  private sanitizeQuote(input: string): string {
+    if (!input) return '';
+
+    let sanitized = input
+      .replace(/\s+/g, ' ')
+      .replace(/https?:\/\/\S+/gi, '[link]')
+      .trim();
+
+    // Redact emails and phone numbers
+    sanitized = sanitized.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[redacted]');
+    sanitized = sanitized.replace(/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/g, '[redacted]');
+    sanitized = sanitized.replace(/\b\d{4,}\b/g, '[redacted]');
+
+    // Mask simple profanity list (case-insensitive)
+    const profanity = ['shit', 'fuck', 'damn', 'bitch', 'asshole', 'crap'];
+    if (profanity.length > 0) {
+      const profanityRegex = new RegExp(`\\b(${profanity.join('|')})\\b`, 'gi');
+      sanitized = sanitized.replace(profanityRegex, '***');
+    }
+
+    sanitized = this.maskHonorifics(sanitized);
+    sanitized = this.maskCommonNames(sanitized);
+
+    // Remove stray punctuation repeated sequences
+    sanitized = sanitized.replace(/["']+/g, '"').replace(/\s{2,}/g, ' ').trim();
+
+    if (sanitized.length > this.contextConfig.maxChars) {
+      sanitized = `${sanitized.slice(0, this.contextConfig.maxChars - 1)}…`;
+    }
+
+    return sanitized || '[redacted]';
+  }
+
+  private maskHonorifics(input: string): string {
+    return input.replace(/\b(Mr|Mrs|Ms|Miss|Mx|Dr|Prof)\.?\s+[A-Z][a-z]+/g, 'Teacher');
+  }
+
+  private maskCommonNames(input: string): string {
+    let result = input;
+
+    result = result.replace(/\b([A-Z][a-z]+)\s+([A-Z][a-z]+)\b/g, (match) => {
+      const lower = match.toLowerCase();
+      if (COMMON_NAME_EXCEPTIONS.has(lower)) {
+        return match;
+      }
+      const [first, second] = lower.split(' ');
+      if (COMMON_FIRST_NAMES.has(first) || COMMON_FIRST_NAMES.has(second)) {
+        return 'Student';
+      }
+      return match;
+    });
+
+    result = result.replace(/\b([A-Z][a-z]{2,})\b/g, (match) => {
+      const lower = match.toLowerCase();
+      if (COMMON_NAME_EXCEPTIONS.has(lower)) {
+        return match;
+      }
+      if (COMMON_FIRST_NAMES.has(lower)) {
+        return 'Student';
+      }
+      return match;
+    });
+
+    return result;
+  }
+
   private calculateBufferStats(buffers: Map<string, TranscriptBuffer>): BufferStats {
     let totalTranscripts = 0;
     let memoryUsageBytes = 0;
@@ -691,7 +864,7 @@ export class AIAnalysisBufferService {
   private startCleanupProcess(): void {
     this.cleanupInterval = setInterval(() => {
       this.performCleanup().catch(error => {
-        console.error('❌ Buffer cleanup failed:', error);
+        logger.error('❌ Buffer cleanup failed:', error);
       });
     }, this.config.cleanupIntervalMs);
     // Do not keep the event loop alive solely for cleanup
@@ -709,7 +882,7 @@ export class AIAnalysisBufferService {
     cleanedCount += this.cleanupBufferMap(this.tier2Buffers, now, this.config.tier2WindowMs * 2);
 
     if (cleanedCount > 0) {
-      console.log(`🧹 Cleaned up ${cleanedCount} old buffers`);
+      logger.debug(`🧹 Cleaned up ${cleanedCount} old buffers`);
       
       // ✅ MEMORY: Force garbage collection after cleanup
       if (global.gc) {
@@ -765,7 +938,7 @@ export class AIAnalysisBufferService {
       }).catch(() => {});
     } catch (error) {
       // Don't fail the main operation if audit logging fails
-      console.warn('⚠️ Audit logging failed in AI buffer service:', error);
+      logger.warn('⚠️ Audit logging failed in AI buffer service:', error);
     }
   }
 }

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { openAIWhisperService } from '../services/openai-whisper.service';
 import { getCompositionRoot } from '../app/composition-root';
+import { logger } from '../utils/logger';
 
 export interface BudgetUsageResponse {
   schoolId: string;
@@ -66,7 +67,7 @@ export const getBudgetUsage = async (req: Request, res: Response): Promise<void>
     
     res.json(response);
   } catch (error) {
-    console.error('Error fetching budget usage:', error);
+    logger.error('Error fetching budget usage:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -99,7 +100,7 @@ export const getBudgetAlerts = async (req: Request, res: Response): Promise<void
     
     res.json(response);
   } catch (error) {
-    console.error('Error fetching budget alerts:', error);
+    logger.error('Error fetching budget alerts:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -139,7 +140,7 @@ export const updateBudgetConfig = async (req: Request, res: Response): Promise<v
       }
     });
   } catch (error) {
-    console.error('Error updating budget config:', error);
+    logger.error('Error updating budget config:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -161,7 +162,7 @@ export const acknowledgeBudgetAlert = async (req: Request, res: Response): Promi
     
     res.json({ success: true, schoolId, alertId });
   } catch (error) {
-    console.error('Error acknowledging budget alert:', error);
+    logger.error('Error acknowledging budget alert:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

@@ -28,12 +28,12 @@ describe('WS: server-driven audio window flush scheduler', () => {
   })
 
   afterAll(async () => {
-    try { await closeNamespacedWebSocket() } catch {}
+    try { await closeNamespacedWebSocket() } catch { /* intentionally ignored: best effort cleanup */ }
     await new Promise<void>(resolve => server.close(() => resolve()))
   })
 
   afterEach(() => {
-    try { socket?.disconnect() } catch {}
+    try { socket?.disconnect() } catch { /* intentionally ignored: best effort cleanup */ }
   })
 
   it('emits periodic audio:window:flush events while stream is active', async () => {

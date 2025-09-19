@@ -4,17 +4,18 @@ import { databricksService } from '../services/databricks.service';
 import { generateAccessToken, generateSessionId } from '../utils/jwt.utils';
 import { redisService } from '../services/redis.service';
 import { createClassroomSessionData } from '../utils/schema-defaults';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function testGroupsSchemaAware() {
   try {
-    console.log('🧪 Testing Groups with Schema-Aware Data...');
+    logger.debug('🧪 Testing Groups with Schema-Aware Data...');
     
     // Connect to services
     await databricksService.connect();
-    console.log('✅ Connected to Databricks SQL Warehouse');
+    logger.debug('✅ Connected to Databricks SQL Warehouse');
     
     // Get the super admin from database to use for testing
     const superAdmin = await databricksService.queryOne(`
@@ -27,12 +28,12 @@ async function testGroupsSchemaAware() {
     `);
     
     if (!superAdmin) {
-      console.error('❌ No super admin found');
+      logger.error('❌ No super admin found');
       return;
     }
     
-    console.log('✅ Found super admin:', superAdmin.email);
-    console.log('✅ Connected to Redis');
+    logger.debug('✅ Found super admin:', superAdmin.email);
+    logger.debug('✅ Connected to Redis');
     
     // Create a test session using schema-aware defaults
     const sessionId = databricksService.generateId();
@@ -47,7 +48,7 @@ async function testGroupsSchemaAware() {
     });
     
     await databricksService.insert('classroom_sessions', sessionData);
-    console.log('✅ Created test session:', sessionId);
+    logger.debug('✅ Created test session:', sessionId);
     
     // Create some test students
     const studentData = [
@@ -82,10 +83,10 @@ async function testGroupsSchemaAware() {
       await databricksService.insert('students', studentRecord);
       
       // Note: Participant model removed - students are now managed through groups only
-      console.log(`Student ${student.name} created. Groups will be assigned separately.`);
+      logger.debug(`Student ${student.name} created. Groups will be assigned separately.`);
       
       studentIds.push(studentId);
-      console.log(`✅ Created student: ${student.name} (${studentId})`);
+      logger.debug(`✅ Created student: ${student.name} (${studentId})`);
     }
     
     // Generate access token
@@ -135,7 +136,7 @@ async function testGroupsSchemaAware() {
       userAgent: 'test-script'
     });
     
-    console.log('✅ Generated access token and stored session');
+    logger.debug('✅ Generated access token and stored session');
     
     const headers = {
       'Authorization': `Bearer ${accessToken}`,
@@ -143,7 +144,7 @@ async function testGroupsSchemaAware() {
     };
     
     // Test 1: Create group without leader
-    console.log('\n📝 Test 1: Create group without leader');
+    logger.debug('\n📝 Test 1: Create group without leader');
     const response1 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups`, {
       method: 'POST',
       headers,
@@ -153,12 +154,12 @@ async function testGroupsSchemaAware() {
       })
     });
     
-    console.log('Response status:', response1.status);
+    logger.debug('Response status:', response1.status);
     const result1 = await response1.json() as any;
-    console.log('Response:', JSON.stringify(result1, null, 2));
+    logger.debug('Response:', JSON.stringify(result1, null, 2));
     
     // Test 2: Create group with leader
-    console.log('\n📝 Test 2: Create group with leader');
+    logger.debug('\n📝 Test 2: Create group with leader');
     const response2 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups`, {
       method: 'POST',
       headers,
@@ -169,13 +170,13 @@ async function testGroupsSchemaAware() {
       })
     });
     
-    console.log('Response status:', response2.status);
+    logger.debug('Response status:', response2.status);
     const result2 = await response2.json() as any;
-    console.log('Response:', JSON.stringify(result2, null, 2));
+    logger.debug('Response:', JSON.stringify(result2, null, 2));
     
     // Test 3: Update group with isReady
     if (result2.success && result2.group?.id) {
-      console.log('\n📝 Test 3: Update group isReady status');
+      logger.debug('\n📝 Test 3: Update group isReady status');
       const response3 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups/${result2.group.id}`, {
         method: 'PUT',
         headers,
@@ -184,26 +185,26 @@ async function testGroupsSchemaAware() {
         })
       });
       
-      console.log('Response status:', response3.status);
+      logger.debug('Response status:', response3.status);
       const result3 = await response3.json() as any;
-      console.log('Response:', JSON.stringify(result3, null, 2));
+      logger.debug('Response:', JSON.stringify(result3, null, 2));
     }
     
     // Test 4: List all groups
-    console.log('\n📝 Test 4: List all groups');
+    logger.debug('\n📝 Test 4: List all groups');
     const response4 = await fetch(`http://localhost:3000/api/v1/sessions/${sessionId}/groups`, {
       method: 'GET',
       headers
     });
     
-    console.log('Response status:', response4.status);
+    logger.debug('Response status:', response4.status);
     const result4 = await response4.json() as any;
-    console.log('Response:', JSON.stringify(result4, null, 2));
+    logger.debug('Response:', JSON.stringify(result4, null, 2));
     
-    console.log('\n✅ Schema-aware group test completed successfully!');
+    logger.debug('\n✅ Schema-aware group test completed successfully!');
     
   } catch (error) {
-    console.error('❌ Error in schema-aware group test:', error);
+    logger.error('❌ Error in schema-aware group test:', error);
   }
 }
 

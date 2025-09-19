@@ -18,11 +18,11 @@ export async function withTiming<T>(route: string, segment: string, fn: () => Pr
   try {
     return await fn();
   } finally {
-    try { (histogram as client.Histogram<string>).observe({ route, segment }, Date.now() - start); } catch {}
+    try { (histogram as client.Histogram<string>).observe({ route, segment }, Date.now() - start); } catch { /* intentionally ignored: best effort cleanup */ }
   }
 }
 
 export function observe(route: string, segment: string, ms: number): void {
-  try { (histogram as client.Histogram<string>).observe({ route, segment }, ms); } catch {}
+  try { (histogram as client.Histogram<string>).observe({ route, segment }, ms); } catch { /* intentionally ignored: best effort cleanup */ }
 }
 

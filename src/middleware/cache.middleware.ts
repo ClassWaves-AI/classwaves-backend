@@ -3,6 +3,7 @@ import { cacheManager, CacheTTLConfig } from '../services/cache-manager.service'
 import * as client from 'prom-client';
 import { cacheEventBus } from '../services/cache-event-bus.service';
 import { AuthRequest } from '../types/auth.types';
+import { logger } from '../utils/logger';
 
 /**
  * Express Middleware for Automatic Cache Management
@@ -75,10 +76,10 @@ export function cacheResponse(config: CacheConfig, options: CacheMiddlewareOptio
       
       if (cached) {
         if (logLevel !== 'none') {
-          console.log(`⚡ Cache HIT: ${cacheKey}`);
+          logger.debug(`⚡ Cache HIT: ${cacheKey}`);
         }
-        try { hitCounter.inc({ queryType }); } catch {}
-        try { getLatency.observe({ queryType }, Date.now() - start); } catch {}
+        try { hitCounter.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
+        try { getLatency.observe({ queryType }, Date.now() - start); } catch { /* intentionally ignored: best effort cleanup */ }
         
         // Return cached response
         return res.json(cached);
@@ -86,8 +87,8 @@ export function cacheResponse(config: CacheConfig, options: CacheMiddlewareOptio
 
       // Cache miss - intercept response
       const originalJson = res.json;
-      try { missCounter.inc({ queryType }); } catch {}
-      try { getLatency.observe({ queryType }, Date.now() - start); } catch {}
+      try { missCounter.inc({ queryType }); } catch { /* intentionally ignored: best effort cleanup */ }
+      try { getLatency.observe({ queryType }, Date.now() - start); } catch { /* intentionally ignored: best effort cleanup */ }
       
       res.json = function(data: any) {
         // Store in cache asynchronously
@@ -98,12 +99,12 @@ export function cacheResponse(config: CacheConfig, options: CacheMiddlewareOptio
           autoWarm: false
         }).catch(error => {
           if (logLevel !== 'none') {
-            console.warn(`⚠️ Cache set failed for ${cacheKey}:`, error);
+            logger.warn(`⚠️ Cache set failed for ${cacheKey}:`, error);
           }
         });
 
         if (logLevel !== 'none') {
-          console.log(`💾 Cache SET: ${cacheKey} (TTL: ${ttl}s, Tags: [${tags.join(', ')}])`);
+          logger.debug(`💾 Cache SET: ${cacheKey} (TTL: ${ttl}s, Tags: [${tags.join(', ')}])`);
         }
 
         // Call original json method
@@ -114,7 +115,7 @@ export function cacheResponse(config: CacheConfig, options: CacheMiddlewareOptio
 
     } catch (error) {
       if (skipOnError) {
-        console.warn('Cache middleware error (skipping):', error);
+        logger.warn('Cache middleware error (skipping):', error);
         next();
       } else {
         next(error);
@@ -142,9 +143,9 @@ export function invalidateCache(tags: string[] | ((req: Request) => string[])) {
             tagsToInvalidate.map(tag => cacheManager.invalidateByTag(tag))
           );
           
-          console.log(`🗑️ Cache invalidated tags: [${tagsToInvalidate.join(', ')}]`);
+          logger.debug(`🗑️ Cache invalidated tags: [${tagsToInvalidate.join(', ')}]`);
         } catch (error) {
-          console.warn('Cache invalidation error:', error);
+          logger.warn('Cache invalidation error:', error);
         }
       };
 
@@ -167,7 +168,7 @@ export function invalidateCache(tags: string[] | ((req: Request) => string[])) {
       next();
 
     } catch (error) {
-      console.warn('Cache invalidation middleware error:', error);
+      logger.warn('Cache invalidation middleware error:', error);
       next(error);
     }
   };
@@ -340,7 +341,7 @@ export function emitCacheEvent(eventType: string, payloadExtractor: (req: Reques
                   break;
               }
             } catch (error) {
-              console.warn('Cache event emission failed:', error);
+              logger.warn('Cache event emission failed:', error);
             }
           });
         }
@@ -351,7 +352,7 @@ export function emitCacheEvent(eventType: string, payloadExtractor: (req: Reques
       next();
 
     } catch (error) {
-      console.warn('Cache event middleware error:', error);
+      logger.warn('Cache event middleware error:', error);
       next(error);
     }
   };

@@ -18,7 +18,6 @@ import { z } from 'zod';
 import { getCompositionRoot } from '../app/composition-root';
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
-import { teacherPromptService } from '../services/teacher-prompt.service';
 import { recommendationEngineService } from '../services/recommendation-engine.service';
 import { alertPrioritizationService } from '../services/alert-prioritization.service';
 import { analyticsQueryRouterService } from '../services/analytics-query-router.service';
@@ -30,6 +29,7 @@ import {
 } from '../utils/query-builder.utils';
 import { queryCacheService } from '../services/query-cache.service';
 import { ok, fail, ErrorCodes } from '../utils/api-response';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Request/Response Schemas
@@ -101,7 +101,13 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
       description: 'teacher accessed guidance analytics',
       complianceBasis: 'legitimate_interest',
       dataAccessed: 'teacher_guidance_metrics'
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      logger.warn('audit-log enqueue failed for teacher analytics access', {
+        error: error instanceof Error ? error.message : String(error),
+        teacherId: teacher.id,
+        resourceId: targetTeacherId,
+      });
+    });
 
     // 🔍 QUERY OPTIMIZATION: Use minimal field selection + Redis caching for teacher analytics
     const queryBuilder = buildTeacherAnalyticsQuery();
@@ -205,7 +211,7 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
     }
 
     const processingTime = Date.now() - startTime;
-    console.log(`✅ Teacher analytics retrieved for ${targetTeacherId} in ${processingTime}ms`);
+    logger.debug(`✅ Teacher analytics retrieved for ${targetTeacherId} in ${processingTime}ms`);
 
     return ok(res, { analytics, processingTime });
 
@@ -213,7 +219,7 @@ export const getTeacherAnalytics = async (req: AuthRequest, res: Response): Prom
     const processingTime = Date.now() - startTime;
     
     // ✅ Enhanced error logging for debugging network issues
-    console.error('❌ Teacher analytics retrieval failed:', {
+    logger.error('❌ Teacher analytics retrieval failed:', {
       error: error?.message || String(error),
       stack: error?.stack,
       teacherId: targetTeacherId,
@@ -270,24 +276,22 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
 
     // ✅ COMPLIANCE: Audit logging for session analytics access
     const { logAnalyticsOperation } = await import('../utils/analytics-logger');
-    
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+
     await logAnalyticsOperation(
       'audit_log_analytics_access',
       'audit_logs',
-      () => {
-        const { auditLogPort } = require('../utils/audit.port.instance');
-        return auditLogPort.enqueue({
-          actorId: teacher.id,
-          actorType: 'teacher',
-          eventType: 'session_analytics_access',
-          eventCategory: 'data_access',
-          resourceType: 'session_metrics',
-          resourceId: sessionId,
-          schoolId: school.id,
-          description: 'teacher accessed session analytics for educational review',
-          dataAccessed: 'session_guidance_analytics'
-        });
-      },
+      () => auditLogPort.enqueue({
+        actorId: teacher.id,
+        actorType: 'teacher',
+        eventType: 'session_analytics_access',
+        eventCategory: 'data_access',
+        resourceType: 'session_metrics',
+        resourceId: sessionId,
+        schoolId: school.id,
+        description: 'teacher accessed session analytics for educational review',
+        dataAccessed: 'session_guidance_analytics'
+      }),
       {
         sessionId,
         teacherId: teacher.id,
@@ -437,18 +441,28 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
       );
       const toInt = (v: any) => { const s = String(v ?? '0').replace(/"/g,''); const n = parseInt(s,10); return Number.isFinite(n) ? n : 0; };
       guidanceCounts = { highPriorityCount: toInt(row?.hp), tier2Count: toInt(row?.t2) };
-    } catch {}
+    } catch (error) {
+      logger.warn('Failed to project guidance counts from summaries', {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId,
+      });
+    }
 
     const processingTime = Date.now() - startTime;
-    console.log(`✅ Session analytics retrieved for ${sessionId} in ${processingTime}ms`);
+    logger.debug(`✅ Session analytics retrieved for ${sessionId} in ${processingTime}ms`);
 
     return ok(res, { analytics: { ...analytics, guidanceCounts }, processingTime });
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ Session analytics retrieval failed:', error);
+    logger.error('❌ Session analytics retrieval failed:', error);
     
-    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to retrieve session analytics', 500);
+    return res.status(500).json({
+      success: false,
+      error: ErrorCodes.INTERNAL_ERROR,
+      message: 'Failed to retrieve session analytics',
+      processingTime,
+    });
   }
 };
 
@@ -491,7 +505,12 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
       schoolId: school.id,
       description: 'admin accessed system analytics',
       dataAccessed: 'system_performance_metrics'
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      logger.warn('audit-log enqueue failed for system analytics access', {
+        error: error instanceof Error ? error.message : String(error),
+        adminId: teacher.id,
+      });
+    });
 
     // Get system-wide metrics
     const [
@@ -577,7 +596,7 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
     };
 
     const processingTime = Date.now() - startTime;
-    console.log(`✅ System analytics retrieved in ${processingTime}ms`);
+    logger.debug(`✅ System analytics retrieved in ${processingTime}ms`);
 
     return res.json({
       success: true,
@@ -587,12 +606,13 @@ export const getSystemAnalytics = async (req: AuthRequest, res: Response): Promi
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ System analytics retrieval failed:', error);
+    logger.error('❌ System analytics retrieval failed:', error);
     
     return res.status(500).json({
       success: false,
       error: 'SYSTEM_ANALYTICS_FAILED',
-      message: 'Failed to retrieve system analytics'
+      message: 'Failed to retrieve system analytics',
+      processingTime,
     });
   }
 };
@@ -626,7 +646,13 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
       schoolId: school.id,
       description: 'teacher accessed effectiveness report',
       dataAccessed: 'effectiveness_analytics'
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      logger.warn('audit-log enqueue failed for effectiveness report access', {
+        error: error instanceof Error ? error.message : String(error),
+        adminId: teacher.id,
+        reportScope: query.scope,
+      });
+    });
 
     // Generate comprehensive effectiveness report
     const report = await generateEffectivenessReport({
@@ -638,7 +664,7 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
     });
 
     const processingTime = Date.now() - startTime;
-    console.log(`✅ Effectiveness report generated in ${processingTime}ms`);
+    logger.debug(`✅ Effectiveness report generated in ${processingTime}ms`);
 
     return res.json({
       success: true,
@@ -648,12 +674,13 @@ export const getEffectivenessReport = async (req: AuthRequest, res: Response): P
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ Effectiveness report generation failed:', error);
+    logger.error('❌ Effectiveness report generation failed:', error);
     
     return res.status(500).json({
       success: false,
       error: 'EFFECTIVENESS_REPORT_FAILED',
-      message: 'Failed to generate effectiveness report'
+      message: 'Failed to generate effectiveness report',
+      processingTime,
     });
   }
 };
@@ -742,12 +769,13 @@ export const getRealtimeDashboardData = async (req: AuthRequest, res: Response):
 
   } catch (error) {
     const processingTime = Date.now() - startTime;
-    console.error('❌ Realtime dashboard data retrieval failed:', error);
+    logger.error('❌ Realtime dashboard data retrieval failed:', error);
     
     return res.status(500).json({
       success: false,
       error: 'DASHBOARD_DATA_FAILED',
-      message: 'Failed to retrieve dashboard data'
+      message: 'Failed to retrieve dashboard data',
+      processingTime,
     });
   }
 };
@@ -756,52 +784,11 @@ export const getRealtimeDashboardData = async (req: AuthRequest, res: Response):
 // Helper Functions
 // ============================================================================
 
-async function getTeacherPromptMetrics(teacherId: string, timeframe: string): Promise<any> {
-  const analyticsRepo = getCompositionRoot().getAnalyticsRepository();
-  const results = await analyticsRepo.getTeacherPromptMetrics(teacherId, timeframe);
-  
-  return {
-    totalGenerated: results.reduce((sum, row) => sum + row.category_count, 0),
-    totalAcknowledged: results.reduce((sum, row) => sum + (row.total_acknowledged || 0), 0),
-    totalUsed: results.reduce((sum, row) => sum + (row.total_used || 0), 0),
-    totalDismissed: results.reduce((sum, row) => sum + (row.total_dismissed || 0), 0),
-    averageResponseTime: results.length > 0 ? 
-      results.reduce((sum, row) => sum + (row.average_response_time || 0), 0) / results.length : 0,
-    categoryBreakdown: results.reduce((acc: Record<string, number>, row) => {
-      acc[row.prompt_category] = row.category_count;
-      return acc;
-    }, {} as Record<string, number>)
-  };
-}
-
-async function getTeacherAlertStatistics(teacherId: string, timeframe: string): Promise<any> {
+async function getTeacherAlertStatistics(_teacherId: string, _timeframe: string): Promise<any> {
   // Get current alert statistics from alert prioritization service
   return alertPrioritizationService.getAlertStatistics();
 }
-
-async function getTeacherEffectivenessMetrics(teacherId: string, timeframe: string): Promise<any> {
-  // Calculate effectiveness metrics from session data
-  return {
-    overallScore: 0.75,
-    engagementImprovement: 0.15,
-    outcomeImprovement: 0.12,
-    discussionImprovement: 0.18,
-    adaptationSpeed: 0.8
-  };
-}
-
-async function getTeacherSessionSummaries(teacherId: string, timeframe: string): Promise<any> {
-  // Get session summary data
-  return {
-    totalSessions: 10,
-    averageQuality: 0.82,
-    topStrategies: ['facilitation', 'deepening'],
-    improvementAreas: ['collaboration', 'energy'],
-    trends: { engagement: 'improving', outcomes: 'stable' }
-  };
-}
-
-async function getTeacherComparisons(teacherId: string, schoolId: string, timeframe: string): Promise<any> {
+async function getTeacherComparisons(_teacherId: string, _schoolId: string, _timeframe: string): Promise<any> {
   // Generate anonymized comparison data
   return {
     percentileRank: 75,
@@ -816,24 +803,7 @@ async function verifySessionOwnership(sessionId: string, teacherId: string, scho
   return await analyticsRepo.verifySessionOwnership(sessionId, teacherId, schoolId);
 }
 
-async function getSessionGuidanceMetrics(sessionId: string): Promise<any> {
-  // Get session-level guidance metrics
-  return {
-    duration: 45,
-    totalGroups: 5,
-    totalStudents: 20,
-    engagementScore: 0.78,
-    learningOutcomeScore: 0.82,
-    teacherSatisfactionRating: 4.2,
-    objectiveCompletion: 0.85,
-    participationRate: 0.90,
-    discussionQuality: 0.75,
-    knowledgeRetention: 0.80,
-    collaborationScore: 0.77
-  };
-}
-
-async function getSessionPromptActivity(sessionId: string): Promise<any> {
+async function getSessionPromptActivity(_sessionId: string): Promise<any> {
   // Get session prompt activity
   return {
     totalGenerated: 12,
@@ -849,7 +819,7 @@ async function getSessionPromptActivity(sessionId: string): Promise<any> {
   };
 }
 
-async function getSessionAIInsights(sessionId: string): Promise<any> {
+async function getSessionAIInsights(_sessionId: string): Promise<any> {
   // Get AI analysis insights for session
   return {
     tier1Count: 15,
@@ -869,7 +839,7 @@ async function getSessionAIInsights(sessionId: string): Promise<any> {
   };
 }
 
-async function getSessionGroupBreakdown(sessionId: string): Promise<any[]> {
+async function getSessionGroupBreakdown(_sessionId: string): Promise<any[]> {
   // Get group-level breakdown
   return [
     {
@@ -886,7 +856,7 @@ async function getSessionGroupBreakdown(sessionId: string): Promise<any[]> {
   ];
 }
 
-async function getSessionTimeline(sessionId: string): Promise<any[]> {
+async function getSessionTimeline(_sessionId: string): Promise<any[]> {
   // Get session event timeline
   return [
     {
@@ -900,7 +870,7 @@ async function getSessionTimeline(sessionId: string): Promise<any[]> {
 }
 
 // Additional helper functions for system analytics...
-async function getSystemUsageMetrics(startDate: string, endDate: string, groupBy: string): Promise<any> {
+async function getSystemUsageMetrics(_startDate: string, _endDate: string, _groupBy: string): Promise<any> {
   return {
     totalSessions: 1000,
     totalTeachers: 50,
@@ -915,7 +885,7 @@ async function getSystemUsageMetrics(startDate: string, endDate: string, groupBy
   };
 }
 
-async function getSystemPerformanceMetrics(startDate: string, endDate: string): Promise<any> {
+async function getSystemPerformanceMetrics(_startDate: string, _endDate: string): Promise<any> {
   return {
     averageResponseTime: 250,
     uptime: 99.8,
@@ -930,7 +900,7 @@ async function getSystemPerformanceMetrics(startDate: string, endDate: string): 
   };
 }
 
-async function getSystemEffectivenessMetrics(startDate: string, endDate: string): Promise<any> {
+async function getSystemEffectivenessMetrics(_startDate: string, _endDate: string): Promise<any> {
   return {
     overallScore: 0.82,
     promptUsageRate: 0.75,
@@ -942,7 +912,7 @@ async function getSystemEffectivenessMetrics(startDate: string, endDate: string)
   };
 }
 
-async function getSystemSatisfactionMetrics(startDate: string, endDate: string): Promise<any> {
+async function getSystemSatisfactionMetrics(_startDate: string, _endDate: string): Promise<any> {
   return {
     teacherRating: 4.3,
     recommendationRate: 0.88,
@@ -952,7 +922,7 @@ async function getSystemSatisfactionMetrics(startDate: string, endDate: string):
   };
 }
 
-async function getSystemTrendAnalysis(groupBy: string): Promise<any> {
+async function getSystemTrendAnalysis(_groupBy: string): Promise<any> {
   return {
     usage: { trend: 'increasing', rate: 0.15 },
     performance: { trend: 'stable', rate: 0.02 },
@@ -987,7 +957,7 @@ async function generateEffectivenessReport(options: any): Promise<any> {
   };
 }
 
-async function getActiveSessionsData(teacherId: string, schoolId: string): Promise<any> {
+async function getActiveSessionsData(_teacherId: string, _schoolId: string): Promise<any> {
   return {
     count: 2,
     totalStudents: 25,
@@ -1005,7 +975,7 @@ async function getActiveSessionsData(teacherId: string, schoolId: string): Promi
   };
 }
 
-async function getRecentPromptActivity(teacherId: string): Promise<any> {
+async function getRecentPromptActivity(_teacherId: string): Promise<any> {
   return {
     newPrompts: 3,
     acknowledged: 2,
@@ -1023,18 +993,6 @@ async function getSystemHealthStatus(): Promise<any> {
     websocket: 'healthy',
     lastUpdate: new Date().toISOString()
   };
-}
-
-function getTimeframeInterval(timeframe: string): string {
-  const intervals = {
-    session: '1 DAY',
-    daily: '1 DAY',
-    weekly: '7 DAY',
-    monthly: '30 DAY',
-    all_time: '365 DAY'
-  };
-  
-  return intervals[timeframe as keyof typeof intervals] || '7 DAY';
 }
 
 // ============================================================================
@@ -1159,7 +1117,7 @@ export async function getSessionOverview(req: Request, res: Response): Promise<R
       data: overview,
     });
   } catch (error) {
-    console.error('Error getting session overview:', error);
+    logger.error('Error getting session overview:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -1262,7 +1220,7 @@ export async function getSessionGroups(req: Request, res: Response): Promise<Res
       }
     });
   } catch (error) {
-    console.error('Error getting session groups analytics:', error);
+    logger.error('Error getting session groups analytics:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -1328,7 +1286,7 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
         
       } else {
         // Fallback: compute on-demand (slower but always works)
-        console.log(`⚡ Computing on-demand analytics for session ${sessionId}`);
+        logger.debug(`⚡ Computing on-demand analytics for session ${sessionId}`);
         const computedAnalytics = await analyticsComputationService.computeSessionAnalytics(sessionId);
         
         if (computedAnalytics) {
@@ -1368,13 +1326,13 @@ export async function getSessionMembershipSummary(req: Request, res: Response): 
       });
 
     } catch (computationError) {
-      console.warn('Analytics computation failed, falling back to legacy calculation:', computationError);
+      logger.warn('Analytics computation failed, falling back to legacy calculation:', computationError);
       // Fallback to legacy calculation for reliability
       return await getLegacyMembershipSummary(sessionId, res);
     }
 
   } catch (error) {
-    console.error('Error getting session membership summary:', error);
+    logger.error('Error getting session membership summary:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -1426,7 +1384,7 @@ async function getLegacyMembershipSummary(sessionId: string, res: Response): Pro
       data: summary,
     });
   } catch (error) {
-    console.error('Legacy membership summary calculation failed:', error);
+    logger.error('Legacy membership summary calculation failed:', error);
     throw error;
   }
 }

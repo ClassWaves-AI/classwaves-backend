@@ -3,6 +3,7 @@ import { databricksService } from '../services/databricks.service';
 import { emailService } from '../services/email.service';
 import { databricksConfig } from '../config/databricks.config';
 import type { EmailRecipient, SessionEmailData } from '@classwaves/shared';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -17,7 +18,7 @@ async function ensureStudentForEmail(email: string, displayName: string): Promis
   // If Databricks token is missing, fabricate a student in dev mode
   const tokenMissing = !databricksConfig.token;
   if (tokenMissing) {
-    console.warn('⚠️ Databricks token not found. Running in dev skip mode: fabricating student for email test.');
+    logger.warn('⚠️ Databricks token not found. Running in dev skip mode: fabricating student for email test.');
     return { id: `dev_${Date.now()}`, name: displayName };
   }
 
@@ -73,7 +74,7 @@ async function main() {
     const joinBase = process.env.STUDENT_APP_URL || 'http://localhost:3003';
 
     if (!process.env.GMAIL_USER_EMAIL || !process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
-      console.error('❌ Missing Gmail OAuth2 env vars. Required: GMAIL_USER_EMAIL, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN');
+      logger.error('❌ Missing Gmail OAuth2 env vars. Required: GMAIL_USER_EMAIL, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN');
       process.exit(2);
     }
 
@@ -103,23 +104,22 @@ async function main() {
       joinUrl: `${joinBase}/join/${accessCode}`,
     };
 
-    console.log(`📧 Sending test group leader email to ${targetEmail} (studentId=${studentId})...`);
+    logger.debug(`📧 Sending test group leader email to ${targetEmail} (studentId=${studentId})...`);
     const results = await emailService.sendSessionInvitation([recipient], sessionData);
-    console.log('📊 Results:', results);
+    logger.debug('📊 Results:', results);
 
     if (results.failed.length > 0) {
-      console.error('❌ Some emails failed to send:', results.failed);
+      logger.error('❌ Some emails failed to send:', results.failed);
       process.exit(1);
     }
 
-    console.log('✅ Test email sent successfully');
+    logger.debug('✅ Test email sent successfully');
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error sending test email:', error);
+    logger.error('❌ Error sending test email:', error);
     process.exit(1);
   }
 }
 
 main();
-
 

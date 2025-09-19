@@ -1,6 +1,7 @@
 import { redisService } from './redis.service';
 import { CacheTTLPolicy } from './cache-ttl.policy';
 import { EventEmitter } from 'events';
+import { logger } from '../utils/logger';
 
 /**
  * Industry-Standard Cache Management System
@@ -112,7 +113,7 @@ export class CacheManager extends EventEmitter {
     } catch (error) {
       this.metrics.errors++;
       this.emit('cache:error', { key, error });
-      console.error(`Cache get error for key ${key}:`, error);
+      logger.error(`Cache get error for key ${key}:`, error);
       return null;
     }
   }
@@ -153,7 +154,7 @@ export class CacheManager extends EventEmitter {
     } catch (error) {
       this.metrics.errors++;
       this.emit('cache:error', { key, error });
-      console.error(`Cache set error for key ${key}:`, error);
+      logger.error(`Cache set error for key ${key}:`, error);
     }
   }
 
@@ -211,7 +212,7 @@ export class CacheManager extends EventEmitter {
       this.emit('cache:delete', { key });
     } catch (error) {
       this.metrics.errors++;
-      console.error(`Cache delete error for key ${key}:`, error);
+      logger.error(`Cache delete error for key ${key}:`, error);
     }
   }
 
@@ -249,12 +250,12 @@ export class CacheManager extends EventEmitter {
       this.metrics.invalidations++;
       this.emit('cache:invalidate-tag', { tag, count: keysArray.length });
       
-      console.log(`🗑️ Invalidated ${keysArray.length} cache entries for tag: ${tag}`);
+      logger.debug(`🗑️ Invalidated ${keysArray.length} cache entries for tag: ${tag}`);
       return keysArray.length;
     } catch (error) {
       this.metrics.errors++;
       this.emit('cache:error', { tag, error });
-      console.error(`Cache invalidation error for tag ${tag}:`, error);
+      logger.error(`Cache invalidation error for tag ${tag}:`, error);
       return 0;
     }
   }
@@ -307,12 +308,12 @@ export class CacheManager extends EventEmitter {
       this.metrics.invalidations++;
       this.emit('cache:invalidate-pattern', { pattern, count: keys.length });
       
-      console.log(`🗑️ Invalidated ${keys.length} cache entries for pattern: ${pattern}`);
+      logger.debug(`🗑️ Invalidated ${keys.length} cache entries for pattern: ${pattern}`);
       return keys.length;
     } catch (error) {
       this.metrics.errors++;
       this.emit('cache:error', { pattern, error });
-      console.error(`Cache pattern invalidation error for ${pattern}:`, error);
+      logger.error(`Cache pattern invalidation error for ${pattern}:`, error);
       return 0;
     }
   }
@@ -380,19 +381,19 @@ export class CacheManager extends EventEmitter {
   private setupEventListeners() {
     this.on('cache:hit', ({ key }) => {
       // Could send to monitoring service
-      console.log(`📊 Cache HIT: ${key}`);
+      logger.debug(`📊 Cache HIT: ${key}`);
     });
 
     this.on('cache:miss', ({ key }) => {
-      console.log(`📊 Cache MISS: ${key}`);
+      logger.debug(`📊 Cache MISS: ${key}`);
     });
 
     this.on('cache:invalidate-tag', ({ tag, count }) => {
-      console.log(`🗑️ Cache invalidation: ${tag} (${count} keys)`);
+      logger.debug(`🗑️ Cache invalidation: ${tag} (${count} keys)`);
     });
 
     this.on('cache:error', ({ error }) => {
-      console.error('❌ Cache error:', error);
+      logger.error('❌ Cache error:', error);
     });
   }
 }

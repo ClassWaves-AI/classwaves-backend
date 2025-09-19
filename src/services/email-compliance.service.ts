@@ -5,6 +5,7 @@
 
 import { databricksService } from './databricks.service';
 import { EmailComplianceValidation, EmailAuditRecord } from '@classwaves/shared';
+import { logger } from '../utils/logger';
 
 export class EmailComplianceService {
   /**
@@ -23,7 +24,7 @@ export class EmailComplianceService {
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
       }
       if (process.env.NODE_ENV !== 'production') {
-        try { console.log('[EmailComplianceService.validateEmailConsent] student new', { studentId, student }); } catch {}
+        try { logger.debug('[EmailComplianceService.validateEmailConsent] student new', { studentId, student }); } catch { /* intentionally ignored: best effort cleanup */ }
       }
 
       // Teacher verified age allows sending regardless of parental consent
@@ -45,7 +46,7 @@ export class EmailComplianceService {
         [studentId]
       );
       if (process.env.NODE_ENV !== 'production') {
-        try { console.log('[EmailComplianceService.validateEmailConsent] student legacy', { studentId, legacy }); } catch {}
+        try { logger.debug('[EmailComplianceService.validateEmailConsent] student legacy', { studentId, legacy }); } catch { /* intentionally ignored: best effort cleanup */ }
       }
 
       if (!legacy) {
@@ -73,17 +74,17 @@ export class EmailComplianceService {
       };
 
       await databricksService.insert('compliance.email_audit', completeAuditData);
-      console.log(`✅ Email compliance audit record created`);
+      logger.debug(`✅ Email compliance audit record created`);
     } catch (auditError: any) {
       const errorMessage = auditError?.message || String(auditError);
       
       if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND') || errorMessage.includes('email_audit')) {
-        console.warn(`⚠️ Email audit table missing - compliance audit skipped:`, {
+        logger.warn(`⚠️ Email audit table missing - compliance audit skipped:`, {
           error: 'compliance.email_audit table not found',
           suggestion: 'Run: npx ts-node src/scripts/add-email-fields.ts to create missing table'
         });
       } else {
-        console.error(`❌ Failed to record email compliance audit (non-critical):`, {
+        logger.error(`❌ Failed to record email compliance audit (non-critical):`, {
           error: errorMessage,
           auditError
         });
@@ -153,7 +154,7 @@ export class EmailComplianceService {
       const errorMessage = statsError?.message || String(statsError);
       
       if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND') || errorMessage.includes('email_audit')) {
-        console.warn(`⚠️ Email audit table missing - returning empty stats:`, {
+        logger.warn(`⚠️ Email audit table missing - returning empty stats:`, {
           error: 'compliance.email_audit table not found',
           suggestion: 'Run: npx ts-node src/scripts/add-email-fields.ts to create missing table'
         });
@@ -166,7 +167,7 @@ export class EmailComplianceService {
           recentFailures: []
         };
       } else {
-        console.error(`❌ Failed to get email delivery stats:`, {
+        logger.error(`❌ Failed to get email delivery stats:`, {
           error: errorMessage,
           statsError
         });

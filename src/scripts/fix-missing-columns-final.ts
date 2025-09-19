@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function fixMissingColumnsFinal() {
   try {
-    console.log('🔧 Final fix for missing columns...');
+    logger.debug('🔧 Final fix for missing columns...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -23,8 +24,8 @@ async function fixMissingColumnsFinal() {
     
     // Function to execute SQL statement with detailed error reporting
     async function executeSQL(sql: string, description: string) {
-      console.log(`\n📝 ${description}...`);
-      console.log(`SQL: ${sql}`);
+      logger.debug(`\n📝 ${description}...`);
+      logger.debug(`SQL: ${sql}`);
       
       const response = await fetch(`${host}/api/2.0/sql/statements`, {
         method: 'POST',
@@ -38,7 +39,7 @@ async function fixMissingColumnsFinal() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ HTTP Error - ${description}:`, response.status, error);
+        logger.error(`❌ HTTP Error - ${description}:`, response.status, error);
         return false;
       }
       
@@ -46,16 +47,16 @@ async function fixMissingColumnsFinal() {
       
       // Check for SQL execution errors
       if (result.result?.status?.sqlState) {
-        console.error(`❌ SQL Error - ${description}:`, result.result.status);
+        logger.error(`❌ SQL Error - ${description}:`, result.result.status);
         return false;
       }
       
       if (result.status?.statusCode === 'ERROR') {
-        console.error(`❌ Execution Error - ${description}:`, result.status);
+        logger.error(`❌ Execution Error - ${description}:`, result.status);
         return false;
       }
       
-      console.log(`✅ ${description} completed successfully`);
+      logger.debug(`✅ ${description} completed successfully`);
       return true;
     }
     
@@ -71,27 +72,27 @@ async function fixMissingColumnsFinal() {
       }
     ];
     
-    console.log('\n=== Attempting column additions ===');
+    logger.debug('\n=== Attempting column additions ===');
     
     for (const command of commands) {
       const success = await executeSQL(command.sql, command.description);
       if (!success) {
-        console.log(`⚠️ Failed: ${command.description}`);
+        logger.debug(`⚠️ Failed: ${command.description}`);
         
         // Try without DEFAULT clause
         const simpleSQL = command.sql.replace(' DEFAULT FALSE', '');
-        console.log(`\nTrying without DEFAULT clause...`);
+        logger.debug(`\nTrying without DEFAULT clause...`);
         await executeSQL(simpleSQL, command.description + ' (no default)');
       }
     }
     
     // Verify final schema
-    console.log('\n=== Verifying final schema ===');
+    logger.debug('\n=== Verifying final schema ===');
     await executeSQL('DESCRIBE classwaves.sessions.student_groups', 'Verify student_groups final schema');
     await executeSQL('DESCRIBE classwaves.sessions.participants', 'Verify participants final schema');
     
   } catch (error) {
-    console.error('❌ Error in final fix:', error);
+    logger.error('❌ Error in final fix:', error);
   }
 }
 

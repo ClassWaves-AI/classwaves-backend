@@ -19,6 +19,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { requireAnalyticsAccess } from '../middleware/session-auth.middleware';
 import { validate, validateQuery, validateParams } from '../middleware/validation.middleware';
 import * as analyticsController from '../controllers/guidance-analytics.controller';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Input Validation Schemas
@@ -133,12 +134,12 @@ const analyticsSecurityMiddleware = (req: express.Request, res: express.Response
   
   // Allow public access to health endpoint
   if (publicPaths.includes(requestPath)) {
-    console.log(`🔓 Analytics health endpoint accessed publicly: ${requestPath}`);
+    logger.debug(`🔓 Analytics health endpoint accessed publicly: ${requestPath}`);
     return next();
   }
   
   // Require authentication for all other analytics endpoints
-  console.log(`🔐 Analytics endpoint requires authentication: ${requestPath}`);
+  logger.debug(`🔐 Analytics endpoint requires authentication: ${requestPath}`);
   return authenticate(req, res, next);
 };
 
@@ -219,7 +220,7 @@ router.get('/session/:sessionId/guidance-counts',
     } catch (error) {
       // Graceful fallback: no summary yet or table missing -> return zeros instead of 500
       if (process.env.API_DEBUG === '1') {
-        console.warn('guidance-counts query failed (fallback to zeros):', error instanceof Error ? error.message : String(error));
+        logger.warn('guidance-counts query failed (fallback to zeros):', error instanceof Error ? error.message : String(error));
       }
       return res.json({ success: true, counts: { highPriorityCount: 0, tier2Count: 0 }, timestamp: new Date().toISOString() });
     }
@@ -341,7 +342,7 @@ router.get('/dashboard/summary',
       });
 
     } catch (error) {
-      console.error('❌ Dashboard summary failed:', error);
+      logger.error('❌ Dashboard summary failed:', error);
       res.status(500).json({
         success: false,
         error: 'DASHBOARD_SUMMARY_FAILED',
@@ -396,7 +397,7 @@ router.get('/trends',
       });
 
     } catch (error) {
-      console.error('❌ Trend analysis failed:', error);
+      logger.error('❌ Trend analysis failed:', error);
       res.status(500).json({
         success: false,
         error: 'TREND_ANALYSIS_FAILED',
@@ -447,7 +448,7 @@ router.get('/comparisons',
       });
 
     } catch (error) {
-      console.error('❌ Comparative analysis failed:', error);
+      logger.error('❌ Comparative analysis failed:', error);
       res.status(500).json({
         success: false,
         error: 'COMPARATIVE_ANALYSIS_FAILED',
@@ -506,7 +507,7 @@ router.get('/export/teacher/:teacherId',
       }
 
     } catch (error) {
-      console.error('❌ Teacher data export failed:', error);
+      logger.error('❌ Teacher data export failed:', error);
       res.status(500).json({
         success: false,
         error: 'EXPORT_FAILED',
@@ -564,7 +565,7 @@ router.get('/export/session/:sessionId',
       }
 
     } catch (error) {
-      console.error('❌ Session data export failed:', error);
+      logger.error('❌ Session data export failed:', error);
       res.status(500).json({
         success: false,
         error: 'EXPORT_FAILED',
@@ -601,7 +602,7 @@ router.get('/health',
       res.json(publicHealthStatus);
 
     } catch (error) {
-      console.error('Analytics health check failed:', error);
+      logger.error('Analytics health check failed:', error);
       res.status(200).json({
         success: false,
         status: 'degraded', 
@@ -619,7 +620,7 @@ router.get('/health',
 // ============================================================================
 
 router.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Analytics Routes Error:', error);
+  logger.error('Analytics Routes Error:', error);
   
   // Handle validation errors
   if (error.name === 'ZodError') {

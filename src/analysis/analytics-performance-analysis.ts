@@ -5,8 +5,8 @@
  * recommends pre-aggregation strategies to optimize query costs and response times.
  */
 
-import { databricksService } from '../services/databricks.service';
 import { analyticsLogger } from '../utils/analytics-logger';
+import { logger } from '../utils/logger';
 
 interface QueryPerformanceMetrics {
   queryName: string;
@@ -439,26 +439,26 @@ export class AnalyticsPerformanceAnalyzer {
    * Run comprehensive analytics performance analysis
    */
   async runFullAnalysis(): Promise<void> {
-    console.log('🔍 Starting comprehensive analytics performance analysis...');
+    logger.debug('🔍 Starting comprehensive analytics performance analysis...');
     
     const startTime = Date.now();
     
     try {
       // Analyze current query performance
       const currentQueries = await this.analyzeCurrentQueries();
-      console.log(`📊 Analyzed ${currentQueries.length} query patterns`);
+      logger.debug(`📊 Analyzed ${currentQueries.length} query patterns`);
       
       // Generate pre-aggregation strategies
       const strategies = await this.generatePreAggregationStrategies();
-      console.log(`🚀 Generated ${strategies.length} pre-aggregation strategies`);
+      logger.debug(`🚀 Generated ${strategies.length} pre-aggregation strategies`);
       
       // Calculate cost impact
       const costImpact = await this.calculateCostImpact();
-      console.log(`💰 Projected monthly savings: $${costImpact.savings.monthlyDollarSavings}`);
+      logger.debug(`💰 Projected monthly savings: $${costImpact.savings.monthlyDollarSavings}`);
       
       // Generate implementation plan
       const implementationPlan = await this.generateImplementationPlan();
-      console.log(`📋 Implementation timeline: ${implementationPlan.rolloutTimeline}`);
+      logger.debug(`📋 Implementation timeline: ${implementationPlan.rolloutTimeline}`);
       
       // Log comprehensive analysis results
       analyticsLogger.logOperation(
@@ -478,10 +478,10 @@ export class AnalyticsPerformanceAnalyzer {
         }
       );
 
-      console.log('✅ Analytics performance analysis completed successfully');
+      logger.debug('✅ Analytics performance analysis completed successfully');
       
     } catch (error) {
-      console.error('❌ Analytics performance analysis failed:', error);
+      logger.error('❌ Analytics performance analysis failed:', error);
       
       analyticsLogger.logOperation(
         'performance_analysis_failed',

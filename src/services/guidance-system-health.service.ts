@@ -15,6 +15,7 @@
 
 import { EventEmitter } from 'events';
 import { databricksService } from './databricks.service';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Health Monitoring Types
@@ -106,7 +107,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
       this.startHealthMonitoring();
     }
     
-    console.log('🏥 Guidance System Health Monitor initialized', {
+    logger.debug('🏥 Guidance System Health Monitor initialized', {
       checkInterval: this.config.checkIntervalMs,
       alertsEnabled: this.config.enableRealTimeAlerts
     });
@@ -153,7 +154,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
    * Force a health check of all components
    */
   async performHealthCheck(): Promise<SystemHealthMetrics> {
-    console.log('🏥 Performing comprehensive health check...');
+    logger.debug('🏥 Performing comprehensive health check...');
     
     try {
       // Perform health checks on all components
@@ -171,7 +172,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
         if (result.status === 'fulfilled') {
           this.processHealthCheckResult(result.value);
         } else {
-          console.error(`Health check failed:`, result.reason);
+          logger.error(`Health check failed:`, result.reason);
         }
       }
 
@@ -184,7 +185,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
       return this.healthMetrics;
       
     } catch (error) {
-      console.error('❌ Health check failed:', error);
+      logger.error('❌ Health check failed:', error);
       throw error;
     }
   }
@@ -240,7 +241,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
         component: alert.component
       });
       
-      console.log(`✅ System alert resolved: ${alertId} - ${resolution}`);
+      logger.debug(`✅ System alert resolved: ${alertId} - ${resolution}`);
     }
   }
 
@@ -530,7 +531,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
     // Emit alert event
     this.emit('alert', alert);
     
-    console.warn(`🚨 System alert (${level}): ${component} - ${message}`);
+    logger.warn(`🚨 System alert (${level}): ${component} - ${message}`);
     
     // Log alert
     this.auditLog({
@@ -593,7 +594,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
   private startHealthMonitoring(): void {
     this.monitoringInterval = setInterval(() => {
       this.performHealthCheck().catch(error => {
-        console.error('❌ Scheduled health check failed:', error);
+        logger.error('❌ Scheduled health check failed:', error);
       });
     }, this.config.checkIntervalMs);
     (this.monitoringInterval as any).unref?.();
@@ -641,7 +642,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
         dataAccessed: 'system_health_metrics'
       }).catch(() => {});
     } catch (error) {
-      console.warn('⚠️ Audit logging failed in health monitor:', error);
+      logger.warn('⚠️ Audit logging failed in health monitor:', error);
     }
   }
 
@@ -651,7 +652,7 @@ export class GuidanceSystemHealthService extends EventEmitter {
       this.monitoringInterval = null;
     }
     
-    console.log('🛑 Guidance System Health Monitor shutdown completed');
+    logger.debug('🛑 Guidance System Health Monitor shutdown completed');
   }
 }
 

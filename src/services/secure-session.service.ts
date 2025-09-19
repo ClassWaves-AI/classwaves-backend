@@ -6,6 +6,9 @@ import { SecureJWTService } from './secure-jwt.service';
 import { CacheTTLPolicy, ttlWithJitter } from './cache-ttl.policy';
 import { cachePort } from '../utils/cache.port.instance';
 import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
+import { logger } from '../utils/logger';
+
+const sessionLogger = logger;
 
 interface SecureSessionData {
   teacherId: string;
@@ -97,7 +100,7 @@ export class SecureSessionService {
       
       return JSON.stringify(wrapper);
     } catch (error) {
-      console.error('❌ Session encryption failed:', error);
+      sessionLogger.error('  Session encryption failed:', error);
       throw new Error('Failed to encrypt session data');
     }
   }
@@ -109,7 +112,7 @@ export class SecureSessionService {
       
       // Verify algorithm matches expected
       if (wrapper.algorithm !== this.ENCRYPTION_ALGORITHM) {
-        console.error('🚨 Session decryption failed: algorithm mismatch');
+        sessionLogger.error('  Session decryption failed: algorithm mismatch');
         return null;
       }
       
@@ -128,7 +131,7 @@ export class SecureSessionService {
         lastActivity: new Date(sessionData.lastActivity)
       };
     } catch (error) {
-      console.error('🚨 Session decryption failed:', error);
+      sessionLogger.error('  Session decryption failed:', error);
       return null;
     }
   }
@@ -140,8 +143,8 @@ export class SecureSessionService {
     school: School, 
     req: Request
   ): Promise<void> {
-    console.log('🔧 DEBUG: Starting SecureSessionService.storeSecureSession');
-    console.log('🔧 DEBUG: Session storage input:', {
+    sessionLogger.debug('  DEBUG: Starting SecureSessionService.storeSecureSession');
+    sessionLogger.debug('  DEBUG: Session storage input:', {
       sessionId,
       teacherId: teacher.id,
       schoolId: school.id,
@@ -153,21 +156,21 @@ export class SecureSessionService {
     
     try {
       // SECURITY 4: Enforce concurrent session limits
-      console.log('🔧 DEBUG: Enforcing session limits');
+      sessionLogger.debug('  DEBUG: Enforcing session limits');
       await this.enforceSessionLimits(teacher.id);
-      console.log('🔧 DEBUG: Session limits enforced successfully');
+      sessionLogger.debug('  DEBUG: Session limits enforced successfully');
       
       // SECURITY 5: Track and analyze login patterns
-      console.log('🔧 DEBUG: Tracking login metrics');
+      sessionLogger.debug('  DEBUG: Tracking login metrics');
       const isFirstLogin = await this.trackLoginMetrics(teacher.id, req.ip!);
-      console.log('🔧 DEBUG: Login metrics tracked - First login:', isFirstLogin);
+      sessionLogger.debug('  DEBUG: Login metrics tracked - First login:', isFirstLogin);
       
       // SECURITY 6: Detect suspicious login patterns
-      console.log('🔧 DEBUG: Detecting suspicious activity');
+      sessionLogger.debug('  DEBUG: Detecting suspicious activity');
       const isSuspicious = await this.detectSuspiciousActivity(teacher.id, req);
-      console.log('🔧 DEBUG: Suspicious activity check completed - Suspicious:', isSuspicious);
+      sessionLogger.debug('  DEBUG: Suspicious activity check completed - Suspicious:', isSuspicious);
       
-      console.log('🔧 DEBUG: Creating session data object');
+      sessionLogger.debug('  DEBUG: Creating session data object');
       const sessionData: SecureSessionData = {
         teacherId: teacher.id,
         teacher,
@@ -180,26 +183,26 @@ export class SecureSessionService {
         lastActivity: new Date(),
         isSuspicious
       };
-      console.log('🔧 DEBUG: Session data object created');
+      sessionLogger.debug('  DEBUG: Session data object created');
       
       // Add geographic information if available
       if (req.headers['cf-ipcountry']) {
-        console.log('🔧 DEBUG: Adding geographic information');
+        sessionLogger.debug('  DEBUG: Adding geographic information');
         sessionData.geoLocation = {
           country: req.headers['cf-ipcountry'] as string,
           region: req.headers['cf-ipregion'] as string,
           city: req.headers['cf-ipcity'] as string
         };
       } else {
-        console.log('🔧 DEBUG: No geographic information available');
+        sessionLogger.debug('  DEBUG: No geographic information available');
       }
       
-      console.log('🔧 DEBUG: Encrypting session data');
+      sessionLogger.debug('  DEBUG: Encrypting session data');
       const encryptedData = this.encryptSessionData(sessionData);
-      console.log('🔧 DEBUG: Session data encrypted successfully');
+      sessionLogger.debug('  DEBUG: Session data encrypted successfully');
       
       // Store encrypted session with sliding expiration
-      console.log('🔧 DEBUG: Storing encrypted session in Redis');
+      sessionLogger.debug('  DEBUG: Storing encrypted session in Redis');
       const sessionTTL = ttlWithJitter(CacheTTLPolicy.secureSession);
       {
         const legacy = `secure_session:${sessionId}`;
@@ -213,10 +216,10 @@ export class SecureSessionService {
           await cachePort.set(legacy, encryptedData, sessionTTL);
         }
       }
-      console.log('🔧 DEBUG: Encrypted session stored in Redis successfully');
+      sessionLogger.debug('  DEBUG: Encrypted session stored in Redis successfully');
       
       // Track active sessions for the teacher
-      console.log('🔧 DEBUG: Adding session to teacher active sessions set');
+      sessionLogger.debug('  DEBUG: Adding session to teacher active sessions set');
       {
         const legacySet = `teacher_sessions:${teacher.id}`;
         const prefixedSet = makeKey('teacher_sessions', teacher.id);
@@ -233,33 +236,33 @@ export class SecureSessionService {
           await client.expire(legacySet, ttlWithJitter(CacheTTLPolicy.teacherSessionsSet));
         }
       }
-      console.log('🔧 DEBUG: Session added to teacher active sessions set');
+      sessionLogger.debug('  DEBUG: Session added to teacher active sessions set');
       
       // Store session metadata for monitoring
-      console.log('🔧 DEBUG: Storing session metadata');
+      sessionLogger.debug('  DEBUG: Storing session metadata');
       await this.storeSessionMetadata(sessionId, teacher.id, req);
-      console.log('🔧 DEBUG: Session metadata stored successfully');
+      sessionLogger.debug('  DEBUG: Session metadata stored successfully');
       
       const storeTime = performance.now() - storeStart;
-      console.log(`🔒 Secure session stored: ${sessionId} (${storeTime.toFixed(2)}ms) - Suspicious: ${isSuspicious}`);
+      sessionLogger.debug(`  Secure session stored: ${sessionId} (${storeTime.toFixed(2)}ms) - Suspicious: ${isSuspicious}`);
       
       // Alert if suspicious activity detected
       if (isSuspicious) {
-        console.log('🔧 DEBUG: Alerting suspicious session');
+        sessionLogger.debug('  DEBUG: Alerting suspicious session');
         await this.alertSuspiciousSession(teacher.id, sessionId, req);
-        console.log('🔧 DEBUG: Suspicious session alert sent');
+        sessionLogger.debug('  DEBUG: Suspicious session alert sent');
       }
       
-      console.log('🔧 DEBUG: SecureSessionService.storeSecureSession completed successfully');
+      sessionLogger.debug('  DEBUG: SecureSessionService.storeSecureSession completed successfully');
       
     } catch (error) {
-      console.error('🔧 DEBUG: ERROR in SecureSessionService.storeSecureSession:', error);
-      console.error('🔧 DEBUG: Session storage error details:', {
+      sessionLogger.error('  DEBUG: ERROR in SecureSessionService.storeSecureSession:', error);
+      sessionLogger.error('  DEBUG: Session storage error details:', {
         message: error instanceof Error ? error.message : 'Unknown error',
         stack: error instanceof Error ? error.stack : 'No stack trace',
         name: error instanceof Error ? error.name : 'Unknown'
       });
-      console.error(`❌ Secure session storage failed for ${sessionId}:`, error);
+      sessionLogger.error(`  Secure session storage failed for ${sessionId}:`, error);
       throw error;
     }
   }
@@ -270,14 +273,14 @@ export class SecureSessionService {
     newDeviceFingerprint: string,
     req: Request
   ): Promise<void> {
-    console.log('🔄 Starting session update for token rotation');
+    sessionLogger.debug('  Starting session update for token rotation');
     
     try {
       // First retrieve the existing session data
       const existingSessionData = await this.getSecureSession(sessionId, req);
       
       if (!existingSessionData) {
-        console.warn(`⚠️ Session ${sessionId} not found during rotation - may have expired`);
+        sessionLogger.warn(`   Session ${sessionId} not found during rotation - may have expired`);
         return;
       }
       
@@ -290,7 +293,7 @@ export class SecureSessionService {
         isSuspicious: false
       };
       
-      console.log('🔄 Encrypting updated session data...');
+      sessionLogger.debug('  Encrypting updated session data...');
       const encryptedSessionData = this.encryptSessionData(updatedSessionData);
       
       // Store the updated session with same TTL as original
@@ -309,10 +312,10 @@ export class SecureSessionService {
         }
       }
       
-      console.log(`✅ Session ${sessionId} successfully updated with new device fingerprint`);
+      sessionLogger.debug(`  Session ${sessionId} successfully updated with new device fingerprint`);
       
     } catch (error) {
-      console.error(`❌ Failed to update session during token rotation for ${sessionId}:`, error);
+      sessionLogger.error(`  Failed to update session during token rotation for ${sessionId}:`, error);
       throw new Error(`Session update failed during token rotation: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
@@ -329,14 +332,14 @@ export class SecureSessionService {
         : await cachePort.get(legacy);
       
       if (!encryptedData) {
-        console.log(`ℹ️  Session not found: ${sessionId}`);
+        sessionLogger.debug(`    Session not found: ${sessionId}`);
         return null;
       }
       
       const sessionData = this.decryptSessionData(encryptedData);
       
       if (!sessionData) {
-        console.error(`🚨 Failed to decrypt session: ${sessionId}`);
+        sessionLogger.error(`  Failed to decrypt session: ${sessionId}`);
         await this.removeCorruptedSession(sessionId);
         return null;
       }
@@ -345,7 +348,7 @@ export class SecureSessionService {
       if (req) {
         const isValid = await this.validateSessionIntegrity(sessionData, req);
         if (!isValid) {
-          console.warn(`🚨 Session integrity validation failed: ${sessionId}`);
+          sessionLogger.warn(`  Session integrity validation failed: ${sessionId}`);
           await this.invalidateSession(sessionId, 'Integrity validation failed');
           return null;
         }
@@ -367,11 +370,11 @@ export class SecureSessionService {
       }
       
       const retrieveTime = performance.now() - retrieveStart;
-      console.log(`🔓 Secure session retrieved: ${sessionId} (${retrieveTime.toFixed(2)}ms)`);
+      sessionLogger.debug(`  Secure session retrieved: ${sessionId} (${retrieveTime.toFixed(2)}ms)`);
       
       return sessionData;
     } catch (error) {
-      console.error(`❌ Secure session retrieval failed for ${sessionId}:`, error);
+      sessionLogger.error(`  Secure session retrieval failed for ${sessionId}:`, error);
       return null;
     }
   }
@@ -448,10 +451,10 @@ export class SecureSessionService {
           await redisService.getClient().srem(`teacher_sessions:${teacherId}`, sessionId);
         }
         
-        console.log(`🔒 Enforced session limit for teacher ${teacherId}, removed ${sessionsToRemove.length} sessions`);
+        sessionLogger.debug(`  Enforced session limit for teacher ${teacherId}, removed ${sessionsToRemove.length} sessions`);
       }
     } catch (error) {
-      console.error(`❌ Session limit enforcement failed for teacher ${teacherId}:`, error);
+      sessionLogger.error(`  Session limit enforcement failed for teacher ${teacherId}:`, error);
     }
   }
   
@@ -496,7 +499,7 @@ export class SecureSessionService {
       // Return true if this appears to be the first login from this location
       return !existingMetrics;
     } catch (error) {
-      console.error(`❌ Login metrics tracking failed:`, error);
+      sessionLogger.error(`  Login metrics tracking failed:`, error);
       return false;
     }
   }
@@ -515,12 +518,12 @@ export class SecureSessionService {
       const isSuspicious = suspiciousFlags >= 2; // Require 2+ flags for suspicious classification
       
       if (isSuspicious) {
-        console.warn(`🚨 Suspicious login detected for teacher ${teacherId}: ${suspiciousFlags} flags`);
+        sessionLogger.warn(`  Suspicious login detected for teacher ${teacherId}: ${suspiciousFlags} flags`);
       }
       
       return isSuspicious;
     } catch (error) {
-      console.error(`❌ Suspicious activity detection failed:`, error);
+      sessionLogger.error(`  Suspicious activity detection failed:`, error);
       return false;
     }
   }
@@ -615,13 +618,13 @@ export class SecureSessionService {
       // Check device fingerprint consistency
       const currentFingerprint = SecureJWTService.createDeviceFingerprint(req);
       if (sessionData.deviceFingerprint !== currentFingerprint) {
-        console.warn(`🚨 Device fingerprint mismatch for session ${sessionData.sessionId}`);
+        sessionLogger.warn(`  Device fingerprint mismatch for session ${sessionData.sessionId}`);
         return false;
       }
       
       // Check for session hijacking indicators
       if (sessionData.ipAddress !== req.ip) {
-        console.warn(`🚨 IP address changed for session ${sessionData.sessionId}: ${sessionData.ipAddress} -> ${req.ip}`);
+        sessionLogger.warn(`  IP address changed for session ${sessionData.sessionId}: ${sessionData.ipAddress} -> ${req.ip}`);
         // Don't immediately fail - IP can change legitimately, but log for monitoring
       }
       
@@ -629,7 +632,7 @@ export class SecureSessionService {
       const sessionAge = Date.now() - sessionData.createdAt.getTime();
       const maxAge = 24 * 60 * 60 * 1000; // 24 hours
       if (sessionAge > maxAge) {
-        console.warn(`🚨 Session expired due to age: ${sessionData.sessionId}`);
+        sessionLogger.warn(`  Session expired due to age: ${sessionData.sessionId}`);
         return false;
       }
       
@@ -637,13 +640,13 @@ export class SecureSessionService {
       const inactiveTime = Date.now() - sessionData.lastActivity.getTime();
       const maxInactiveTime = 4 * 60 * 60 * 1000; // 4 hours
       if (inactiveTime > maxInactiveTime) {
-        console.warn(`🚨 Session expired due to inactivity: ${sessionData.sessionId}`);
+        sessionLogger.warn(`  Session expired due to inactivity: ${sessionData.sessionId}`);
         return false;
       }
       
       return true;
     } catch (error) {
-      console.error(`❌ Session integrity validation failed:`, error);
+      sessionLogger.error(`  Session integrity validation failed:`, error);
       return false;
     }
   }
@@ -688,7 +691,7 @@ export class SecureSessionService {
       severity: 'medium'
     };
     
-    console.warn(`🚨 SUSPICIOUS SESSION ALERT:`, alert);
+    sessionLogger.warn(`  SUSPICIOUS SESSION ALERT:`, alert);
     
     // Store alert for security monitoring
     await redisService.set(
@@ -751,9 +754,9 @@ export class SecureSessionService {
         86400 * 7 // 7 days
       );
       
-      console.log(`🔒 Session invalidated: ${sessionId} - Reason: ${reason}`);
+      sessionLogger.debug(`  Session invalidated: ${sessionId} - Reason: ${reason}`);
     } catch (error) {
-      console.error(`❌ Session invalidation failed for ${sessionId}:`, error);
+      sessionLogger.error(`  Session invalidation failed for ${sessionId}:`, error);
     }
   }
   
@@ -773,7 +776,7 @@ export class SecureSessionService {
         await cachePort.del(legacy);
       }
       // Remove metadata (best-effort)
-      try { await redisService.getClient().del(`session_metadata:${sessionId}`); } catch {}
+      try { await redisService.getClient().del(`session_metadata:${sessionId}`); } catch { /* intentionally ignored: best effort cleanup */ }
       // Record minimal invalidation log (without teacherId)
       try {
         await redisService.set(
@@ -781,9 +784,9 @@ export class SecureSessionService {
           JSON.stringify({ sessionId, reason: 'Corrupted session data', timestamp: new Date().toISOString() }),
           86400 * 7
         );
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (e) {
-      console.error('❌ removeCorruptedSession failed:', e instanceof Error ? e.message : String(e));
+      sessionLogger.error('  removeCorruptedSession failed:', e instanceof Error ? e.message : String(e));
     }
   }
   
@@ -829,7 +832,7 @@ export class SecureSessionService {
         sessionInvalidations: invalidationKeys.length
       };
     } catch (error) {
-      console.error('❌ Failed to get security metrics:', error);
+      sessionLogger.error('  Failed to get security metrics:', error);
       return { activeSessions: 0, suspiciousSessions: 0, securityAlerts: 0, sessionInvalidations: 0 };
     }
   }
@@ -837,7 +840,7 @@ export class SecureSessionService {
   // SECURITY 17: Cleanup expired sessions and alerts (periodic maintenance)
   static async performSecurityCleanup(): Promise<void> {
     try {
-      console.log('🧹 Starting security cleanup...');
+      sessionLogger.debug('  Starting security cleanup...');
       
       const patterns = [
         'security_alert:*',
@@ -866,10 +869,10 @@ export class SecureSessionService {
       }
       
       if (cleanupCount > 0) {
-        console.log(`🧹 Cleaned up ${cleanupCount} expired security records`);
+        sessionLogger.debug(`  Cleaned up ${cleanupCount} expired security records`);
       }
     } catch (error) {
-      console.error('❌ Security cleanup failed:', error);
+      sessionLogger.error('  Security cleanup failed:', error);
     }
   }
 }

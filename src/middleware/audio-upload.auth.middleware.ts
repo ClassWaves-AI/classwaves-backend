@@ -42,7 +42,7 @@ export function authenticateAudioUpload(req: AudioUploadAuthRequest, res: Respon
         req.kiosk = { groupId: String(decoded.groupId), sessionId: String(decoded.sessionId) };
         return next();
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
 
     return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Invalid or expired token' });
   } catch (e) {

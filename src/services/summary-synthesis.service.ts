@@ -45,13 +45,13 @@ export class SummarySynthesisService {
         summaryJson: JSON.stringify(summary),
         analysisTimestamp: new Date(summary?.analysisTimestamp || new Date().toISOString())
       });
-      try { getSummaryGeneratedCounter().inc({ type: 'group' }); } catch {}
+      try { getSummaryGeneratedCounter().inc({ type: 'group' }); } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)) || 'unknown_error';
-      try { getSummaryFailedCounter().inc({ type: 'group', reason }); } catch {}
+      try { getSummaryFailedCounter().inc({ type: 'group', reason }); } catch { /* intentionally ignored: best effort cleanup */ }
       throw error;
     } finally {
-      try { getSummaryLatencyHistogram().observe({ type: 'group' }, Date.now() - start); } catch {}
+      try { getSummaryLatencyHistogram().observe({ type: 'group' }, Date.now() - start); } catch { /* intentionally ignored: best effort cleanup */ }
     }
   }
 
@@ -80,7 +80,7 @@ export class SummarySynthesisService {
             generatedAt: new Date().toISOString()
           }
         };
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       const id = this.buildId('session', sessionId, undefined, sessionSummary?.analysisTimestamp);
       await repo.upsertSessionSummary({
         id,
@@ -88,13 +88,13 @@ export class SummarySynthesisService {
         summaryJson: JSON.stringify(sessionSummary),
         analysisTimestamp: new Date(sessionSummary?.analysisTimestamp || new Date().toISOString())
       });
-      try { getSummaryGeneratedCounter().inc({ type: 'session' }); } catch {}
+      try { getSummaryGeneratedCounter().inc({ type: 'session' }); } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
       const reason = (error instanceof Error ? error.message : String(error)) || 'unknown_error';
-      try { getSummaryFailedCounter().inc({ type: 'session', reason }); } catch {}
+      try { getSummaryFailedCounter().inc({ type: 'session', reason }); } catch { /* intentionally ignored: best effort cleanup */ }
       throw error;
     } finally {
-      try { getSummaryLatencyHistogram().observe({ type: 'session' }, Date.now() - start); } catch {}
+      try { getSummaryLatencyHistogram().observe({ type: 'session' }, Date.now() - start); } catch { /* intentionally ignored: best effort cleanup */ }
     }
   }
 

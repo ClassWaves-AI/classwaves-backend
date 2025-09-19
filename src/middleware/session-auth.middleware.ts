@@ -8,6 +8,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 /**
  * Middleware to verify that the authenticated user has access to the requested session
@@ -67,10 +68,10 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
       if ((authReq.user.role === 'admin' && session.school_id === authReq.user.school_id) || 
           authReq.user.role === 'super_admin') {
         // Admin/Super admin access granted - continue
-        console.log(`🔐 ${authReq.user.role} access granted for session ${sessionId} by user ${authReq.user.id}`);
+        logger.debug(`🔐 ${authReq.user.role} access granted for session ${sessionId} by user ${authReq.user.id}`);
       } else {
         // Record unauthorized access attempt for security monitoring
-        console.warn(`⚠️ Unauthorized session access attempt:`, {
+        logger.warn(`⚠️ Unauthorized session access attempt:`, {
           userId: authReq.user.id,
           userEmail: authReq.user.email,
           sessionId,
@@ -94,7 +95,7 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
 
     // School-level verification for additional security (super_admin users bypass this check)
     if (authReq.user.role !== 'super_admin' && session.school_id !== authReq.user.school_id) {
-      console.error(`🚨 Security violation: Cross-school session access attempt:`, {
+      logger.error(`🚨 Security violation: Cross-school session access attempt:`, {
         userId: authReq.user.id,
         userSchool: authReq.user.school_id,
         sessionSchool: session.school_id,
@@ -129,11 +130,11 @@ export async function requireSessionAccess(req: Request, res: Response, next: Ne
       status: session.status
     };
 
-    console.log(`✅ Session access authorized: ${sessionId} for user ${authReq.user.id}`);
+    logger.debug(`✅ Session access authorized: ${sessionId} for user ${authReq.user.id}`);
     next();
 
   } catch (error) {
-    console.error('Session authorization error:', error);
+    logger.error('Session authorization error:', error);
     return res.status(500).json({
       success: false,
       error: {
@@ -188,7 +189,7 @@ export async function requireAnalyticsAccess(req: Request, res: Response, next: 
       dataAccessed: req.path.includes('membership-summary') ? 'membership_analytics' : 'session_analytics'
     }).catch(() => {});
   } catch (auditError) {
-    console.error('Failed to log analytics access:', auditError);
+    logger.error('Failed to log analytics access:', auditError);
     // Continue - don't block access due to audit logging failure
   }
 

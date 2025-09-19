@@ -4,11 +4,14 @@ describe('AIAnalysisBufferService', () => {
   let service: AIAnalysisBufferService;
 
   beforeEach(() => {
+    process.env.AI_GUIDANCE_CONTEXT_MAX_LINES = '2';
     service = new AIAnalysisBufferService();
   });
 
   afterEach(async () => {
     await service.shutdown();
+    delete process.env.AI_GUIDANCE_CONTEXT_MAX_LINES;
+    delete process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS;
   });
 
   describe('bufferTranscription', () => {
@@ -164,6 +167,85 @@ describe('AIAnalysisBufferService', () => {
 
     it('should handle missing parameters gracefully', async () => {
       expect(() => service.getBufferStats()).not.toThrow();
+    });
+  });
+
+  describe('getContextWindows', () => {
+    const sessionId = '9ce297d3-8deb-4010-b208-3f7fe02b7ffb';
+    const groupId = 'ae735bb6-e927-4f6f-83f0-2b439a8166f9';
+
+    it('returns sanitized aligned/tangent windows with masked PII and profanity', async () => {
+      await service.bufferTranscription(groupId, sessionId, 'Speaker A: We reviewed photosynthesis at https://example.com yesterday.');
+      await service.bufferTranscription(groupId, sessionId, 'Speaker B: Email me at student@example.com if you have questions.');
+      await service.bufferTranscription(groupId, sessionId, 'Speaker C: The answer is 555-123-4567, damn that was tricky.');
+      await service.bufferTranscription(groupId, sessionId, 'Speaker D: Now we keep talking about weekend soccer practice.');
+      await service.bufferTranscription(groupId, sessionId, 'Speaker E: Alex thinks we should switch topics.');
+
+      const windows = service.getContextWindows(sessionId, groupId);
+
+      expect(windows.tangent.length).toBeGreaterThan(0);
+      expect(windows.aligned.length).toBeGreaterThan(0);
+
+      const allQuotes = [...windows.tangent, ...windows.aligned].map((line) => line.text);
+      expect(allQuotes.join(' ')).not.toMatch(/example.com/);
+      expect(allQuotes.join(' ')).not.toMatch(/student@example.com/);
+      expect(allQuotes.join(' ')).not.toMatch(/555-123-4567/);
+      expect(allQuotes.join(' ')).not.toMatch(/damn/);
+      expect(allQuotes.join(' ')).not.toMatch(/Alex/);
+      expect(allQuotes.join(' ')).toMatch(/Student/);
+      expect(allQuotes.join(' ')).not.toMatch(/Speaker\s+A/i);
+
+      const speakerLabels = [...windows.tangent, ...windows.aligned].map((line) => line.speakerLabel);
+      expect(speakerLabels.every((label) => /^Participant\s+\d+$/.test(label))).toBe(true);
+    });
+
+    it('returns empty windows when no transcripts buffered', () => {
+      const empty = service.getContextWindows(sessionId, groupId);
+      expect(empty.aligned).toEqual([]);
+      expect(empty.tangent).toEqual([]);
+    });
+
+    it('respects line and character limits when building windows', async () => {
+      await service.shutdown();
+      process.env.AI_GUIDANCE_CONTEXT_MAX_LINES = '2';
+      process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS = '60';
+      service = new AIAnalysisBufferService();
+
+      await service.bufferTranscription(groupId, sessionId, 'Student A: First aligned idea about energy transfer.');
+      await service.bufferTranscription(groupId, sessionId, 'Student B: Adding more aligned evidence to the discussion.');
+      await service.bufferTranscription(groupId, sessionId, 'Student C: Tangent about weekend sports that should truncate.');
+      await service.bufferTranscription(groupId, sessionId, 'Student D: Another tangent sentence continuing well beyond the limit.');
+
+      const windows = service.getContextWindows(sessionId, groupId);
+
+      expect(windows.tangent).toHaveLength(2);
+      expect(windows.aligned).toHaveLength(2);
+
+      expect(windows.aligned[0].text).toContain('energy transfer');
+      expect(windows.aligned[1].text).toContain('aligned evidence');
+
+      const combined = [...windows.aligned, ...windows.tangent];
+      combined.forEach((line) => {
+        expect(line.text.length).toBeLessThanOrEqual(60);
+      });
+    });
+
+    it('falls back to aligned window when tangent lines exceed caps', async () => {
+      await service.shutdown();
+      process.env.AI_GUIDANCE_CONTEXT_MAX_LINES = '1';
+      process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS = '80';
+      service = new AIAnalysisBufferService();
+
+      await service.bufferTranscription(groupId, sessionId, 'Student A: Reviewing yesterday\'s rubric criteria.');
+      await service.bufferTranscription(groupId, sessionId, 'Student B: Diving into related examples to stay aligned.');
+      await service.bufferTranscription(groupId, sessionId, 'Student C: Quick tangent about weekend plans.');
+
+      const windows = service.getContextWindows(sessionId, groupId);
+
+      expect(windows.tangent).toHaveLength(1);
+      expect(windows.tangent[0].text).toContain('weekend plans');
+      expect(windows.aligned).toHaveLength(1);
+      expect(windows.aligned[0].text).toContain('stay aligned');
     });
   });
 });

@@ -24,7 +24,7 @@ router.post('/logout', secureLogout);
 // Get current user with fresh tokens (session validation)
 router.get('/me', authenticate, async (req, res) => {
   const meStart = performance.now();
-  console.log('👤 /auth/me ENDPOINT START');
+  logger.debug('👤 /auth/me ENDPOINT START');
   
   try {
     const authReq = req as AuthRequest;
@@ -38,7 +38,7 @@ router.get('/me', authenticate, async (req, res) => {
     const secureTokens = await SecureJWTService.generateSecureTokens(teacher, school, currentSessionId, req);
     
     const meTotal = performance.now() - meStart;
-    console.log(`👤 /auth/me ENDPOINT COMPLETE - Total time: ${meTotal.toFixed(2)}ms`);
+    logger.debug(`👤 /auth/me ENDPOINT COMPLETE - Total time: ${meTotal.toFixed(2)}ms`);
     
     // DO NOT set a new cookie - the session already exists and is valid
     // Just refresh the session TTL in Redis if needed
@@ -149,7 +149,7 @@ router.post('/test-token', (req, res) => {
  */
 router.get('/health', async (req, res) => {
   try {
-    console.log('🔍 Auth health check requested');
+    logger.debug('🔍 Auth health check requested');
     const healthStatus = await authHealthMonitor.checkAuthSystemHealth();
     
     // Return appropriate HTTP status based on health
@@ -161,7 +161,7 @@ router.get('/health', async (req, res) => {
       data: healthStatus
     });
   } catch (error) {
-    console.error('❌ Auth health check failed:', error);
+    logger.error('❌ Auth health check failed:', error);
     res.status(503).json({
       success: false,
       error: 'HEALTH_CHECK_FAILED',

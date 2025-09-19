@@ -3,6 +3,7 @@ import { AuthRequest } from '../types/auth.types';
 import { getCompositionRoot } from '../app/composition-root';
 import { v4 as uuidv4 } from 'uuid';
 import { composeDisplayName } from '../utils/name.utils';
+import { logger } from '../utils/logger';
 
 /**
  * GET /api/v1/roster
@@ -10,7 +11,7 @@ import { composeDisplayName } from '../utils/name.utils';
  */
 export async function listStudents(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('📋 Roster: List Students endpoint called');
+  logger.debug('📋 Roster: List Students endpoint called');
   
   try {
     const teacher = authReq.user!;
@@ -87,11 +88,14 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
       data: transformedStudents,
       total,
       page,
-      limit
+      limit,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1
     });
 
   } catch (error) {
-    console.error('❌ Error listing students:', error);
+    logger.error('❌ Error listing students:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -106,7 +110,7 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
  */
 export async function createStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('👶 Roster: Create Student endpoint called');
+  logger.debug('👶 Roster: Create Student endpoint called');
   
   try {
     const teacher = authReq.user!;
@@ -184,12 +188,16 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
         newFields.updated_at = now;
         await rosterRepo.updateStudentFields(studentId, newFields);
       }
-    } catch {}
+    } catch (consentUpdateError) {
+      logger.debug('Roster: optional consent metadata update skipped', consentUpdateError instanceof Error ? consentUpdateError.message : consentUpdateError);
+    }
 
     // Best effort: store structured names if columns exist
     try {
       await rosterRepo.updateStudentNames(studentId, { given_name: firstName ?? null, family_name: lastName ?? null, preferred_name: preferredName ?? null, updated_at: now });
-    } catch {}
+    } catch (nameUpdateError) {
+      logger.debug('Roster: structured name update failed', nameUpdateError instanceof Error ? nameUpdateError.message : nameUpdateError);
+    }
 
     // Get the created student
     const createdStudent = await rosterRepo.getStudentWithSchool(studentId);
@@ -249,7 +257,7 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     });
 
   } catch (error) {
-    console.error('❌ Error creating student:', error);
+    logger.error('❌ Error creating student:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -265,7 +273,7 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
 export async function updateStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`🔄 Roster: Update Student ${studentId} endpoint called`);
+  logger.debug(`🔄 Roster: Update Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
@@ -400,7 +408,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     updateValues.push(studentId);
 
     // Debug: log which columns are being updated (no values)
-    console.log('🛠️ Roster Update Columns:', updateFields.map(f => f.split('=')[0].trim()));
+    logger.debug('🛠️ Roster Update Columns:', updateFields.map(f => f.split('=')[0].trim()));
 
     // Build field map for repository update
     const fieldsMap = Object.fromEntries(updateFields.map((f, i) => [f.replace(' = ?', ''), updateValues[i]]));
@@ -410,7 +418,9 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     if (firstName !== undefined || lastName !== undefined || preferredName !== undefined) {
       try {
         await rosterRepoUpdate.updateStudentNames(studentId, { given_name: firstName ?? null, family_name: lastName ?? null, preferred_name: preferredName ?? null, updated_at: new Date().toISOString() });
-      } catch {}
+      } catch (structuredNameError) {
+        logger.debug('Roster: structured name update skipped during edit', structuredNameError instanceof Error ? structuredNameError.message : structuredNameError);
+      }
     }
 
     // Get the updated student
@@ -441,7 +451,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     });
 
   } catch (error) {
-    console.error('❌ Error updating student:', error);
+    logger.error('❌ Error updating student:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -457,7 +467,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 export async function deleteStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`🗑️ Roster: Delete Student ${studentId} endpoint called`);
+  logger.debug(`🗑️ Roster: Delete Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
@@ -533,7 +543,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
     }
 
   } catch (error) {
-    console.error('❌ Error deleting student:', error);
+    logger.error('❌ Error deleting student:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -549,7 +559,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
 export async function ageVerifyStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`🎂 Roster: Age Verify Student ${studentId} endpoint called`);
+  logger.debug(`🎂 Roster: Age Verify Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
@@ -592,7 +602,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
     }
 
     // Update student with age verification info
-    const updateData: any = {
+    const updateData: Record<string, unknown> = {
       parent_email: parentEmail || null,
       updated_at: new Date().toISOString()
     };
@@ -604,11 +614,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
       // Do not auto-grant email_consent here; allow explicit toggle on edit modal
     }
 
-    const updateFields = Object.keys(updateData);
-    const updateValues = Object.values(updateData);
-    const setClause = updateFields.map(field => `${field} = ?`).join(', ');
-
-    await rosterRepoAge.updateStudentFields(studentId, Object.fromEntries(updateFields.map((f, i) => [f.split('=')[0].trim(), updateValues[i]])));
+    await rosterRepoAge.updateStudentFields(studentId, updateData);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -640,7 +646,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
     });
 
   } catch (error) {
-    console.error('❌ Error verifying student age:', error);
+    logger.error('❌ Error verifying student age:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -656,12 +662,12 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
 export async function requestParentalConsent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`👨‍👩‍👧‍👦 Roster: Parental Consent for Student ${studentId} endpoint called`);
+  logger.debug(`👨‍👩‍👧‍👦 Roster: Parental Consent for Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
-    const { consentGiven = false, parentSignature, consentDate } = req.body;
+    const { consentGiven = false, consentDate } = req.body;
 
     // Check if student exists and belongs to teacher's school
     const rosterRepoConsent = getCompositionRoot().getRosterRepository();
@@ -693,7 +699,9 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
         email_consent: !!consentGiven,
         updated_at: now,
       });
-    } catch {}
+    } catch (consentSyncError) {
+      logger.debug('Roster: parental consent sync skipped', consentSyncError instanceof Error ? consentSyncError.message : consentSyncError);
+    }
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -723,7 +731,7 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
     });
 
   } catch (error) {
-    console.error('❌ Error updating parental consent:', error);
+    logger.error('❌ Error updating parental consent:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -738,7 +746,7 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
  */
 export async function getRosterOverview(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('📊 Roster: Get Overview endpoint called');
+  logger.debug('📊 Roster: Get Overview endpoint called');
   
   try {
     const teacher = authReq.user!;
@@ -772,7 +780,7 @@ export async function getRosterOverview(req: Request, res: Response): Promise<Re
     });
 
   } catch (error) {
-    console.error('❌ Error fetching roster overview:', error);
+    logger.error('❌ Error fetching roster overview:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',

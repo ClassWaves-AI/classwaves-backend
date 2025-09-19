@@ -2,18 +2,19 @@ import { databricksService } from '../services/databricks.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
 
 async function createDatabase() {
-  console.log('🚀 Starting ClassWaves database creation...\n');
+  logger.debug('🚀 Starting ClassWaves database creation...\n');
   
   try {
     // Connect to Databricks
-    console.log('📡 Connecting to Databricks...');
+    logger.debug('📡 Connecting to Databricks...');
     await databricksService.connect();
-    console.log('✅ Connected successfully!\n');
+    logger.debug('✅ Connected successfully!\n');
     
     // Read the SQL script
     const sqlPath = path.join(__dirname, '../../create-databricks-schema-fixed.sql');
@@ -35,7 +36,7 @@ async function createDatabase() {
       .filter(stmt => stmt && stmt.length > 5) // Filter out empty or tiny statements
       .map(stmt => stmt + ';');
     
-    console.log(`📋 Found ${statements.length} SQL statements to execute\n`);
+    logger.debug(`📋 Found ${statements.length} SQL statements to execute\n`);
     
     // Track progress
     let successCount = 0;
@@ -60,56 +61,56 @@ async function createDatabase() {
       try {
         await databricksService.query(statement);
         successCount++;
-        console.log('✅');
+        logger.debug('✅');
       } catch (error: any) {
         errorCount++;
-        console.log('❌');
+        logger.debug('❌');
         errors.push({ statement: statement.substring(0, 100) + '...', error });
         
         // Continue on error for CREATE IF NOT EXISTS statements
         if (statement.includes('IF NOT EXISTS')) {
-          console.log('   ⚠️  Warning: ' + (error.message || error));
+          logger.debug('   ⚠️  Warning: ' + (error.message || error));
         } else {
-          console.log('   ❌ Error: ' + (error.message || error));
+          logger.debug('   ❌ Error: ' + (error.message || error));
         }
       }
     }
     
     // Summary
-    console.log('\n📊 Database Creation Summary:');
-    console.log(`   ✅ Successful statements: ${successCount}`);
-    console.log(`   ❌ Failed statements: ${errorCount}`);
+    logger.debug('\n📊 Database Creation Summary:');
+    logger.debug(`   ✅ Successful statements: ${successCount}`);
+    logger.debug(`   ❌ Failed statements: ${errorCount}`);
     
     if (errors.length > 0) {
-      console.log('\n⚠️  Errors encountered:');
+      logger.debug('\n⚠️  Errors encountered:');
       errors.forEach((err, idx) => {
-        console.log(`\n   ${idx + 1}. Statement: ${err.statement}`);
-        console.log(`      Error: ${err.error.message || err.error}`);
+        logger.debug(`\n   ${idx + 1}. Statement: ${err.statement}`);
+        logger.debug(`      Error: ${err.error.message || err.error}`);
       });
     }
     
     // Verify critical tables
-    console.log('\n🔍 Verifying critical tables...');
+    logger.debug('\n🔍 Verifying critical tables...');
     const criticalTables = ['schools', 'teachers', 'sessions', 'groups', 'student_participants', 'audit_log'];
     
     for (const table of criticalTables) {
       try {
         const result = await databricksService.query(`SELECT COUNT(*) as count FROM classwaves.main.${table} LIMIT 1`);
-        console.log(`   ✅ Table '${table}' exists`);
+        logger.debug(`   ✅ Table '${table}' exists`);
       } catch (error) {
-        console.log(`   ❌ Table '${table}' not found`);
+        logger.debug(`   ❌ Table '${table}' not found`);
       }
     }
     
     // Check if admin data was inserted
-    console.log('\n🔍 Checking admin setup...');
+    logger.debug('\n🔍 Checking admin setup...');
     try {
       const adminSchool = await databricksService.queryOne(
         'SELECT * FROM classwaves.main.schools WHERE domain = ?',
         ['classwaves.ai']
       );
       if (adminSchool) {
-        console.log('   ✅ Admin school created successfully');
+        logger.debug('   ✅ Admin school created successfully');
       }
       
       const adminUser = await databricksService.queryOne(
@@ -117,20 +118,20 @@ async function createDatabase() {
         ['rob@classwaves.ai']
       );
       if (adminUser) {
-        console.log('   ✅ Admin user created successfully');
+        logger.debug('   ✅ Admin user created successfully');
       }
     } catch (error) {
-      console.log('   ⚠️  Could not verify admin setup');
+      logger.debug('   ⚠️  Could not verify admin setup');
     }
     
-    console.log('\n✨ Database creation process completed!');
+    logger.debug('\n✨ Database creation process completed!');
     
   } catch (error) {
-    console.error('\n❌ Fatal error during database creation:', error);
+    logger.error('\n❌ Fatal error during database creation:', error);
     process.exit(1);
   } finally {
     await databricksService.disconnect();
-    console.log('\n👋 Disconnected from Databricks');
+    logger.debug('\n👋 Disconnected from Databricks');
   }
 }
 

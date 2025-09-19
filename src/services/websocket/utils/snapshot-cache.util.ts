@@ -32,14 +32,14 @@ export class SessionSnapshotCache<T = any> {
     try {
       const cached = await this.cache.get(key);
       if (cached) return JSON.parse(cached) as T;
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
     // Simple anti-stampede: try to acquire a short lock using counter.incr
     let haveLock = false;
     try {
       const v = await this.counter.incr(lockKey);
       await this.counter.expire(lockKey, lockTtl);
       haveLock = v === 1;
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
 
     let snap: T;
     if (haveLock) {
@@ -47,7 +47,7 @@ export class SessionSnapshotCache<T = any> {
       snap = await this.build(sessionId);
       try {
         await this.cache.set(key, JSON.stringify(snap), this.ttlSeconds);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     } else {
       // Another builder likely in flight; briefly wait and re-read
       await new Promise((r) => setTimeout(r, 50));
@@ -55,7 +55,7 @@ export class SessionSnapshotCache<T = any> {
       if (cached2) return JSON.parse(cached2) as T;
       // Fallback: build anyway if still missing to avoid failure
       snap = await this.build(sessionId);
-      try { await this.cache.set(key, JSON.stringify(snap), this.ttlSeconds); } catch {}
+      try { await this.cache.set(key, JSON.stringify(snap), this.ttlSeconds); } catch { /* intentionally ignored: best effort cleanup */ }
     }
     return snap;
   }
@@ -65,7 +65,7 @@ export class SessionSnapshotCache<T = any> {
       await this.cache.del(this.snapshotKey(sessionId));
       await this.counter.incr(this.stateVersionKey(sessionId));
       await this.counter.expire(this.stateVersionKey(sessionId), 3600);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   private snapshotKey(sessionId: string) {

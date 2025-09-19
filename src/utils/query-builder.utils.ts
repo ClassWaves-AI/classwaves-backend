@@ -10,6 +10,7 @@
  */
 
 import { performance } from 'perf_hooks';
+import { logger } from './logger';
 
 // ============================================================================
 // Field Selection Interfaces
@@ -233,7 +234,7 @@ export function logQueryOptimization(endpoint: string, metrics: QueryMetrics): v
     ? Math.round((metrics.estimatedFieldsAvoided / (metrics.fieldsSelected + metrics.estimatedFieldsAvoided)) * 100)
     : 0;
     
-  console.log(`🔍 QUERY OPTIMIZATION [${endpoint}]:`, {
+  logger.debug(`🔍 QUERY OPTIMIZATION [${endpoint}]:`, {
     fieldsSelected: metrics.fieldsSelected,
     fieldsAvoided: metrics.estimatedFieldsAvoided,
     reductionPercent: `${reductionPercentage}%`,

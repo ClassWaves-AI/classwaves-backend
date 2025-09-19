@@ -10,6 +10,7 @@ import { RedisRateLimiter } from './utils/rate-limiter.util';
 import { SessionSnapshotCache } from './utils/snapshot-cache.util';
 import { cachePort } from '../../utils/cache.port.instance';
 import { queryCacheService } from '../../services/query-cache.service';
+import { logger } from '../../utils/logger';
 
 interface SessionSocketData extends NamespaceSocketData {
   sessionId?: string;
@@ -253,7 +254,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       if (!this.stallCheckTimer && this.stallCheckIntervalMs > 0) {
         this.stallCheckTimer = setInterval(() => this.checkForIngressStalls(), this.stallCheckIntervalMs);
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   // teacherId cache handled by shared utility
@@ -337,9 +338,9 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       try {
         if (process.env.API_DEBUG === '1') {
           const bytes = (data as any)?.audioData && Buffer.isBuffer((data as any).audioData) ? (data as any).audioData.length : 0;
-          console.log(JSON.stringify({ event: 'audio_chunk_received', groupId: data?.groupId, bytes, mimeType: (data as any)?.mimeType }));
+          logger.debug(JSON.stringify({ event: 'audio_chunk_received', groupId: data?.groupId, bytes, mimeType: (data as any)?.mimeType }));
         }
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       // Unified path: allow WS audio ingestion when enabled (default on)
       await this.handleAudioChunk(socket, data as any);
     });
@@ -374,7 +375,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
               this.stopGroupFlushScheduler(groupId);
             }
           }
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
       });
     }
   }
@@ -427,7 +428,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         session = socket.data.role === 'super_admin'
           ? await repo.getBasic(sessionId)
           : await repo.getOwnedSessionBasic(sessionId, socket.data.userId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       if (!session) {
         if (socket.data.role === 'super_admin') {
           session = await databricksService.queryOne(
@@ -456,7 +457,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       const roomName = `session:${sessionId}`;
       await socket.join(roomName);
       // Cross-cluster presence counter (best-effort)
-      try { await redisService.getClient().incr(`ws:sessionParticipantsCount:${sessionId}`); } catch {}
+      try { await redisService.getClient().incr(`ws:sessionParticipantsCount:${sessionId}`); } catch { /* intentionally ignored: best effort cleanup */ }
       
       // Track joined room
       const socketData = socket.data as SessionSocketData;
@@ -490,17 +491,17 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         }
       } catch (e) {
         if (process.env.API_DEBUG === '1') {
-          console.warn('Failed to emit session snapshot (non-blocking):', e instanceof Error ? e.message : String(e));
+          logger.warn('Failed to emit session snapshot (non-blocking):', e instanceof Error ? e.message : String(e));
         }
         if (ack) ack({ ok: true });
       }
 
       if (process.env.API_DEBUG === '1') {
-        console.log(`Sessions namespace: User ${socket.data.userId} joined session ${sessionId}`);
+        logger.debug(`Sessions namespace: User ${socket.data.userId} joined session ${sessionId}`);
       }
       SessionsNamespaceService.wsEventCounter.inc({ namespace: this.getNamespaceName(), event: 'session:join', status: 'ok' });
     } catch (error) {
-      console.error('Session join error:', error);
+      logger.error('Session join error:', error);
       socket.emit('error', { 
         code: 'SESSION_JOIN_FAILED', 
         message: 'Failed to join session' 
@@ -636,17 +637,17 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         }
       } catch (e) {
         if (process.env.API_DEBUG === '1') {
-          console.warn('Failed to emit session snapshot for student (non-blocking):', e instanceof Error ? e.message : String(e));
+          logger.warn('Failed to emit session snapshot for student (non-blocking):', e instanceof Error ? e.message : String(e));
         }
         if (ack) ack({ ok: true, joined: joinedPayload });
       }
 
       if (process.env.API_DEBUG === '1') {
-        console.log(`Sessions namespace: Student ${socket.data.userId} joined session ${sessionId}${participant.group_id ? ` and group ${participant.group_id}` : ''}`);
+        logger.debug(`Sessions namespace: Student ${socket.data.userId} joined session ${sessionId}${participant.group_id ? ` and group ${participant.group_id}` : ''}`);
       }
       SessionsNamespaceService.wsEventCounter.inc({ namespace: this.getNamespaceName(), event: 'student:session:join', status: 'ok' });
     } catch (error) {
-      console.error('Student session join error (namespaced):', error);
+      logger.error('Student session join error (namespaced):', error);
       socket.emit('error', { 
         code: 'STUDENT_SESSION_JOIN_FAILED', 
         message: 'Failed to join session as student' 
@@ -671,7 +672,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       const roomName = `session:${sessionId}`;
       await socket.leave(roomName);
-      try { await redisService.getClient().decr(`ws:sessionParticipantsCount:${sessionId}`); } catch {}
+      try { await redisService.getClient().decr(`ws:sessionParticipantsCount:${sessionId}`); } catch { /* intentionally ignored: best effort cleanup */ }
 
       // Update tracking
       const socketData = socket.data as SessionSocketData;
@@ -688,7 +689,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       socket.emit('session:left', { sessionId });
     } catch (error) {
-      console.error('Session leave error:', error);
+      logger.error('Session leave error:', error);
       socket.emit('error', { 
         code: 'SESSION_LEAVE_FAILED', 
         message: 'Failed to leave session' 
@@ -752,9 +753,9 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         traceId: (socket.data as any)?.traceId || undefined,
       });
 
-      console.log(`Sessions namespace: User ${socket.data.userId} joined group ${parsed.data.groupId}`);
+      logger.debug(`Sessions namespace: User ${socket.data.userId} joined group ${parsed.data.groupId}`);
     } catch (error) {
-      console.error('Group join error:', error);
+      logger.error('Group join error:', error);
       socket.emit('error', { 
         code: 'GROUP_JOIN_FAILED', 
         message: 'Failed to join group' 
@@ -797,9 +798,9 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       try {
         this.lastTranscriptTailTokens.delete(parsed.data.groupId);
         this.lastTranscriptText.delete(parsed.data.groupId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
-      console.error('Group leave error:', error);
+      logger.error('Group leave error:', error);
       socket.emit('error', { 
         code: 'GROUP_LEAVE_FAILED', 
         message: 'Failed to leave group' 
@@ -893,7 +894,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Log broadcast failures for monitoring
       if (!sessionBroadcastSuccess || !groupBroadcastSuccess) {
-        console.error(`Broadcast failures for group status update:`, {
+        logger.error(`Broadcast failures for group status update:`, {
           sessionBroadcast: sessionBroadcastSuccess,
           groupBroadcast: groupBroadcastSuccess,
           sessionId: data.sessionId,
@@ -906,15 +907,15 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       this.groupDedupe.isDuplicate(`${broadcastPayload.sessionId}:${broadcastPayload.groupId}`, computeGroupBroadcastHash(broadcastPayload));
 
       if (process.env.API_DEBUG === '1') {
-        console.log(`Sessions namespace: Group ${group.name} status updated to ${data.status}${data.issueReason ? ` (reason: ${data.issueReason})` : ''}`);
+        logger.debug(`Sessions namespace: Group ${group.name} status updated to ${data.status}${data.issueReason ? ` (reason: ${data.issueReason})` : ''}`);
       }
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(data.sessionId);
       // Bust group-status summary cache for this session
-      try { await queryCacheService.invalidateCache(`group-status:${data.sessionId}`); } catch {}
+      try { await queryCacheService.invalidateCache(`group-status:${data.sessionId}`); } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
-      console.error('Group status update error:', error);
+      logger.error('Group status update error:', error);
       socket.emit('error', { 
         code: 'GROUP_UPDATE_FAILED', 
         message: 'Failed to update group status' 
@@ -952,7 +953,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Idempotency check: if state hasn't changed, skip database update and broadcast
       if (group.is_ready === ready) {
-        console.log(`Sessions namespace: Group ${group.name} readiness state unchanged (${ready ? 'ready' : 'not ready'}) - idempotent skip`);
+        logger.debug(`Sessions namespace: Group ${group.name} readiness state unchanged (${ready ? 'ready' : 'not ready'}) - idempotent skip`);
         
         // Still emit confirmation to requesting client for UX consistency
         socket.emit('group:leader_ready_confirmed', {
@@ -976,7 +977,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Log broadcast failure for monitoring
       if (!broadcastSuccess) {
-        console.error(`Failed to broadcast group readiness change for session ${data.sessionId}, group ${data.groupId}`);
+        logger.error(`Failed to broadcast group readiness change for session ${data.sessionId}, group ${data.groupId}`);
       }
       
       // Emit confirmation to requesting client
@@ -990,15 +991,15 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       this.groupDedupe.isDuplicate(`${payload.sessionId}:${payload.groupId}`, computeGroupBroadcastHash(payload));
 
       if (process.env.API_DEBUG === '1') {
-        console.log(`Sessions namespace: Group ${group.name} leader marked ${ready ? 'ready' : 'not ready'} in session ${sessionId} [${idempotencyKey}]`);
+        logger.debug(`Sessions namespace: Group ${group.name} leader marked ${ready ? 'ready' : 'not ready'} in session ${sessionId} [${idempotencyKey}]`);
       }
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(sessionId);
       // Bust group-status summary cache for this session
-      try { await queryCacheService.invalidateCache(`group-status:${sessionId}`); } catch {}
+      try { await queryCacheService.invalidateCache(`group-status:${sessionId}`); } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
-      console.error('Sessions namespace: Group leader ready error:', error);
+      logger.error('Sessions namespace: Group leader ready error:', error);
       socket.emit('error', {
         code: 'LEADER_READY_FAILED',
         message: 'Failed to update leader readiness',
@@ -1062,7 +1063,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
       // Critical issue broadcasts must succeed - log failures for immediate attention
       if (!sessionIssueBroadcast || !groupIssueBroadcast) {
-        console.error(`CRITICAL: Failed to broadcast WaveListener issue for group ${group.name}:`, {
+        logger.error(`CRITICAL: Failed to broadcast WaveListener issue for group ${group.name}:`, {
           sessionBroadcast: sessionIssueBroadcast,
           groupBroadcast: groupIssueBroadcast,
           reason: data.reason,
@@ -1078,15 +1079,15 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       });
 
       if (process.env.API_DEBUG === '1') {
-        console.log(`Sessions namespace: WaveListener issue reported for group ${group.name}: ${data.reason}`);
+        logger.debug(`Sessions namespace: WaveListener issue reported for group ${group.name}: ${data.reason}`);
       }
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(data.sessionId);
       // Bust group-status summary cache for this session
-      try { await queryCacheService.invalidateCache(`group-status:${data.sessionId}`); } catch {}
+      try { await queryCacheService.invalidateCache(`group-status:${data.sessionId}`); } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
-      console.error('WaveListener issue handling error:', error);
+      logger.error('WaveListener issue handling error:', error);
       socket.emit('error', {
         code: 'WAVELISTENER_ISSUE_FAILED',
         message: 'Failed to report WaveListener issue'
@@ -1117,7 +1118,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       try {
         this.lastTranscriptTailTokens.delete(data.groupId);
         this.lastTranscriptText.delete(data.groupId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       // Emit canonical session-level event for teacher dashboards and clients
       const sData = socket.data as SessionSocketData;
@@ -1134,11 +1135,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         }
       } catch (e) {
         if (process.env.API_DEBUG === '1') {
-          console.warn('Failed to start group flush scheduler:', e instanceof Error ? e.message : String(e));
+          logger.warn('Failed to start group flush scheduler:', e instanceof Error ? e.message : String(e));
         }
       }
     } catch (error) {
-      console.error('Audio stream start error:', error);
+      logger.error('Audio stream start error:', error);
       socket.emit('error', { 
         code: 'AUDIO_START_FAILED', 
         message: 'Failed to start audio stream' 
@@ -1178,7 +1179,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Update ingress timestamp for stall detection (WS path)
       try {
         if (sessionId) this.updateLastIngestAt(sessionId, data.groupId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       try {
         const snapshot = await this.snapshotCache.get(sessionId);
         const status = (snapshot as any)?.status || 'created';
@@ -1193,10 +1194,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           if (ending) {
             this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'SESSION_ENDING', status: 'ending' });
             // Observability: count AI suppression due to ending gate
-            try { SessionsNamespaceService.aiTriggersSuppressedTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
+            try { SessionsNamespaceService.aiTriggersSuppressedTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch { /* intentionally ignored: best effort cleanup */ }
             return;
           }
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
       } catch {
         // If snapshot retrieval fails, be conservative and reject to avoid waste
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'SESSION_STATUS_UNKNOWN' });
@@ -1206,8 +1207,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Enforce group membership before accepting audio
       const auth = await this.verifyGroupAudioAuthorization(socket, data.groupId);
       if (!auth.authorized) {
-        if (process.env.API_DEBUG === '1') console.warn(JSON.stringify({ event: 'audio_not_authorized', groupId: data.groupId, userId: (socket.data as any)?.userId }));
-        try { (SessionsNamespaceService as any).wsAuthFailCounter?.inc?.({ namespace: this.getNamespaceName(), school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
+        if (process.env.API_DEBUG === '1') logger.warn(JSON.stringify({ event: 'audio_not_authorized', groupId: data.groupId, userId: (socket.data as any)?.userId }));
+        try { (SessionsNamespaceService as any).wsAuthFailCounter?.inc?.({ namespace: this.getNamespaceName(), school: (socket.data as any)?.schoolId || 'unknown' }); } catch { /* intentionally ignored: best effort cleanup */ }
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'NOT_AUTHORIZED' });
         return;
       }
@@ -1261,10 +1262,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Backpressure checks before ingest
       const approxBytes = audioBuffer.length;
       if (approxBytes > 2 * 1024 * 1024) { // 2MB hard cap per chunk
-        console.warn(JSON.stringify({ event: 'audio_drop_chunk_oversize', groupId: data.groupId, approx_chunk_bytes: approxBytes }));
+        logger.warn(JSON.stringify({ event: 'audio_drop_chunk_oversize', groupId: data.groupId, approx_chunk_bytes: approxBytes }));
         // Zero sensitive buffer contents immediately
-        try { audioBuffer.fill(0); } catch {}
-        try { (SessionsNamespaceService as any).wsAudioDropCounter?.inc?.({ namespace: this.getNamespaceName(), reason: 'PAYLOAD_TOO_LARGE', school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
+        try { audioBuffer.fill(0); } catch { /* intentionally ignored: best effort cleanup */ }
+        try { (SessionsNamespaceService as any).wsAudioDropCounter?.inc?.({ namespace: this.getNamespaceName(), reason: 'PAYLOAD_TOO_LARGE', school: (socket.data as any)?.schoolId || 'unknown' }); } catch { /* intentionally ignored: best effort cleanup */ }
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'PAYLOAD_TOO_LARGE', bytes: approxBytes, limit: 2 * 1024 * 1024 });
         return;
       }
@@ -1280,15 +1281,15 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           const client = redisService.getClient();
 
           const [totalSchool, totalSession] = await Promise.all([
-            client.incrby(schoolKey, approxBytes).then(async (v: number) => { try { await client.expire(schoolKey, 2); } catch {} return v; }),
-            client.incrby(sessionKey, approxBytes).then(async (v: number) => { try { await client.expire(sessionKey, 2); } catch {} return v; }),
+            client.incrby(schoolKey, approxBytes).then(async (v: number) => { try { await client.expire(schoolKey, 2); } catch { /* intentionally ignored: best effort cleanup */ } return v; }),
+            client.incrby(sessionKey, approxBytes).then(async (v: number) => { try { await client.expire(sessionKey, 2); } catch { /* intentionally ignored: best effort cleanup */ } return v; }),
           ]);
 
           const SCHOOL_BYTES_PER_SEC = parseInt(process.env.WS_SCHOOL_AUDIO_LIMIT || String(5 * 1024 * 1024), 10);
           const SESSION_BYTES_PER_SEC = parseInt(process.env.WS_SESSION_AUDIO_LIMIT || String(2 * 1024 * 1024), 10);
 
           if (totalSchool > SCHOOL_BYTES_PER_SEC) {
-            console.warn(JSON.stringify({ event: 'audio_block_school_quota', groupId: data.groupId, schoolId, totalSchool, limit: SCHOOL_BYTES_PER_SEC }));
+            logger.warn(JSON.stringify({ event: 'audio_block_school_quota', groupId: data.groupId, schoolId, totalSchool, limit: SCHOOL_BYTES_PER_SEC }));
             this.emitToRoom(`group:${data.groupId}`, 'audio:error', { 
               groupId: data.groupId,
               error: 'SCHOOL_QUOTA_EXCEEDED',
@@ -1299,7 +1300,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           }
 
           if (totalSession > SESSION_BYTES_PER_SEC) {
-            console.warn(JSON.stringify({ event: 'audio_block_session_quota', groupId: data.groupId, sessionId: sessionIdForQuota, totalSession, limit: SESSION_BYTES_PER_SEC }));
+            logger.warn(JSON.stringify({ event: 'audio_block_session_quota', groupId: data.groupId, sessionId: sessionIdForQuota, totalSession, limit: SESSION_BYTES_PER_SEC }));
             this.emitToRoom(`group:${data.groupId}`, 'audio:error', { 
               groupId: data.groupId,
               error: 'SESSION_QUOTA_EXCEEDED',
@@ -1312,7 +1313,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       } catch (e) {
         // Quota check is best-effort; continue on Redis failure
         if (process.env.API_DEBUG === '1') {
-          console.warn('quota_check_failed', e instanceof Error ? e.message : String(e));
+          logger.warn('quota_check_failed', e instanceof Error ? e.message : String(e));
         }
       }
 
@@ -1320,7 +1321,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       try {
         const schoolId = (socket.data as any)?.schoolId || 'unknown';
         SessionsNamespaceService.wsAudioBytesTotal.inc({ school: schoolId }, approxBytes);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       // Compute short traceId for correlating client/server logs
       let traceId = '';
@@ -1328,19 +1329,19 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         const { createHash } = await import('crypto');
         const sid = (socket.data as any)?.sessionId || 'unknown';
         traceId = createHash('sha1').update(`${sid}|${data.groupId}|${Date.now()}`).digest('hex').slice(0, 12);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       const { inMemoryAudioProcessor } = await import('../audio/InMemoryAudioProcessor');
       const windowInfo = inMemoryAudioProcessor.getGroupWindowInfo(data.groupId);
       if (windowInfo.bytes > 5 * 1024 * 1024 || windowInfo.chunks > 50) {
-        console.warn(JSON.stringify({
+        logger.warn(JSON.stringify({
           event: 'audio_drop_backpressure',
           groupId: data.groupId,
           window_bytes: windowInfo.bytes,
           window_chunks: windowInfo.chunks,
         }));
-        try { audioBuffer.fill(0); } catch {}
-        try { (SessionsNamespaceService as any).wsAudioDropCounter?.inc?.({ namespace: this.getNamespaceName(), reason: 'BACKPRESSURE', school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
+        try { audioBuffer.fill(0); } catch { /* intentionally ignored: best effort cleanup */ }
+        try { (SessionsNamespaceService as any).wsAudioDropCounter?.inc?.({ namespace: this.getNamespaceName(), reason: 'BACKPRESSURE', school: (socket.data as any)?.schoolId || 'unknown' }); } catch { /* intentionally ignored: best effort cleanup */ }
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'WINDOW_OVERFLOW', windowBytes: windowInfo.bytes, windowChunks: windowInfo.chunks, traceId });
         this.recordDropAndMaybeHint(socket, data.groupId);
         return;
@@ -1357,20 +1358,20 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           (socket.data as any).schoolId
         );
       } catch (e) {
-        console.error('STT pipeline error:', e);
+        logger.error('STT pipeline error:', e);
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'STT_FAILED', traceId });
         return;
       }
 
       // Structured accept log
-      console.log(JSON.stringify({ event: 'audio_chunk_accepted', groupId: data.groupId, approx_chunk_bytes: approxBytes, window_seconds: windowInfo.windowSeconds }));
+      logger.debug(JSON.stringify({ event: 'audio_chunk_accepted', groupId: data.groupId, approx_chunk_bytes: approxBytes, window_seconds: windowInfo.windowSeconds }));
 
       if (result && result.text && String(result.text).trim().length > 0) {
         // Merge overlapping content across windows to avoid repeated clauses
         const mergedText = this.mergeOverlappingTranscript(data.groupId, result.text);
         if (!mergedText || mergedText.trim().length === 0) {
           // Entirely overlapped content; skip emission and count drop
-          try { SessionsNamespaceService.sttEmptyTranscriptsDroppedTotal.inc({ path: 'ws' }); } catch {}
+          try { SessionsNamespaceService.sttEmptyTranscriptsDroppedTotal.inc({ path: 'ws' }); } catch { /* intentionally ignored: best effort cleanup */ }
           return;
         }
         // Skip if identical to the last emitted text for this group (case-insensitive)
@@ -1445,37 +1446,37 @@ export class SessionsNamespaceService extends NamespaceBaseService {
                 created_at: new Date(),
               });
             } catch (e) {
-              console.warn('⚠️ DB persist failed:', e instanceof Error ? e.message : String(e));
+              logger.warn('⚠️ DB persist failed:', e instanceof Error ? e.message : String(e));
               this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'DB_PERSIST_FAILED', traceId });
             }
           }
         } catch (e) {
-          console.warn('⚠️ Failed to persist transcription (non-blocking):', e instanceof Error ? e.message : String(e));
+          logger.warn('⚠️ Failed to persist transcription (non-blocking):', e instanceof Error ? e.message : String(e));
         }
 
         // Buffer for AI and trigger heuristics
         try {
           // Suppress AI triggers if session is ending
           let isEnding = false;
-          try { isEnding = !!(await redisService.get(`ws:session:ending:${sessionId}`)); } catch {}
+          try { isEnding = !!(await redisService.get(`ws:session:ending:${sessionId}`)); } catch { /* intentionally ignored: best effort cleanup */ }
           if (!isEnding) {
             const { aiAnalysisBufferService } = await import('../ai-analysis-buffer.service');
             await aiAnalysisBufferService.bufferTranscription(data.groupId, sessionId, result.text);
             const { aiAnalysisTriggerService } = await import('../ai-analysis-trigger.service');
             // Resolve teacherId for this session (WS path), fallback to socket userId if unavailable
             let teacherId: string | null = null;
-            try { teacherId = await getTeacherIdForSessionCached(sessionId); } catch {}
+            try { teacherId = await getTeacherIdForSessionCached(sessionId); } catch { /* intentionally ignored: best effort cleanup */ }
             await aiAnalysisTriggerService.checkAndTriggerAIAnalysis(
               data.groupId,
               sessionId,
               (teacherId || (socket.data as any).userId)
             );
           } else if (process.env.API_DEBUG === '1') {
-            console.log(JSON.stringify({ event: 'ai_suppressed_ending', sessionId }));
-            try { SessionsNamespaceService.aiTriggersSuppressedTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
+            logger.debug(JSON.stringify({ event: 'ai_suppressed_ending', sessionId }));
+            try { SessionsNamespaceService.aiTriggersSuppressedTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch { /* intentionally ignored: best effort cleanup */ }
           }
         } catch (e) {
-          console.warn('⚠️ AI buffer/trigger failed (non-blocking):', e instanceof Error ? e.message : String(e));
+          logger.warn('⚠️ AI buffer/trigger failed (non-blocking):', e instanceof Error ? e.message : String(e));
         }
 
         // Observability: record TTF for first transcript since activation
@@ -1489,24 +1490,24 @@ export class SessionsNamespaceService extends NamespaceBaseService {
               SessionsNamespaceService.sttTTFHistogram.observe({ school: schoolId }, Date.now() - activatedAt);
             }
           }
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
 
-        console.log(`✅ STT window submitted for group ${data.groupId}: "${(result.text || '').substring(0, 50)}..."`);
+        logger.debug(`✅ STT window submitted for group ${data.groupId}: "${(result.text || '').substring(0, 50)}..."`);
       } else if (result) {
         // Gate downstream when transcript text is empty (breaker open or STT off)
         if (process.env.API_DEBUG === '1') {
-          console.log(JSON.stringify({ event: 'stt_suppressed_empty_text', groupId: data.groupId }));
+          logger.debug(JSON.stringify({ event: 'stt_suppressed_empty_text', groupId: data.groupId }));
         }
       }
     } catch (error) {
-      console.error('Audio chunk processing error:', error);
+      logger.error('Audio chunk processing error:', error);
       // Emit namespaced, recoverable audio error instead of generic socket 'error'
       try {
         this.emitToRoom(`group:${data.groupId}`, 'audio:error', {
           groupId: data.groupId,
           error: 'AUDIO_PROCESSING_FAILED',
         });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     }
   }
 
@@ -1519,7 +1520,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     const canHint = prev.count >= this.hintThreshold && (now - prev.lastHintAt) >= this.hintCooldownMs;
     if (canHint) {
       this.emitToRoom(`group:${groupId}`, 'audio:error', { groupId, error: 'BACKPRESSURE_HINT', threshold: this.hintThreshold });
-      try { SessionsNamespaceService.backpressureHintsTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch {}
+      try { SessionsNamespaceService.backpressureHintsTotal.inc({ school: (socket.data as any)?.schoolId || 'unknown' }); } catch { /* intentionally ignored: best effort cleanup */ }
       prev.lastHintAt = now;
       prev.count = 0; // reset after hint
     }
@@ -1578,7 +1579,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     } catch (e) {
       // On DB errors, fail closed to avoid unauthorized streaming
       if (process.env.API_DEBUG === '1') {
-        console.warn('verifyGroupAudioAuthorization error:', e instanceof Error ? e.message : String(e));
+        logger.warn('verifyGroupAudioAuthorization error:', e instanceof Error ? e.message : String(e));
       }
       return { authorized: false, reason: 'AUTHORIZATION_CHECK_FAILED' };
     }
@@ -1614,20 +1615,20 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Stop server-driven flush scheduler for this group
       try {
         this.stopGroupFlushScheduler(data.groupId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       // Reset transcript merge state when stream ends
       try {
         this.lastTranscriptTailTokens.delete(data.groupId);
         this.lastTranscriptText.delete(data.groupId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
 
       // Also reset audio processor buffers and cached WebM header for this group
       try {
         const { inMemoryAudioProcessor } = await import('../audio/InMemoryAudioProcessor');
         inMemoryAudioProcessor.resetGroupState(data.groupId);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     } catch (error) {
-      console.error('Audio stream end error:', error);
+      logger.error('Audio stream end error:', error);
       socket.emit('error', { 
         code: 'AUDIO_END_FAILED', 
         message: 'Failed to end audio stream' 
@@ -1675,9 +1676,9 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     const mergedText = this.mergeOverlappingTranscript(groupId, text);
     if (!mergedText || mergedText.trim().length === 0) {
       try {
-        if (process.env.API_DEBUG === '1') console.log('🧹 Dropping empty transcript (REST path)');
+        if (process.env.API_DEBUG === '1') logger.debug('🧹 Dropping empty transcript (REST path)');
         SessionsNamespaceService.sttEmptyTranscriptsDroppedTotal.inc({ path: 'rest' });
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
       return;
     }
     this.emitToRoom(`session:${sessionId}`, 'transcription:group:new', {
@@ -1698,7 +1699,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       try {
         this.lastTranscriptTailTokens.delete(gid);
         this.lastTranscriptText.delete(gid);
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     }
   }
 
@@ -1747,7 +1748,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     try {
       const v = await redisService.get(`ws:stateVersion:${sessionId}`);
       stateVersion = v ? parseInt(v, 10) : 0;
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
 
     return {
       sessionId,
@@ -1780,13 +1781,13 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           const payload = { sessionId, groupId, cadenceMs: this.flushCadenceMs };
           // Emit to group room; students listen and perform stop→upload→start
           this.emitToRoom(`group:${groupId}`, 'audio:window:flush', payload);
-          try { SessionsNamespaceService.audioWindowFlushSentTotal.inc({ session: sessionId, group: groupId }); } catch {}
+          try { SessionsNamespaceService.audioWindowFlushSentTotal.inc({ session: sessionId, group: groupId }); } catch { /* intentionally ignored: best effort cleanup */ }
           if (process.env.API_DEBUG === '1') {
-            console.log(JSON.stringify({ event: 'audio_window_flush_emit', ...payload }));
+            logger.debug(JSON.stringify({ event: 'audio_window_flush_emit', ...payload }));
           }
         } catch (e) {
           if (process.env.API_DEBUG === '1') {
-            console.warn('audio_window_flush_emit_failed', e instanceof Error ? e.message : String(e));
+            logger.warn('audio_window_flush_emit_failed', e instanceof Error ? e.message : String(e));
           }
         } finally {
           // Reschedule if still active
@@ -1805,11 +1806,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
   private stopGroupFlushScheduler(groupId: string) {
     const t = this.groupFlushTimers.get(groupId);
     if (t) {
-      try { clearTimeout(t); } catch {}
+      try { clearTimeout(t); } catch { /* intentionally ignored: best effort cleanup */ }
       this.groupFlushTimers.delete(groupId);
       this.groupToSessionId.delete(groupId);
       if (process.env.API_DEBUG === '1') {
-        try { console.log(JSON.stringify({ event: 'audio_window_flush_stopped', groupId })); } catch {}
+        try { logger.debug(JSON.stringify({ event: 'audio_window_flush_stopped', groupId })); } catch { /* intentionally ignored: best effort cleanup */ }
       }
     }
   }
@@ -1822,7 +1823,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           this.stopGroupFlushScheduler(groupId);
         }
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   // Ingress tracking helpers
@@ -1852,11 +1853,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         SessionsNamespaceService.audioIngressStallsTotal.inc({ session: sessionId, group: groupId });
         this.lastStallNotifiedAt.set(groupId, now);
         if (process.env.API_DEBUG === '1') {
-          console.warn(JSON.stringify({ event: 'audio_ingress_stalled', ...payload }));
+          logger.warn(JSON.stringify({ event: 'audio_ingress_stalled', ...payload }));
         }
       } catch (e) {
         if (process.env.API_DEBUG === '1') {
-          console.warn('audio_ingress_stalled_emit_failed', e instanceof Error ? e.message : String(e));
+          logger.warn('audio_ingress_stalled_emit_failed', e instanceof Error ? e.message : String(e));
         }
       }
     }

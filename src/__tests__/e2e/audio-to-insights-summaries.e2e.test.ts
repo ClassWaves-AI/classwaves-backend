@@ -65,9 +65,9 @@ describe('E2E: Audio → Insights → Summaries', () => {
   }, 30000);
 
   afterAll(async () => {
-    try { await redisService.disconnect(); } catch {}
-    if (sttWorker) { try { await sttWorker.close(); } catch {} }
-    if (server) { try { server.close(); } catch {} }
+    try { await redisService.disconnect(); } catch { /* intentionally ignored: best effort cleanup */ }
+    if (sttWorker) { try { await sttWorker.close(); } catch { /* intentionally ignored: best effort cleanup */ } }
+    if (server) { try { server.close(); } catch { /* intentionally ignored: best effort cleanup */ } }
   });
 
   it('creates session, processes audio, generates tier1/tier2 + summaries', async () => {

@@ -5,6 +5,7 @@ import * as client from 'prom-client';
 import { databricksService } from './databricks.service';
 import type { SpeechToTextPort } from './stt.port';
 import { redisService } from './redis.service';
+import { logger } from '../utils/logger';
 
 export interface WhisperOptions { language?: string; durationSeconds?: number }
 export interface WhisperResult { text: string; confidence?: number; language?: string; duration?: number }
@@ -182,7 +183,7 @@ export class OpenAIWhisperService implements SpeechToTextPort {
                 user_id: null,
                 created_at: new Date(),
               } as any);
-            } catch {}
+            } catch { /* intentionally ignored: best effort cleanup */ }
           }
           throw err;
         }
@@ -307,7 +308,7 @@ export class OpenAIWhisperService implements SpeechToTextPort {
             percent: toAlert,
             created_at: new Date(),
           } as any);
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
       }
     }
   }
@@ -347,7 +348,7 @@ export class OpenAIWhisperService implements SpeechToTextPort {
         return { minutes: usage?.minutes || 0 };
       }
     } catch (error) {
-      console.warn('Error fetching budget usage:', error);
+      logger.warn('Error fetching budget usage:', error);
       return { minutes: 0 };
     }
   }

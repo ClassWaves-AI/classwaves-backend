@@ -14,7 +14,7 @@ class GuidanceEventsService {
         payloadJson: JSON.stringify(params.payload),
         timestamp: params.timestamp ?? new Date(),
       });
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   }
 }
 

@@ -52,7 +52,7 @@ class GuidanceInsightsService {
           const targeted = t2.recommendations.filter((r: any) => Array.isArray(r.targetGroups) && r.targetGroups.includes(groupId));
           if (targeted.length > 0) tier2Group = { recommendations: targeted };
         }
-      } catch {}
+      } catch { /* intentionally ignored: best effort cleanup */ }
     }
 
     return {

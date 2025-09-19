@@ -1,28 +1,18 @@
 import { Request, Response } from 'express';
 import { OAuth2Client } from 'google-auth-library';
-import { 
-  generateAccessToken, 
-  generateRefreshToken, 
-  generateSessionId, 
-  getExpiresInSeconds,
-  verifyToken
-} from '../utils/jwt.utils';
+import { generateSessionId } from '../utils/jwt.utils';
 import { validateSchoolDomain } from '../utils/validation.schemas';
-import { GoogleUser, Teacher, School } from '../types/auth.types';
+import { Teacher, School } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
-import { redisService } from '../services/redis.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
 import { SecureSessionService } from '../services/secure-session.service';
 import { 
   verifyGoogleTokenWithTimeout,
-  executeParallelAuthOperations,
   createAuthErrorResponse,
-  authCircuitBreaker,
   storeSessionOptimized
 } from '../utils/auth-optimization.utils';
 // Removed resilientAuthService (GSI credential flow)
 import { authHealthMonitor } from '../services/auth-health-monitor.service';
-import { RetryService } from '../services/retry.service';
 import { fail } from '../utils/api-response';
 import { ErrorCodes } from '@classwaves/shared';
 import { logger } from '../utils/logger';
@@ -40,20 +30,6 @@ function getGoogleClient(): OAuth2Client {
 }
 
 
-async function storeSession(sessionId: string, teacher: Teacher, school: School, req: Request): Promise<void> {
-  const expiresIn = getExpiresInSeconds();
-  await redisService.storeSession(sessionId, {
-    teacherId: teacher.id,
-    teacher,
-    school,
-    sessionId,
-    createdAt: new Date(),
-    expiresAt: new Date(Date.now() + expiresIn * 1000),
-    ipAddress: req.ip,
-    userAgent: req.headers['user-agent']
-  }, expiresIn);
-}
-
 /**
  * OPTIMIZED Google Auth Handler with Performance Enhancements
  * 
@@ -68,15 +44,15 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
   const startTime = performance.now();
   const requestId = `auth_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   
-  console.log(`🚀 RESILIENT AUTH START - Google Auth Handler [${requestId}]`);
+  logger.debug(`🚀 RESILIENT AUTH START - Google Auth Handler [${requestId}]`);
   
   // Record auth attempt start for monitoring
   authHealthMonitor.recordAuthStart(requestId);
   
   try {
-    const { code, codeVerifier, state } = req.body;
+    const { code, codeVerifier } = req.body;
 
-    console.log(`🛡️ Using authorization code authentication [${requestId}]`);
+    logger.debug(`🛡️ Using authorization code authentication [${requestId}]`);
 
     let authResult: {
       teacher: Teacher;
@@ -88,13 +64,13 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
 
     if (code) {
       // Handle authorization code flow
-      console.log(`🔑 Processing authorization code flow [${requestId}]`);
-      console.log(`PKCE_ENABLED: true [${requestId}]`, { hasCodeVerifier: Boolean(codeVerifier) });
+      logger.debug(`🔑 Processing authorization code flow [${requestId}]`);
+      logger.debug(`PKCE_ENABLED: true [${requestId}]`, { hasCodeVerifier: Boolean(codeVerifier) });
       const googleClient = getGoogleClient();
       
       try {
         if (!codeVerifier) {
-          console.warn(`PKCE_VERIFIER_MISSING_OR_INVALID [${requestId}]`);
+          logger.warn(`PKCE_VERIFIER_MISSING_OR_INVALID [${requestId}]`);
           const errorResponse = createAuthErrorResponse(
             'PKCE_VERIFIER_MISSING_OR_INVALID',
             'Missing or invalid PKCE verifier',
@@ -120,7 +96,11 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
         
         // Use batch auth operations for code flow
         const batchResult = await databricksService.batchAuthOperations(googleUser, domain);
-        
+
+        if (!batchResult || !batchResult.teacher || !batchResult.school) {
+          throw new Error('Batch auth operation did not return teacher/school data');
+        }
+
         authResult = {
           teacher: batchResult.teacher,
           school: batchResult.school,
@@ -129,8 +109,8 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
           degradedMode: false
         };
       } catch (error) {
-        console.error(`🚨 Authorization code authentication failed [${requestId}]:`, error);
-        console.error(`PKCE_EXCHANGE_FAILED [${requestId}]`);
+        logger.error(`🚨 Authorization code authentication failed [${requestId}]:`, error);
+        logger.error(`PKCE_EXCHANGE_FAILED [${requestId}]`);
         const errorResponse = createAuthErrorResponse(
           'AUTHORIZATION_CODE_FAILED',
           'Failed to process authorization code',
@@ -142,8 +122,8 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
     }
     
     const authTime = performance.now() - startTime;
-    console.log(`⏱️ Authentication took ${authTime.toFixed(2)}ms [${requestId}]`);
-    console.log(`PKCE_EXCHANGE_OK: true [${requestId}]`);
+    logger.debug(`⏱️ Authentication took ${authTime.toFixed(2)}ms [${requestId}]`);
+    logger.debug(`PKCE_EXCHANGE_OK: true [${requestId}]`);
     
     // Validate authentication result
     if (!authResult || !authResult.school) {
@@ -194,7 +174,7 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
     
     // If degraded mode or tokens not available, generate secure tokens
     if (authResult.degradedMode || !tokens) {
-      console.log(`🔄 Generating tokens due to degraded mode or missing tokens [${requestId}]`);
+      logger.debug(`🔄 Generating tokens due to degraded mode or missing tokens [${requestId}]`);
       secureTokens = await SecureJWTService.generateSecureTokens(
         authResult.teacher, 
         authResult.school, 
@@ -211,14 +191,14 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
     try {
       await storeSessionOptimized(sessionId, authResult.teacher, authResult.school, req);
     } catch (storeErr) {
-      console.error(`❌ Failed to store secure session [${requestId}]:`, storeErr);
+      logger.error(`❌ Failed to store secure session [${requestId}]:`, storeErr);
     }
     
-    console.log(`⏱️ Token processing took ${(performance.now() - tokenGenerationStart).toFixed(2)}ms [${requestId}]`);
+    logger.debug(`⏱️ Token processing took ${(performance.now() - tokenGenerationStart).toFixed(2)}ms [${requestId}]`);
     
     // Return success response FIRST (don't wait for audit log)
     const totalAuthTime = performance.now() - startTime;
-    console.log(`🎉 RESILIENT AUTH COMPLETE - Auth time: ${totalAuthTime.toFixed(2)}ms [${requestId}]`);
+    logger.debug(`🎉 RESILIENT AUTH COMPLETE - Auth time: ${totalAuthTime.toFixed(2)}ms [${requestId}]`);
     
     // Record successful authentication
     authHealthMonitor.recordAuthAttempt(true, totalAuthTime, requestId);
@@ -285,7 +265,7 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
     
   } catch (error) {
     const authTime = performance.now() - startTime;
-    console.error(`Resilient Google auth error [${requestId}]:`, error);
+    logger.error(`Resilient Google auth error [${requestId}]:`, error);
     
     // Record failed authentication
     authHealthMonitor.recordAuthAttempt(false, authTime, requestId);
@@ -430,7 +410,7 @@ export async function rotateTokens(req: Request, res: Response): Promise<Respons
  */
 export async function secureLogout(req: Request, res: Response): Promise<Response> {
   const logoutStart = performance.now();
-  console.log('🚪 SECURE LOGOUT START');
+  logger.debug('🚪 SECURE LOGOUT START');
   
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -448,7 +428,7 @@ export async function secureLogout(req: Request, res: Response): Promise<Respons
           await SecureSessionService.invalidateSession(sessionId, 'User logout');
         }
         
-        console.log(`🔒 All tokens and sessions revoked for user: ${payload.userId}`);
+        logger.debug(`🔒 All tokens and sessions revoked for user: ${payload.userId}`);
       }
     } else if (sessionId) {
       // Fallback: invalidate session by ID
@@ -464,7 +444,7 @@ export async function secureLogout(req: Request, res: Response): Promise<Respons
     });
     
     const logoutTime = performance.now() - logoutStart;
-    console.log(`🎉 SECURE LOGOUT COMPLETE - Time: ${logoutTime.toFixed(2)}ms`);
+    logger.debug(`🎉 SECURE LOGOUT COMPLETE - Time: ${logoutTime.toFixed(2)}ms`);
     
     return res.json({
       success: true,
@@ -476,7 +456,7 @@ export async function secureLogout(req: Request, res: Response): Promise<Respons
     });
     
   } catch (error) {
-    console.error('❌ Secure logout failed:', error);
+    logger.error('❌ Secure logout failed:', error);
     
     // Still clear the cookie even if there's an error
     res.clearCookie('session_id', {

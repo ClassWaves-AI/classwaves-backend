@@ -9,9 +9,10 @@ import { databricksService } from '../services/databricks.service';
 import { redisService } from '../services/redis.service';
 import * as promClient from 'prom-client';
 import { closeNamespacedWebSocket } from '../services/websocket/namespaced-websocket.service';
+import { logger } from '../utils/logger';
 
 export default async (): Promise<void> => {
-  console.log('🧹 Starting global test teardown...');
+  logger.debug('🧹 Starting global test teardown...');
   
   const cleanupTasks: Promise<void>[] = [];
   
@@ -20,9 +21,9 @@ export default async (): Promise<void> => {
     (async () => {
       try {
         await databricksService.disconnect();
-        console.log('✅ Databricks service disconnected globally');
+        logger.debug('✅ Databricks service disconnected globally');
       } catch (error) {
-        console.warn('⚠️ Error in global Databricks cleanup:', error);
+        logger.warn('⚠️ Error in global Databricks cleanup:', error);
       }
     })()
   );
@@ -33,10 +34,10 @@ export default async (): Promise<void> => {
       try {
         if (redisService.isConnected()) {
           await redisService.disconnect();
-          console.log('✅ Redis service disconnected globally');
+          logger.debug('✅ Redis service disconnected globally');
         }
       } catch (error) {
-        console.warn('⚠️ Error in global Redis cleanup:', error);
+        logger.warn('⚠️ Error in global Redis cleanup:', error);
       }
     })()
   );
@@ -45,13 +46,13 @@ export default async (): Promise<void> => {
   await Promise.allSettled(cleanupTasks);
 
   // Close Socket.IO server if initialized
-  try { await closeNamespacedWebSocket(); } catch {}
+  try { await closeNamespacedWebSocket(); } catch (_error) { /* best effort: ignore failure */ }
 
   // Clear Prometheus registry to avoid open handles between workers
-  try { promClient.register.clear(); } catch {}
+  try { promClient.register.clear(); } catch { /* intentionally ignored: best effort cleanup */ }
   
   // Give a brief moment for all async operations to complete
   await new Promise(resolve => setTimeout(resolve, 200));
   
-  console.log('🧹 Global test teardown completed');
+  logger.debug('🧹 Global test teardown completed');
 };

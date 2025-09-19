@@ -117,9 +117,9 @@ static createDeviceFingerprint(req: Request): string {
     logger.debug('Starting SecureJWTService.generateSecureTokens');
     
     try {
-      console.log('🔧 DEBUG: Creating device fingerprint');
+      logger.debug('Creating device fingerprint');
       const deviceFingerprint = this.createDeviceFingerprint(req);
-      console.log('🔧 DEBUG: Device fingerprint created:', deviceFingerprint);
+      logger.debug('Device fingerprint created', { deviceFingerprint });
       
       const now = Math.floor(Date.now() / 1000);
       logger.debug('Current timestamp set for JWT');
@@ -318,7 +318,7 @@ static createDeviceFingerprint(req: Request): string {
       // Verify the refresh token
       const payload = await this.verifyTokenSecurity(refreshToken, req, 'refresh');
       if (!payload) {
-        console.warn(`🚨 Invalid refresh token used for rotation`);
+        logger.warn('Invalid refresh token used for rotation');
         return null;
       }
       
@@ -329,7 +329,7 @@ static createDeviceFingerprint(req: Request): string {
       ]);
       
       if (!teacher || !school) {
-        console.warn(`🚨 Teacher or school not found for token rotation: ${payload.userId}`);
+        logger.warn('Teacher or school not found for token rotation', { userId: payload.userId });
         return null;
       }
       
@@ -379,7 +379,7 @@ static createDeviceFingerprint(req: Request): string {
     // Store in blacklist with TTL equal to max token lifetime
     await redisService.set(blacklistKey, JSON.stringify(blacklistData), this.REFRESH_TOKEN_TTL);
     
-    console.log(`🚫 Token revoked: ${jti} - Reason: ${reason}`);
+    logger.info('Token revoked', { jti, reason });
   }
   
   // SECURITY 10: Check if token is blacklisted
@@ -421,9 +421,9 @@ static createDeviceFingerprint(req: Request): string {
       // Invalidate all sessions
       await redisService.invalidateAllTeacherSessions(userId);
       
-      console.log(`🚫 All tokens revoked for user ${userId} - Reason: ${reason}`);
+      logger.info('All tokens revoked for user', { userId, reason });
     } catch (error) {
-      console.error(`❌ Failed to revoke all tokens for user ${userId}:`, error);
+      logger.error('Failed to revoke all tokens for user', { userId, error: error instanceof Error ? error.message : String(error) });
       throw error;
     }
   }
@@ -489,7 +489,7 @@ static createDeviceFingerprint(req: Request): string {
         [teacherId]
       );
     } catch (error) {
-      console.error(`❌ Failed to get teacher ${teacherId}:`, error);
+      logger.error('Failed to get teacher for metrics', { teacherId, error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   }
@@ -502,7 +502,7 @@ static createDeviceFingerprint(req: Request): string {
         [schoolId]
       );
     } catch (error) {
-      console.error(`❌ Failed to get school ${schoolId}:`, error);
+      logger.error('Failed to get school for metrics', { schoolId, error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   }
@@ -511,7 +511,7 @@ static createDeviceFingerprint(req: Request): string {
   static startBlacklistCleanup(): void {
     setInterval(async () => {
       try {
-        console.log('🧹 Starting blacklist cleanup...');
+        logger.debug('Starting blacklist cleanup');
         
         // Get all blacklist keys
         const pattern = `${this.BLACKLIST_PREFIX}*`;
@@ -535,10 +535,10 @@ static createDeviceFingerprint(req: Request): string {
         }
         
         if (cleanupCount > 0) {
-          console.log(`🧹 Cleaned up ${cleanupCount} expired blacklist entries`);
+          logger.debug('Cleaned expired blacklist entries', { cleanupCount });
         }
       } catch (error) {
-        console.error('❌ Blacklist cleanup failed:', error);
+        logger.error('Blacklist cleanup failed', { error: error instanceof Error ? error.message : String(error) });
       }
     }, this.BLACKLIST_CLEANUP_INTERVAL);
   }
@@ -573,7 +573,7 @@ static createDeviceFingerprint(req: Request): string {
         activeTokens: tokenKeys.length
       };
     } catch (error) {
-      console.error('❌ Failed to get security metrics:', error);
+      logger.error('Failed to get security metrics', { error: error instanceof Error ? error.message : String(error) });
       return { blacklistedTokens: 0, suspiciousActivities: 0, activeTokens: 0 };
     }
   }

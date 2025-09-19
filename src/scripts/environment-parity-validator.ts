@@ -35,6 +35,7 @@ import Redis from 'ioredis';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -93,20 +94,20 @@ class EnvironmentParityValidator {
    */
   async validateEnvironmentParity(): Promise<ParityValidationReport> {
     this.startTime = Date.now();
-    console.log('🔍 ClassWaves Environment Parity Validator Starting...\n');
+    logger.debug('🔍 ClassWaves Environment Parity Validator Starting...\n');
 
     try {
       // Gather configurations for both environments
-      console.log('📊 Gathering Production Environment Configuration...');
+      logger.debug('📊 Gathering Production Environment Configuration...');
       const prodEnv = await this.gatherEnvironmentConfig('production');
-      console.log(`✅ Production config collected (${prodEnv.schemas.length} schemas)\n`);
+      logger.debug(`✅ Production config collected (${prodEnv.schemas.length} schemas)\n`);
 
-      console.log('🧪 Gathering Test Environment Configuration...');
+      logger.debug('🧪 Gathering Test Environment Configuration...');
       const testEnv = await this.gatherEnvironmentConfig('test');
-      console.log(`✅ Test config collected (${testEnv.schemas.length} schemas)\n`);
+      logger.debug(`✅ Test config collected (${testEnv.schemas.length} schemas)\n`);
 
       // Perform comparisons
-      console.log('⚖️ Performing Environment Comparisons...\n');
+      logger.debug('⚖️ Performing Environment Comparisons...\n');
       const comparisons = this.performComparisons(prodEnv, testEnv);
 
       // Generate report
@@ -132,7 +133,7 @@ class EnvironmentParityValidator {
 
       return report;
     } catch (error) {
-      console.error('❌ Environment parity validation failed:', error);
+      logger.error('❌ Environment parity validation failed:', error);
       throw error;
     }
   }
@@ -165,24 +166,24 @@ class EnvironmentParityValidator {
       const hasToken = process.env.DATABRICKS_TOKEN && process.env.DATABRICKS_TOKEN.length > 0;
       
       if (!shouldEnableDatabricks) {
-        console.log(`📝 ${envType} environment: Databricks intentionally disabled (system health endpoint confirms databricks: disabled)`);
+        logger.debug(`📝 ${envType} environment: Databricks intentionally disabled (system health endpoint confirms databricks: disabled)`);
         config.database.accessible = 'disabled' as any; // Mark as intentionally disabled
         config.schemas = [];
       } else if (!hasToken) {
-        console.log(`⚠️ ${envType} environment: Databricks should be enabled but token not configured`);
+        logger.debug(`⚠️ ${envType} environment: Databricks should be enabled but token not configured`);
         config.database.accessible = false;
         config.schemas = [];
       } else {
-        console.log(`🔍 ${envType} environment: Testing Databricks connection (token length: ${process.env.DATABRICKS_TOKEN?.length})`);
+        logger.debug(`🔍 ${envType} environment: Testing Databricks connection (token length: ${process.env.DATABRICKS_TOKEN?.length})`);
         try {
           await this.databricksService.connect();
           const testQuery = 'SHOW SCHEMAS IN classwaves';
           const schemas = await this.databricksService.query(testQuery);
           config.database.accessible = true;
           config.schemas = schemas.map((row: any) => row.schemaName || row.namespace_name);
-          console.log(`✅ ${envType} environment: Databricks connected successfully (${config.schemas.length} schemas)`);
+          logger.debug(`✅ ${envType} environment: Databricks connected successfully (${config.schemas.length} schemas)`);
         } catch (dbError) {
-          console.warn(`⚠️ ${envType} environment: Databricks should be enabled but connection failed:`, dbError instanceof Error ? dbError.message : 'Unknown error');
+          logger.warn(`⚠️ ${envType} environment: Databricks should be enabled but connection failed:`, dbError instanceof Error ? dbError.message : 'Unknown error');
           config.database.accessible = false;
           config.schemas = [];
         }
@@ -195,7 +196,7 @@ class EnvironmentParityValidator {
           const tables = await this.databricksService.query(tablesQuery);
           config.tables[schema] = tables.map((row: any) => row.tableName);
         } catch (error) {
-          console.warn(`⚠️ Could not list tables in schema ${schema}`);
+          logger.warn(`⚠️ Could not list tables in schema ${schema}`);
           config.tables[schema] = [];
         }
       }
@@ -204,7 +205,7 @@ class EnvironmentParityValidator {
       await this.testRedisConnection(config);
 
     } catch (error) {
-      console.warn(`⚠️ Could not fully access ${envType} environment: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      logger.warn(`⚠️ Could not fully access ${envType} environment: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 
     return config;
@@ -225,7 +226,7 @@ class EnvironmentParityValidator {
         systemHealthy: health.status === 'healthy'
       };
     } catch (error) {
-      console.warn('⚠️ Could not fetch system health status, using environment variable fallback');
+      logger.warn('⚠️ Could not fetch system health status, using environment variable fallback');
       // Fallback to environment variable logic
       const shouldEnable = process.env.NODE_ENV !== 'test' && process.env.DATABRICKS_ENABLED !== 'false';
       return {
@@ -251,7 +252,7 @@ class EnvironmentParityValidator {
    * Test Redis connection
    */
   private async testRedisConnection(config: EnvironmentConfig): Promise<void> {
-    console.log(`🔍 ${config.name} environment: Testing Redis connection (${config.redis.url})`);
+    logger.debug(`🔍 ${config.name} environment: Testing Redis connection (${config.redis.url})`);
     
     let redisClient: Redis | null = null;
     try {
@@ -273,14 +274,14 @@ class EnvironmentParityValidator {
           config.redis.keyspaceCount = parseInt(keyspaceMatch[1]);
         }
         
-        console.log(`✅ Redis connection successful for ${config.name} (${config.redis.keyspaceCount || 0} keys)`);
+        logger.debug(`✅ Redis connection successful for ${config.name} (${config.redis.keyspaceCount || 0} keys)`);
       } else {
         config.redis.accessible = false;
-        console.warn(`⚠️ Redis ping failed for ${config.name}: ${pingResult}`);
+        logger.warn(`⚠️ Redis ping failed for ${config.name}: ${pingResult}`);
       }
     } catch (error) {
       config.redis.accessible = false;
-      console.warn(`⚠️ Redis connection failed for ${config.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      logger.warn(`⚠️ Redis connection failed for ${config.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       if (redisClient) {
         try {
@@ -688,7 +689,7 @@ class EnvironmentParityValidator {
     }
     
     fs.writeFileSync(filepath, JSON.stringify(report, null, 2));
-    console.log(`📄 Detailed report saved: ${filepath}\n`);
+    logger.debug(`📄 Detailed report saved: ${filepath}\n`);
   }
 
   /**
@@ -697,59 +698,59 @@ class EnvironmentParityValidator {
   private displayResults(report: ParityValidationReport): void {
     const { overallStatus, summary, comparisons, nextSteps } = report;
     
-    console.log('='.repeat(70));
-    console.log('🎯 ENVIRONMENT PARITY VALIDATION REPORT');
-    console.log('='.repeat(70));
-    console.log(`⏱️  Execution Time: ${report.executionTime}ms`);
-    console.log(`📅 Timestamp: ${report.timestamp}`);
-    console.log(`🎯 Overall Status: ${overallStatus === 'PASS' ? '✅ PASS' : '❌ FAIL'}\n`);
+    logger.debug('='.repeat(70));
+    logger.debug('🎯 ENVIRONMENT PARITY VALIDATION REPORT');
+    logger.debug('='.repeat(70));
+    logger.debug(`⏱️  Execution Time: ${report.executionTime}ms`);
+    logger.debug(`📅 Timestamp: ${report.timestamp}`);
+    logger.debug(`🎯 Overall Status: ${overallStatus === 'PASS' ? '✅ PASS' : '❌ FAIL'}\n`);
     
-    console.log('📊 SUMMARY:');
-    console.log(`   Total Components: ${summary.totalComponents}`);
-    console.log(`   ✅ Matching: ${summary.matching}`);
-    console.log(`   ⚠️  Drifted: ${summary.drifted}`);
-    console.log(`   ❌ Missing: ${summary.missing}`);
-    console.log(`   🚨 Errors: ${summary.errors}\n`);
+    logger.debug('📊 SUMMARY:');
+    logger.debug(`   Total Components: ${summary.totalComponents}`);
+    logger.debug(`   ✅ Matching: ${summary.matching}`);
+    logger.debug(`   ⚠️  Drifted: ${summary.drifted}`);
+    logger.debug(`   ❌ Missing: ${summary.missing}`);
+    logger.debug(`   🚨 Errors: ${summary.errors}\n`);
     
-    console.log('🔍 DETAILED RESULTS:');
+    logger.debug('🔍 DETAILED RESULTS:');
     for (const comparison of comparisons) {
       const statusIcon = comparison.status === 'MATCH' ? '✅' : 
                         comparison.status === 'DRIFT' ? '⚠️' : 
                         comparison.status === 'ERROR' ? '🚨' : '❌';
-      console.log(`   ${statusIcon} ${comparison.component}: ${comparison.details}`);
+      logger.debug(`   ${statusIcon} ${comparison.component}: ${comparison.details}`);
       
       if (comparison.driftItems && comparison.driftItems.length > 0) {
         for (const item of comparison.driftItems) {
-          console.log(`      • ${item}`);
+          logger.debug(`      • ${item}`);
         }
       }
     }
     
     if (summary.errors > 0) {
-      console.log('\n🚨 CRITICAL ISSUES:');
+      logger.debug('\n🚨 CRITICAL ISSUES:');
       for (const comparison of comparisons) {
         if (comparison.status === 'ERROR') {
-          console.log(`   ❌ ${comparison.component}: ${comparison.details}`);
+          logger.debug(`   ❌ ${comparison.component}: ${comparison.details}`);
         }
       }
     }
     
-    console.log('\n📋 NEXT STEPS:');
+    logger.debug('\n📋 NEXT STEPS:');
     for (const step of nextSteps) {
-      console.log(`   ${step}`);
+      logger.debug(`   ${step}`);
     }
     
-    console.log('\n' + '='.repeat(70));
+    logger.debug('\n' + '='.repeat(70));
     
     if (overallStatus === 'PASS') {
-      console.log('\n✅ Environment parity validation successful - integration tests unblocked');
-      console.log('🚀 Ready to execute Task 2.2b: Run integration test suite');
+      logger.debug('\n✅ Environment parity validation successful - integration tests unblocked');
+      logger.debug('🚀 Ready to execute Task 2.2b: Run integration test suite');
     } else {
-      console.log('\n❌ Environment parity validation failed - integration tests blocked');
-      console.log('🔧 Address the issues above and re-run validation');
+      logger.debug('\n❌ Environment parity validation failed - integration tests blocked');
+      logger.debug('🔧 Address the issues above and re-run validation');
     }
     
-    console.log('\n' + '='.repeat(70));
+    logger.debug('\n' + '='.repeat(70));
   }
 }
 
@@ -761,7 +762,7 @@ async function main(): Promise<void> {
     const validator = new EnvironmentParityValidator();
     await validator.validateEnvironmentParity();
   } catch (error) {
-    console.error('❌ Environment parity validation failed:', error);
+    logger.error('❌ Environment parity validation failed:', error);
     process.exit(1);
   }
 }

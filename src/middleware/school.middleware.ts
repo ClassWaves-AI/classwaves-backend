@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AuthRequest } from '../types/auth.types';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 /**
  * Enhanced school access validation middleware
@@ -97,11 +98,11 @@ export async function validateSchoolAccess(req: Request, res: Response, next: Ne
     // Add school info to request for downstream use
     authReq.targetSchool = schoolValidation;
     
-    console.log(`✅ School access validated: ${authReq.user.role} ${authReq.user.id} → school ${schoolId}`);
+    logger.debug(`✅ School access validated: ${authReq.user.role} ${authReq.user.id} → school ${schoolId}`);
     next();
 
   } catch (error) {
-    console.error('Error validating school access:', error);
+    logger.error('Error validating school access:', error);
     res.status(500).json({ 
       success: false,
       error: 'SCHOOL_VALIDATION_ERROR',
@@ -135,7 +136,7 @@ async function validateTeacherWritePermissions(
     const isAllowedPath = allowedPaths.some(pattern => pattern.test(requestPath));
     
     if (!isAllowedPath) {
-      console.log(`⚠️ Teacher ${teacherId} attempted write access to restricted path: ${method} ${requestPath}`);
+      logger.debug(`⚠️ Teacher ${teacherId} attempted write access to restricted path: ${method} ${requestPath}`);
       return false;
     }
 
@@ -143,7 +144,7 @@ async function validateTeacherWritePermissions(
     return true;
 
   } catch (error) {
-    console.error('Error validating teacher write permissions:', error);
+    logger.error('Error validating teacher write permissions:', error);
     return false;
   }
 }

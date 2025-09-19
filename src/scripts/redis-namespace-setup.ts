@@ -32,6 +32,7 @@
 import { redisService } from '../services/redis.service';
 import { InfrastructureValidationResult } from './validate-integration-infrastructure';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -58,23 +59,23 @@ export class RedisNamespaceValidator {
    */
   async validateRedisNamespaces(): Promise<InfrastructureValidationResult> {
     const startTime = performance.now();
-    console.log('   🔍 Validating Redis namespace infrastructure...');
+    logger.debug('   🔍 Validating Redis namespace infrastructure...');
 
     try {
       const errors: string[] = [];
       const warnings: string[] = [];
       
       // 1. Test Redis connection
-      console.log('   📡 Testing Redis connection...');
+      logger.debug('   📡 Testing Redis connection...');
       const connectionHealthy = await this.testRedisConnection();
       if (!connectionHealthy) {
         errors.push('Redis connection failed - service not available');
       } else {
-        console.log('   ✅ Redis connection established');
+        logger.debug('   ✅ Redis connection established');
       }
 
       // 2. Validate namespace isolation
-      console.log('   🔐 Validating namespace isolation...');
+      logger.debug('   🔐 Validating namespace isolation...');
       const isolationResult = await this.validateNamespaceIsolation();
       if (!isolationResult.success) {
         errors.push(...isolationResult.errors);
@@ -84,23 +85,23 @@ export class RedisNamespaceValidator {
       }
 
       // 3. Test pub/sub infrastructure for WebSocket testing
-      console.log('   📢 Testing pub/sub infrastructure...');
+      logger.debug('   📢 Testing pub/sub infrastructure...');
       const pubSubHealthy = await this.testPubSubInfrastructure();
       if (!pubSubHealthy) {
         warnings.push('Pub/sub infrastructure may have issues - could affect WebSocket testing');
       } else {
-        console.log('   ✅ Pub/sub infrastructure operational');
+        logger.debug('   ✅ Pub/sub infrastructure operational');
       }
 
       // 4. Validate test namespace setup
-      console.log('   🏗️ Setting up test namespaces...');
+      logger.debug('   🏗️ Setting up test namespaces...');
       const namespaceSetup = await this.setupTestNamespaces();
       if (!namespaceSetup.success) {
         errors.push(...namespaceSetup.errors);
       }
 
       // 5. Test performance and capacity
-      console.log('   ⚡ Testing Redis performance...');
+      logger.debug('   ⚡ Testing Redis performance...');
       const performanceResult = await this.testRedisPerformance();
       if (performanceResult.responseTime > 500) {
         warnings.push(`Redis response time ${performanceResult.responseTime}ms exceeds target <500ms`);
@@ -143,7 +144,7 @@ export class RedisNamespaceValidator {
       return result === 'ok';
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ❌ Redis connection test failed: ${errorMessage}`);
+      logger.debug(`   ❌ Redis connection test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -160,7 +161,7 @@ export class RedisNamespaceValidator {
       const testKeys = await this.getKeysByPattern(`${this.TEST_NAMESPACE_PREFIX}*`);
       const prodKeys = await this.getKeysByPattern(`${this.PROD_NAMESPACE_PREFIX}*`);
 
-      console.log(`   📊 Found ${testKeys.length} test keys, ${prodKeys.length} production keys`);
+      logger.debug(`   📊 Found ${testKeys.length} test keys, ${prodKeys.length} production keys`);
 
       // Check for namespace violations
       const testKeysInProdNamespace = testKeys.filter(key => 
@@ -219,7 +220,7 @@ export class RedisNamespaceValidator {
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ❌ Pub/sub infrastructure test failed: ${errorMessage}`);
+      logger.debug(`   ❌ Pub/sub infrastructure test failed: ${errorMessage}`);
       return false;
     }
   }
@@ -270,7 +271,7 @@ export class RedisNamespaceValidator {
         }), 3600); // 1 hour TTL
       }
 
-      console.log(`   ✅ Set up ${testNamespaces.length} test namespaces`);
+      logger.debug(`   ✅ Set up ${testNamespaces.length} test namespaces`);
       return { success: true, errors: [] };
 
     } catch (error) {
@@ -302,7 +303,7 @@ export class RedisNamespaceValidator {
       await redisService.getClient().del(testKey);
 
       const responseTime = performance.now() - startTime;
-      console.log(`   ⚡ Redis performance: ${Math.round(responseTime)}ms for 4 operations`);
+      logger.debug(`   ⚡ Redis performance: ${Math.round(responseTime)}ms for 4 operations`);
 
       return { responseTime };
 
@@ -322,7 +323,7 @@ export class RedisNamespaceValidator {
       return [];
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`   ⚠️ Could not retrieve keys for pattern ${pattern}: ${errorMessage}`);
+      logger.debug(`   ⚠️ Could not retrieve keys for pattern ${pattern}: ${errorMessage}`);
       return [];
     }
   }
@@ -340,7 +341,7 @@ export class RedisNamespaceValidator {
    * Cleanup test namespaces (utility method)
    */
   async cleanupTestNamespaces(): Promise<void> {
-    console.log('🧹 Cleaning up test namespaces...');
+    logger.debug('🧹 Cleaning up test namespaces...');
     
     try {
       // In a full implementation, this would clean up all test keys
@@ -356,10 +357,10 @@ export class RedisNamespaceValidator {
         await redisService.getClient().del(key);
       }
 
-      console.log('✅ Test namespace cleanup completed');
+      logger.debug('✅ Test namespace cleanup completed');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      console.log(`⚠️ Test namespace cleanup failed: ${errorMessage}`);
+      logger.debug(`⚠️ Test namespace cleanup failed: ${errorMessage}`);
     }
   }
 }
@@ -371,25 +372,25 @@ async function main() {
   try {
     const result = await validator.validateRedisNamespaces();
     
-    console.log('\n📊 Redis Namespace Validation Result:');
-    console.log(`   Status: ${result.status}`);
-    console.log(`   Details: ${result.details}`);
-    console.log(`   Response Time: ${Math.round(result.responseTime || 0)}ms`);
+    logger.debug('\n📊 Redis Namespace Validation Result:');
+    logger.debug(`   Status: ${result.status}`);
+    logger.debug(`   Details: ${result.details}`);
+    logger.debug(`   Response Time: ${Math.round(result.responseTime || 0)}ms`);
     
     if (result.errors?.length) {
-      console.log('   ❌ Errors:');
-      result.errors.forEach(error => console.log(`      ${error}`));
+      logger.debug('   ❌ Errors:');
+      result.errors.forEach(error => logger.debug(`      ${error}`));
     }
     
     if (result.warnings?.length) {
-      console.log('   ⚠️ Warnings:');  
-      result.warnings.forEach(warning => console.log(`      ${warning}`));
+      logger.debug('   ⚠️ Warnings:');  
+      result.warnings.forEach(warning => logger.debug(`      ${warning}`));
     }
 
     process.exit(result.status === 'FAILED' ? 1 : 0);
     
   } catch (error) {
-    console.error('💥 FATAL ERROR during Redis namespace validation:', error);
+    logger.error('💥 FATAL ERROR during Redis namespace validation:', error);
     process.exit(1);
   }
 }

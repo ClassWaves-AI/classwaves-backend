@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { openAIWhisperService } from '../openai-whisper.service';
 import { maybeTranscodeToWav } from './transcode.util';
 import * as client from 'prom-client';
+import { logger } from '../../utils/logger';
 
 interface GroupWindowState {
   chunks: Buffer[];
@@ -77,7 +78,7 @@ export class InMemoryAudioProcessor {
     // Start memory monitoring (skip timers in tests and Jest workers)
     const isJest = !!process.env.JEST_WORKER_ID;
     if (process.env.NODE_ENV !== 'test' && !isJest) this.startMemoryMonitoring();
-    if (process.env.API_DEBUG === '1') console.log('✅ InMemoryAudioProcessor initialized with zero-disk guarantee');
+    if (process.env.API_DEBUG === '1') logger.debug('✅ InMemoryAudioProcessor initialized with zero-disk guarantee');
   }
 
   // Metrics
@@ -153,7 +154,7 @@ export class InMemoryAudioProcessor {
             const hdr = this.extractOggHeader(audioChunk);
             if (hdr && hdr.length > 0) this.oggHeaders.set(groupId, hdr);
           }
-        } catch {}
+        } catch { /* intentionally ignored: best effort cleanup */ }
         state.chunks.push(audioChunk);
         state.bytes += audioChunk.length;
         this.activeBuffers.set(bufferKey, { data: audioChunk, mimeType, timestamp: new Date(), size: audioChunk.length });
@@ -175,7 +176,7 @@ export class InMemoryAudioProcessor {
             if ((process.env.WS_STT_REPAIR_WEBM_FRAGMENTS || '0') === '1' && mt.startsWith('audio/webm')) {
               submitBuffer = this.tryRepairWebMFragment(groupId, submitBuffer);
             }
-          } catch {}
+          } catch { /* intentionally ignored: best effort cleanup */ }
           let transcription: any;
           try {
             transcription = await openAIWhisperService.transcribeBuffer(submitBuffer, mimeType, {}, schoolId);
@@ -183,12 +184,12 @@ export class InMemoryAudioProcessor {
             if (process.env.WS_STT_TRANSCODE_TO_WAV === '1') {
               try {
                 if (process.env.API_DEBUG === '1') {
-                  try { console.warn('🎛️  WS Whisper decode error — attempting WAV transcode fallback'); } catch {}
+                  try { logger.warn('🎛️  WS Whisper decode error — attempting WAV transcode fallback'); } catch { /* intentionally ignored: best effort cleanup */ }
                 }
                 const wav = await maybeTranscodeToWav(submitBuffer, mimeType);
                 transcription = await openAIWhisperService.transcribeBuffer(wav.buffer, wav.mime, {}, schoolId);
                 if (process.env.API_DEBUG === '1') {
-                  try { console.log('✅ WS WAV transcode fallback succeeded'); } catch {}
+                  try { logger.debug('✅ WS WAV transcode fallback succeeded'); } catch { /* intentionally ignored: best effort cleanup */ }
                 }
               } catch (e2) {
                 throw e2;
@@ -198,7 +199,7 @@ export class InMemoryAudioProcessor {
             }
           }
           // Zero and reset window
-          try { this.secureZeroBuffer(audioChunk); } catch {}
+          try { this.secureZeroBuffer(audioChunk); } catch { /* intentionally ignored: best effort cleanup */ }
           state.chunks = [];
           state.bytes = 0;
           state.windowStartedAt = Date.now() + this.getRandomJitterMs();
@@ -325,7 +326,7 @@ export class InMemoryAudioProcessor {
     // Circuit breaker check
     const now = Date.now();
     if (this.breakerOpenUntil && now < this.breakerOpenUntil) {
-      console.warn(`⛔ Whisper circuit breaker open; skipping submit for group ${groupId}`);
+      logger.warn(`⛔ Whisper circuit breaker open; skipping submit for group ${groupId}`);
       // Increase window to reduce submit rate during outage
       state.windowSeconds = this.clampWindowSeconds(state.windowSeconds + 2);
 
@@ -367,7 +368,7 @@ export class InMemoryAudioProcessor {
       if ((mimeType || '').toLowerCase().startsWith('audio/webm')) {
         windowBuffer = this.maybePrependWebMHeader(groupId, windowBuffer);
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
     // Ensure immediate zeroing of individual chunks after concat
     for (const chunk of state.chunks) this.secureZeroBuffer(chunk);
     state.chunks = [];
@@ -377,7 +378,7 @@ export class InMemoryAudioProcessor {
       // Pass the window duration as a hint for budgeting when Whisper does not return duration
       const result = await openAIWhisperService.transcribeBuffer(windowBuffer, mimeType, { durationSeconds: state.windowSeconds }, schoolId);
       const latency = performance.now() - submitStart;
-      if (process.env.API_DEBUG === '1') console.log(JSON.stringify({
+      if (process.env.API_DEBUG === '1') logger.debug(JSON.stringify({
         event: 'whisper_submit',
         groupId,
         whisper_latency_ms: Math.round(latency),
@@ -387,7 +388,7 @@ export class InMemoryAudioProcessor {
       }));
 
       // Metrics: STT submit success labeled by school
-      try { this.sttSubmitTotal.inc({ school: schoolId || 'unknown', status: 'ok' }); } catch {}
+      try { this.sttSubmitTotal.inc({ school: schoolId || 'unknown', status: 'ok' }); } catch { /* intentionally ignored: best effort cleanup */ }
 
       state.consecutiveFailureCount = 0;
       // Gradually reduce window toward base on success
@@ -395,7 +396,7 @@ export class InMemoryAudioProcessor {
       return result as WhisperResponse;
     } catch (err: any) {
       const latency = performance.now() - submitStart;
-      console.warn(JSON.stringify({
+      logger.warn(JSON.stringify({
         event: 'whisper_submit_failed',
         groupId,
         whisper_latency_ms: Math.round(latency),
@@ -405,14 +406,14 @@ export class InMemoryAudioProcessor {
       }));
 
       // Metrics: STT submit failure labeled by school
-      try { this.sttSubmitTotal.inc({ school: schoolId || 'unknown', status: 'error' }); } catch {}
+      try { this.sttSubmitTotal.inc({ school: schoolId || 'unknown', status: 'error' }); } catch { /* intentionally ignored: best effort cleanup */ }
 
       state.consecutiveFailureCount += 1;
       // Increase window to reduce rate
       state.windowSeconds = this.clampWindowSeconds(state.windowSeconds + 2);
       if (state.consecutiveFailureCount >= this.breakerFailuresToTrip) {
         this.breakerOpenUntil = Date.now() + this.breakerCooldownMs;
-        console.error(`🚨 Whisper circuit breaker TRIPPED for ${this.breakerCooldownMs / 1000}s`);
+        logger.error(`🚨 Whisper circuit breaker TRIPPED for ${this.breakerCooldownMs / 1000}s`);
       }
       // Re-throw to caller to handle
       throw err;
@@ -545,7 +546,7 @@ export class InMemoryAudioProcessor {
     const hdr = this.webmHeaders.get(groupId);
     if (hdr && hdr.length > 0) {
       if (process.env.API_DEBUG === '1') {
-        console.log(JSON.stringify({ event: 'webm_header_prepended', groupId, header_bytes: hdr.length, window_bytes: buf.length }));
+        logger.debug(JSON.stringify({ event: 'webm_header_prepended', groupId, header_bytes: hdr.length, window_bytes: buf.length }));
       }
       return Buffer.concat([hdr, buf], hdr.length + buf.length);
     }
@@ -570,7 +571,7 @@ export class InMemoryAudioProcessor {
     const hdr = this.oggHeaders.get(groupId);
     if (hdr && hdr.length > 0) {
       if (process.env.API_DEBUG === '1') {
-        console.log(JSON.stringify({ event: 'ogg_header_prepended', groupId, header_bytes: hdr.length, window_bytes: buf.length }));
+        logger.debug(JSON.stringify({ event: 'ogg_header_prepended', groupId, header_bytes: hdr.length, window_bytes: buf.length }));
       }
       return Buffer.concat([hdr, buf], hdr.length + buf.length);
     }
@@ -586,7 +587,7 @@ export class InMemoryAudioProcessor {
     const memoryUsage = process.memoryUsage();
     
     if (memoryUsage.heapUsed > 500_000_000) { // 500MB warning
-      console.warn(`⚠️  High memory usage detected: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
+      logger.warn(`⚠️  High memory usage detected: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`);
     }
   }
 
@@ -601,7 +602,7 @@ export class InMemoryAudioProcessor {
       .reduce((acc, [, buf]) => acc + (buf.size || buf.data.length), 0);
     const groupBytes = windowBytes + compatBytes;
     if (groupBytes > this.maxBufferSize) {
-      console.warn(`⚠️  Group buffer overflow; dropping oldest chunks for group ${groupId}`);
+      logger.warn(`⚠️  Group buffer overflow; dropping oldest chunks for group ${groupId}`);
       if (groupState) {
         // Drop oldest half of chunks
         const dropCount = Math.ceil(groupState.chunks.length / 2);
@@ -629,7 +630,7 @@ export class InMemoryAudioProcessor {
     const totalCompatBytes = Array.from(this.activeBuffers.values()).reduce((acc, b) => acc + (b.size || b.data.length), 0);
     const totalBytes = totalWindowBytes + totalCompatBytes;
     if (totalBytes > this.maxBufferSize * 2) {
-      if (process.env.API_DEBUG === '1') console.warn(`⚠️  High total buffer usage: ${Math.round(totalBytes / 1024 / 1024)}MB`);
+      if (process.env.API_DEBUG === '1') logger.warn(`⚠️  High total buffer usage: ${Math.round(totalBytes / 1024 / 1024)}MB`);
       await this.cleanupOldBuffers();
       const maxBytes = this.MAX_TOTAL_MEMORY_MB * 1024 * 1024;
       if (totalBytes > maxBytes) {
@@ -640,7 +641,7 @@ export class InMemoryAudioProcessor {
             for (const c of st.chunks) this.secureZeroBuffer(c);
             st.chunks = [];
             st.bytes = 0;
-            if (process.env.API_DEBUG === '1') console.warn(`🧹 Evicted window buffers for group ${gid}`);
+            if (process.env.API_DEBUG === '1') logger.warn(`🧹 Evicted window buffers for group ${gid}`);
           }
           const newTotalWindowBytes = Array.from(this.groupWindows.values()).reduce((acc, s) => acc + (s.bytes || 0), 0);
           const newTotalCompatBytes = Array.from(this.activeBuffers.values()).reduce((acc, b) => acc + (b.size || b.data.length), 0);
@@ -709,7 +710,7 @@ export class InMemoryAudioProcessor {
         state.bytes = 0;
         state.windowStartedAt = now;
         cleaned++;
-        console.warn(`🧹 Stale window reset for group ${groupId}`);
+        logger.warn(`🧹 Stale window reset for group ${groupId}`);
       }
     }
     // Also clean old compat entries
@@ -720,7 +721,7 @@ export class InMemoryAudioProcessor {
       }
     }
     this.forceGarbageCollection();
-    if (cleaned > 0) console.log(`🧹 Cleaned ${cleaned} stale windows`);
+    if (cleaned > 0) logger.debug(`🧹 Cleaned ${cleaned} stale windows`);
   }
 
   /**
@@ -733,7 +734,7 @@ export class InMemoryAudioProcessor {
     this.processingStats.set(groupId, stats);
     
     if (process.env.API_DEBUG === '1') {
-      console.log(`📊 Audio processing: ${latency.toFixed(2)}ms (avg: ${(stats.totalLatency / stats.count).toFixed(2)}ms) for group ${groupId}`);
+      logger.debug(`📊 Audio processing: ${latency.toFixed(2)}ms (avg: ${(stats.totalLatency / stats.count).toFixed(2)}ms) for group ${groupId}`);
     }
   }
 
@@ -746,7 +747,7 @@ export class InMemoryAudioProcessor {
       const groups = this.groupWindows.size;
       const totalBytes = Array.from(this.groupWindows.values()).reduce((acc, s) => acc + s.bytes, 0);
       if (groups > 0 && process.env.API_DEBUG === '1') {
-        console.log(`📈 Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB, Groups: ${groups}, Window bytes: ${Math.round(totalBytes/1024)}KB`);
+        logger.debug(`📈 Memory: ${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB, Groups: ${groups}, Window bytes: ${Math.round(totalBytes/1024)}KB`);
       }
       if (memoryUsage.heapUsed / 1024 / 1024 > this.MAX_HEAP_SIZE_MB) {
         this.cleanupOldBuffers();
@@ -759,7 +760,7 @@ export class InMemoryAudioProcessor {
    * Log errors without disk writes
    */
   private logError(groupId: string, sessionId: string, errorMessage: string): void {
-    console.error(`❌ Audio processing error - Group: ${groupId}, Session: ${sessionId}, Error: ${errorMessage}`);
+    logger.error(`❌ Audio processing error - Group: ${groupId}, Session: ${sessionId}, Error: ${errorMessage}`);
   }
 
   /**
@@ -840,7 +841,7 @@ export class InMemoryAudioProcessor {
       }
       this.webmHeaders.delete(groupId);
       this.oggHeaders.delete(groupId);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   }
 
   // Best-effort flush for a set of groups (used during session drain)
@@ -851,7 +852,7 @@ export class InMemoryAudioProcessor {
       if (state && state.bytes > 0 && state.chunks.length > 0) {
         const task = async () => {
           await this.withGroupLock(gid, async () => {
-            try { await this.flushGroupWindow(gid, state, state.mimeType || fallbackMimeType); } catch {}
+            try { await this.flushGroupWindow(gid, state, state.mimeType || fallbackMimeType); } catch { /* intentionally ignored: best effort cleanup */ }
           });
         };
         if (useQueue) {

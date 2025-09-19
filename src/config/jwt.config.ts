@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { logger } from '../utils/logger';
 
 /**
  * JWTConfigService - Centralized JWT configuration and algorithm detection
@@ -32,7 +33,7 @@ export class JWTConfigService {
     this.useRS256 = useRS256;
     this.algorithm = useRS256 ? 'RS256' : 'HS256';
 
-    console.log(`🔐 JWT Config initialized: Algorithm=${this.algorithm}, RSA Keys=${useRS256 ? 'Loaded' : 'Fallback to HS256'}`);
+    logger.debug(`🔐 JWT Config initialized: Algorithm=${this.algorithm}, RSA Keys=${useRS256 ? 'Loaded' : 'Fallback to HS256'}`);
   }
 
   /**
@@ -61,7 +62,9 @@ export class JWTConfigService {
         return { privateKey, publicKey, useRS256: true };
       }
     } catch (error) {
-      console.warn('🔑 RSA keys not found, falling back to HS256 with secret');
+      logger.warn('🔑 RSA keys not found, falling back to HS256 with secret', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     return { privateKey: '', publicKey: '', useRS256: false };

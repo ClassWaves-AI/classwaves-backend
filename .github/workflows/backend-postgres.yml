@@ -1,0 +1,75 @@
+name: backend-postgres
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 10 * * 1'
+
+jobs:
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: classwaves
+          POSTGRES_PASSWORD: classwaves
+          POSTGRES_DB: classwaves_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U classwaves -d classwaves_dev"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 6
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for Postgres service
+        run: |
+          for i in {1..30}; do
+            if PGPASSWORD=classwaves pg_isready -h localhost -p 5432 -U classwaves -d classwaves_dev; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres did not become ready in time" >&2
+          exit 1
+
+      - name: Apply local schema and seeds
+        run: |
+          export PGPASSWORD=classwaves
+          psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U classwaves -d classwaves_dev -f src/db/local/schema.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U classwaves -d classwaves_dev -f src/db/local/seeds/dev.sql
+
+      - name: Run Postgres integration suite
+        env:
+          DATABASE_URL: postgres://classwaves:classwaves@127.0.0.1:5432/classwaves_dev
+          DB_PROVIDER: postgres
+          ENABLE_LOCAL_DB_TESTS: '1'
+          DB_LOCAL_USE_EXISTING: '1'
+          CW_DB_USE_LOCAL_POSTGRES: '1'
+        run: npx jest src/__tests__/integration/local-postgres.integration.test.ts --runInBand --detectOpenHandles
+
+      - name: Upload Jest results (if present)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-postgres-jest
+          path: |
+            test-results
+            test-logs
+          if-no-files-found: ignore

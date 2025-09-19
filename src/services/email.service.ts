@@ -30,12 +30,12 @@ export class EmailService {
   async initialize(): Promise<void> {
     try {
       // Debug logging for OAuth2 credentials
-      console.log('🔍 EMAIL SERVICE DEBUG:');
-      console.log('  GMAIL_USER_EMAIL:', process.env.GMAIL_USER_EMAIL ? `${process.env.GMAIL_USER_EMAIL.substring(0, 3)}***@${process.env.GMAIL_USER_EMAIL.split('@')[1]}` : 'MISSING');
-      console.log('  GMAIL_CLIENT_ID:', process.env.GMAIL_CLIENT_ID ? `${process.env.GMAIL_CLIENT_ID.substring(0, 10)}...` : 'MISSING');
-      console.log('  GMAIL_CLIENT_SECRET:', process.env.GMAIL_CLIENT_SECRET ? `${process.env.GMAIL_CLIENT_SECRET.substring(0, 6)}...` : 'MISSING');
-      console.log('  GMAIL_REFRESH_TOKEN:', process.env.GMAIL_REFRESH_TOKEN ? `${process.env.GMAIL_REFRESH_TOKEN.substring(0, 10)}...` : 'MISSING');
-      console.log('  GMAIL_APP_PASSWORD:', process.env.GMAIL_APP_PASSWORD ? 'SET' : 'NOT SET');
+      logger.debug('🔍 EMAIL SERVICE DEBUG:');
+      logger.debug('  GMAIL_USER_EMAIL:', process.env.GMAIL_USER_EMAIL ? `${process.env.GMAIL_USER_EMAIL.substring(0, 3)}***@${process.env.GMAIL_USER_EMAIL.split('@')[1]}` : 'MISSING');
+      logger.debug('  GMAIL_CLIENT_ID:', process.env.GMAIL_CLIENT_ID ? `${process.env.GMAIL_CLIENT_ID.substring(0, 10)}...` : 'MISSING');
+      logger.debug('  GMAIL_CLIENT_SECRET:', process.env.GMAIL_CLIENT_SECRET ? `${process.env.GMAIL_CLIENT_SECRET.substring(0, 6)}...` : 'MISSING');
+      logger.debug('  GMAIL_REFRESH_TOKEN:', process.env.GMAIL_REFRESH_TOKEN ? `${process.env.GMAIL_REFRESH_TOKEN.substring(0, 10)}...` : 'MISSING');
+      logger.debug('  GMAIL_APP_PASSWORD:', process.env.GMAIL_APP_PASSWORD ? 'SET' : 'NOT SET');
 
       // Configure Gmail OAuth2 transporter
       this.transporter = nodemailer.createTransport({
@@ -51,14 +51,14 @@ export class EmailService {
 
       // Verify transporter configuration
       try {
-        console.log('🔍 Attempting Gmail OAuth2 verification...');
+        logger.debug('🔍 Attempting Gmail OAuth2 verification...');
         await this.transporter.verify();
-        console.log('✅ Email service initialized successfully with Gmail OAuth2');
+        logger.debug('✅ Email service initialized successfully with Gmail OAuth2');
       } catch (oauthErr) {
-        console.log('❌ Gmail OAuth2 verification failed:', oauthErr instanceof Error ? oauthErr.message : String(oauthErr));
+        logger.debug('❌ Gmail OAuth2 verification failed:', oauthErr instanceof Error ? oauthErr.message : String(oauthErr));
         // Optional fallback: Gmail App Password (no Ethereal)
         if (process.env.GMAIL_APP_PASSWORD) {
-          console.warn('⚠️ Gmail OAuth2 failed; attempting Gmail App Password fallback');
+          logger.warn('⚠️ Gmail OAuth2 failed; attempting Gmail App Password fallback');
           this.transporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
             port: 465,
@@ -69,9 +69,9 @@ export class EmailService {
             },
           });
           await this.transporter.verify();
-          console.log('✅ Email service initialized with Gmail App Password');
+          logger.debug('✅ Email service initialized with Gmail App Password');
         } else if (process.env.SMTP_HOST) {
-          console.warn('⚠️ Gmail OAuth2 failed; attempting custom SMTP fallback');
+          logger.warn('⚠️ Gmail OAuth2 failed; attempting custom SMTP fallback');
           this.transporter = nodemailer.createTransport({
             host: process.env.SMTP_HOST,
             port: parseInt(process.env.SMTP_PORT || '587', 10),
@@ -82,16 +82,16 @@ export class EmailService {
             } : undefined,
           } as any);
           await this.transporter.verify();
-          console.log('✅ Email service initialized with custom SMTP');
+          logger.debug('✅ Email service initialized with custom SMTP');
         } else {
           // Dev-safe fallback: JSON transport (no network) only outside test env
           if (process.env.NODE_ENV === 'test') {
             throw oauthErr;
           }
-          console.warn('⚠️ No SMTP credentials available; using dev JSON transport (no network)');
+          logger.warn('⚠️ No SMTP credentials available; using dev JSON transport (no network)');
           this.transporter = nodemailer.createTransport({ jsonTransport: true } as any);
           // No verify needed for jsonTransport, but mimic success
-          console.log('✅ Email service initialized with JSON transport (dev)');
+          logger.debug('✅ Email service initialized with JSON transport (dev)');
         }
       }
 
@@ -100,7 +100,7 @@ export class EmailService {
       
       this.isInitialized = true;
     } catch (error) {
-      console.error('❌ Email service initialization failed:', error);
+      logger.error('❌ Email service initialization failed:', error);
       throw new Error(`Email service initialization failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -113,7 +113,7 @@ export class EmailService {
     sessionData: SessionEmailData
   ): Promise<{ sent: string[]; failed: string[] }> {
     if (!this.isInitialized || !this.transporter) {
-      console.warn('⚠️ Email service not initialized at send time; attempting on-demand initialization...');
+      logger.warn('⚠️ Email service not initialized at send time; attempting on-demand initialization...');
       try {
         await this.initialize();
       } catch (e) {
@@ -128,7 +128,7 @@ export class EmailService {
       try {
         const compliance = await emailComplianceService.validateEmailConsent(recipient.studentId);
         if (process.env.NODE_ENV !== 'production') {
-          console.log('[EmailService.sendSessionInvitation] compliance result', { recipient: recipient.email, compliance });
+          logger.debug('[EmailService.sendSessionInvitation] compliance result', { recipient: recipient.email, compliance });
         }
         if (!compliance.canSendEmail) {
           logger.warn('Cannot send group leader email due to compliance', { recipient: { email: recipient.email }, consentStatus: compliance.consentStatus });
@@ -149,7 +149,7 @@ export class EmailService {
       }
     }
     if (process.env.NODE_ENV !== 'production') {
-      console.log('[EmailService.sendSessionInvitation] compliant recipients', compliant.map(c => c.email));
+      logger.debug('[EmailService.sendSessionInvitation] compliant recipients', compliant.map(c => c.email));
     }
 
     // Check daily rate limit once before sending (tests expect this query next)
@@ -294,7 +294,7 @@ export class EmailService {
           );
           // Debug: trace compliance decision path in tests/dev
           if (process.env.NODE_ENV !== 'production') {
-            console.log('[EmailService.validateEmailConsent] new-path result', { studentId, studentNew });
+            logger.debug('[EmailService.validateEmailConsent] new-path result', { studentId, studentNew });
           }
           if (studentNew) {
             // Teacher verified age allows sending regardless of parental consent
@@ -321,7 +321,7 @@ export class EmailService {
         [studentId]
       );
       if (process.env.NODE_ENV !== 'production') {
-        console.log('[EmailService.validateEmailConsent] legacy-path result', { studentId, studentLegacy });
+        logger.debug('[EmailService.validateEmailConsent] legacy-path result', { studentId, studentLegacy });
       }
       if (!studentLegacy) {
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
@@ -357,7 +357,7 @@ export class EmailService {
       const message = err?.message || String(err);
       // Gracefully tolerate missing audit table so session creation/emails don't fail
       if (message.includes('TABLE_OR_VIEW_NOT_FOUND') || message.includes('email_audit') || message.includes('notification_queue')) {
-        console.warn('⚠️ Notification/audit table missing - skipping daily rate limit enforcement. Suggest creating notifications.notification_queue and compliance.email_audit tables.');
+        logger.warn('⚠️ Notification/audit table missing - skipping daily rate limit enforcement. Suggest creating notifications.notification_queue and compliance.email_audit tables.');
         return; // Allow sending to proceed
       }
       // Re-throw other unexpected errors
@@ -456,20 +456,20 @@ export class EmailService {
       };
 
       await databricksService.insert('notification_queue', queueRecord);
-      console.log(`✅ Email delivery logged for ${recipient} (${status})`);
+      logger.debug(`✅ Email delivery logged for ${recipient} (${status})`);
     } catch (auditError: any) {
       // Graceful degradation: Log warning but don't fail email sending
       const errorMessage = auditError?.message || String(auditError);
       
       if (errorMessage.includes('TABLE_OR_VIEW_NOT_FOUND')) {
-        console.warn(`⚠️ Notification queue table missing - email delivered but not logged:`, {
+        logger.warn(`⚠️ Notification queue table missing - email delivered but not logged:`, {
           sessionId,
           recipient,
           status,
           error: 'notifications.notification_queue table not found'
         });
       } else {
-        console.error(`❌ Failed to record email audit (non-critical):`, {
+        logger.error(`❌ Failed to record email audit (non-critical):`, {
           sessionId,
           recipient,
           status,
@@ -573,7 +573,7 @@ export class EmailService {
     // Compile and store templates
     this.templates.set('group-leader-invitation', Handlebars.compile(groupLeaderTemplate));
     
-    console.log('✅ Email templates loaded successfully');
+    logger.debug('✅ Email templates loaded successfully');
   }
 
   /**

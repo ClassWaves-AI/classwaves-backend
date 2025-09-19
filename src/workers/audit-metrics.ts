@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 type Counters = {
   dropped: number;
   rollupFlushed: number;
@@ -32,7 +33,7 @@ export function startMetricsLogger(getQueueDepth: () => Promise<number>): void {
   loggerTimer = setInterval(async () => {
     try {
       const depth = await getQueueDepth();
-      console.log(
+      logger.debug(
         JSON.stringify({
           component: 'audit_worker_metrics',
           queueDepth: depth,
@@ -44,7 +45,7 @@ export function startMetricsLogger(getQueueDepth: () => Promise<number>): void {
         })
       );
     } catch (e) {
-      console.warn('audit metrics logger failed', e);
+      logger.warn('audit metrics logger failed', e);
     }
   }, parseInt(process.env.AUDIT_METRICS_INTERVAL_MS || '30000', 10));
   (loggerTimer as any).unref?.();
@@ -56,4 +57,3 @@ export function stopMetricsLogger(): void {
     loggerTimer = null;
   }
 }
-

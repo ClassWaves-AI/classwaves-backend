@@ -6,6 +6,7 @@
  */
 
 import { redisService } from './redis.service';
+import { logger } from '../utils/logger';
 
 interface LockOptions {
   ttl: number; // Lock TTL in seconds
@@ -53,7 +54,7 @@ export class AnalyticsComputationLockService {
       ttl: config.ttl
     });
 
-    console.log(`🔒 Attempting to acquire analytics computation lock for session ${sessionId}`);
+    logger.debug(`🔒 Attempting to acquire analytics computation lock for session ${sessionId}`);
 
     for (let attempt = 1; attempt <= config.retryAttempts; attempt++) {
       try {
@@ -75,7 +76,7 @@ export class AnalyticsComputationLockService {
             expiresAt
           });
 
-          console.log(`✅ Analytics computation lock acquired for session ${sessionId} (expires: ${expiresAt.toISOString()})`);
+          logger.debug(`✅ Analytics computation lock acquired for session ${sessionId} (expires: ${expiresAt.toISOString()})`);
 
           return {
             acquired: true,
@@ -89,7 +90,7 @@ export class AnalyticsComputationLockService {
         if (existingLock) {
           try {
             const lockData = JSON.parse(existingLock);
-            console.log(`⏳ Analytics computation already locked for session ${sessionId} by ${lockData.identifier} (attempt ${attempt}/${config.retryAttempts})`);
+            logger.debug(`⏳ Analytics computation already locked for session ${sessionId} by ${lockData.identifier} (attempt ${attempt}/${config.retryAttempts})`);
             
             // Get remaining TTL
             const ttl = await redisService.ttl(lockKey);
@@ -106,12 +107,12 @@ export class AnalyticsComputationLockService {
               retryAfter
             };
           } catch (parseError) {
-            console.warn(`⚠️ Invalid lock data format for session ${sessionId}:`, parseError);
+            logger.warn(`⚠️ Invalid lock data format for session ${sessionId}:`, parseError);
           }
         }
 
       } catch (error) {
-        console.error(`❌ Error acquiring analytics computation lock for session ${sessionId} (attempt ${attempt}):`, error);
+        logger.error(`❌ Error acquiring analytics computation lock for session ${sessionId} (attempt ${attempt}):`, error);
         
         if (attempt < config.retryAttempts) {
           await this.sleep(config.retryDelay);
@@ -140,7 +141,7 @@ export class AnalyticsComputationLockService {
           const expectedIdentifier = lockId.split(':')[1]; // Extract identifier from lockId
           
           if (lockData.identifier !== expectedIdentifier) {
-            console.warn(`⚠️ Cannot release lock for session ${sessionId}: lock owned by ${lockData.identifier}, not ${expectedIdentifier}`);
+            logger.warn(`⚠️ Cannot release lock for session ${sessionId}: lock owned by ${lockData.identifier}, not ${expectedIdentifier}`);
             return false;
           }
         }
@@ -151,15 +152,15 @@ export class AnalyticsComputationLockService {
 
       if (released) {
         this.activeLocks.delete(sessionId);
-        console.log(`🔓 Analytics computation lock released for session ${sessionId}`);
+        logger.debug(`🔓 Analytics computation lock released for session ${sessionId}`);
       } else {
-        console.warn(`⚠️ No lock found to release for session ${sessionId}`);
+        logger.warn(`⚠️ No lock found to release for session ${sessionId}`);
       }
 
       return released;
 
     } catch (error) {
-      console.error(`❌ Error releasing analytics computation lock for session ${sessionId}:`, error);
+      logger.error(`❌ Error releasing analytics computation lock for session ${sessionId}:`, error);
       return false;
     }
   }
@@ -173,7 +174,7 @@ export class AnalyticsComputationLockService {
     try {
       const currentTtl = await redisService.ttl(lockKey);
       if (currentTtl <= 0) {
-        console.warn(`⚠️ Cannot extend expired lock for session ${sessionId}`);
+        logger.warn(`⚠️ Cannot extend expired lock for session ${sessionId}`);
         return false;
       }
 
@@ -188,14 +189,14 @@ export class AnalyticsComputationLockService {
           this.activeLocks.set(sessionId, activeLock);
         }
 
-        console.log(`⏰ Analytics computation lock extended for session ${sessionId} (new TTL: ${newTtl}s)`);
+        logger.debug(`⏰ Analytics computation lock extended for session ${sessionId} (new TTL: ${newTtl}s)`);
         return true;
       }
 
       return false;
 
     } catch (error) {
-      console.error(`❌ Error extending analytics computation lock for session ${sessionId}:`, error);
+      logger.error(`❌ Error extending analytics computation lock for session ${sessionId}:`, error);
       return false;
     }
   }
@@ -230,7 +231,7 @@ export class AnalyticsComputationLockService {
       };
 
     } catch (error) {
-      console.error(`❌ Error checking analytics computation lock status for session ${sessionId}:`, error);
+      logger.error(`❌ Error checking analytics computation lock status for session ${sessionId}:`, error);
       return { locked: false };
     }
   }
@@ -275,7 +276,7 @@ export class AnalyticsComputationLockService {
         try {
           await this.extendComputationLock(sessionId, 180); // Extend by 3 minutes
         } catch (error) {
-          console.error(`❌ Failed to extend analytics computation lock for ${sessionId}:`, error);
+          logger.error(`❌ Failed to extend analytics computation lock for ${sessionId}:`, error);
         }
       }, lockExtensionInterval);
 
@@ -353,7 +354,7 @@ export class AnalyticsComputationLockService {
       }
 
     } catch (error) {
-      console.error('❌ Error retrieving active analytics computation locks:', error);
+      logger.error('❌ Error retrieving active analytics computation locks:', error);
     }
 
     return activeLocks;
@@ -385,11 +386,11 @@ export class AnalyticsComputationLockService {
       }
 
       if (cleanedCount > 0) {
-        console.log(`🧹 Cleaned up ${cleanedCount} expired analytics computation locks`);
+        logger.debug(`🧹 Cleaned up ${cleanedCount} expired analytics computation locks`);
       }
 
     } catch (error) {
-      console.error('❌ Error cleaning up expired locks:', error);
+      logger.error('❌ Error cleaning up expired locks:', error);
     }
 
     return cleanedCount;
@@ -412,7 +413,7 @@ if (process.env.NODE_ENV !== 'test') {
     try {
       await analyticsComputationLockService.cleanupExpiredLocks();
     } catch (error) {
-      console.error('❌ Periodic lock cleanup failed:', error);
+      logger.error('❌ Periodic lock cleanup failed:', error);
     }
   }, 300000); // 5 minutes
   (t as any).unref?.();

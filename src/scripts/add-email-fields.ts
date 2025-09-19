@@ -3,17 +3,18 @@
  */
 
 import { DatabricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 const databricksService = new DatabricksService();
 
 async function addEmailFields(): Promise<void> {
-  console.log('🔄 Adding email-related fields to ClassWaves database...\n');
+  logger.debug('🔄 Adding email-related fields to ClassWaves database...\n');
 
   try {
     await databricksService.connect();
 
     // Add email fields to students table for COPPA compliance
-    console.log('📧 Adding email fields to students table...');
+    logger.debug('📧 Adding email fields to students table...');
     
     const studentFieldUpdates = [
       `ALTER TABLE classwaves.users.students 
@@ -35,11 +36,11 @@ async function addEmailFields(): Promise<void> {
 
     for (const sql of studentFieldUpdates) {
       await databricksService.query(sql);
-      console.log('✅ Added student email field');
+      logger.debug('✅ Added student email field');
     }
 
     // Add session tracking fields to notification_queue table
-    console.log('📋 Adding session tracking fields to notification_queue...');
+    logger.debug('📋 Adding session tracking fields to notification_queue...');
     
     const notificationFieldUpdates = [
       `ALTER TABLE classwaves.notifications.notification_queue 
@@ -57,11 +58,11 @@ async function addEmailFields(): Promise<void> {
 
     for (const sql of notificationFieldUpdates) {
       await databricksService.query(sql);
-      console.log('✅ Added notification tracking field');
+      logger.debug('✅ Added notification tracking field');
     }
 
     // Create email audit trail table for compliance
-    console.log('🔍 Creating email audit trail table...');
+    logger.debug('🔍 Creating email audit trail table...');
     
     const auditTableSQL = `
       CREATE TABLE IF NOT EXISTS classwaves.compliance.email_audit (
@@ -86,10 +87,10 @@ async function addEmailFields(): Promise<void> {
     `;
 
     await databricksService.query(auditTableSQL);
-    console.log('✅ Created email audit trail table');
+    logger.debug('✅ Created email audit trail table');
 
     // Create indexes for performance
-    console.log('⚡ Creating performance indexes...');
+    logger.debug('⚡ Creating performance indexes...');
     
     const indexQueries = [
       `CREATE INDEX IF NOT EXISTS idx_students_email 
@@ -111,21 +112,21 @@ async function addEmailFields(): Promise<void> {
     for (const sql of indexQueries) {
       try {
         await databricksService.query(sql);
-        console.log('✅ Created index');
+        logger.debug('✅ Created index');
       } catch (error) {
         // Indexes may not be supported in all Databricks versions, so we continue
-        console.log('⚠️ Index creation skipped (may not be supported)');
+        logger.debug('⚠️ Index creation skipped (may not be supported)');
       }
     }
 
-    console.log('\n🎉 Email fields migration completed successfully!');
-    console.log('\nAdded fields:');
-    console.log('📝 students table: email_verified, email_consent, coppa_compliant, teacher_verified_age');
-    console.log('📝 notification_queue: session_id, group_id, student_id');
-    console.log('📝 New table: compliance.email_audit');
+    logger.debug('\n🎉 Email fields migration completed successfully!');
+    logger.debug('\nAdded fields:');
+    logger.debug('📝 students table: email_verified, email_consent, coppa_compliant, teacher_verified_age');
+    logger.debug('📝 notification_queue: session_id, group_id, student_id');
+    logger.debug('📝 New table: compliance.email_audit');
 
   } catch (error) {
-    console.error('❌ Migration failed:', error);
+    logger.error('❌ Migration failed:', error);
     throw error;
   } finally {
     await databricksService.disconnect();
@@ -136,11 +137,11 @@ async function addEmailFields(): Promise<void> {
 if (require.main === module) {
   addEmailFields()
     .then(() => {
-      console.log('Migration completed successfully');
+      logger.debug('Migration completed successfully');
       process.exit(0);
     })
     .catch((error) => {
-      console.error('Migration failed:', error);
+      logger.error('Migration failed:', error);
       process.exit(1);
     });
 }

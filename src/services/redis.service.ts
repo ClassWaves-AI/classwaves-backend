@@ -2,6 +2,7 @@ import Redis from 'ioredis';
 import { LRUCache } from 'lru-cache';
 import { Teacher, School } from '../types/auth.types';
 import { createGuidanceRedisScriptRunner, GuidanceRedisScriptRunner } from '../redis-scripts';
+import { logger } from '../utils/logger';
 
 interface SessionData {
   teacherId: string;
@@ -155,7 +156,7 @@ class RedisService {
           retryStrategy: (times: number) => {
             const delay = Math.min(times * 50, 2000);
             if (times > 10) {
-              console.error('Redis connection failed after 10 retries');
+              logger.error('Redis connection failed after 10 retries');
               return null;
             }
             return delay;
@@ -174,7 +175,7 @@ class RedisService {
         };
       }
     } catch (error) {
-      console.error('Error parsing Redis URL, using defaults:', error);
+      logger.error('Error parsing Redis URL, using defaults:', error);
       redisConfig = {
         host: 'localhost',
         port: 6379,
@@ -212,23 +213,23 @@ class RedisService {
   private setupEventHandlers(): void {
     // Socket connected; authentication/ready may still be pending
     this.client.on('connect', () => {
-      console.log('🔌 RedisService socket connected');
+      logger.debug('🔌 RedisService socket connected');
     });
 
     // Mark service ready only when Redis is fully ready (post-auth, post-handshake)
     this.client.on('ready', () => {
       this.connected = true;
-      console.log('✅ RedisService ready');
+      logger.debug('✅ RedisService ready');
     });
 
     this.client.on('error', (err: any) => {
       this.connected = false;
-      console.error('❌ RedisService error:', err);
+      logger.error('❌ RedisService error:', err);
     });
 
     this.client.on('close', () => {
       this.connected = false;
-      console.log('🔌 RedisService connection closed');
+      logger.debug('🔌 RedisService connection closed');
     });
   }
 
@@ -253,7 +254,7 @@ class RedisService {
       keysToDelete.forEach(key => this.cache.delete(key));
       
       if (keysToDelete.length > 0) {
-        console.log(`🧹 Cleaned up ${keysToDelete.length} expired cache entries`);
+        logger.debug(`🧹 Cleaned up ${keysToDelete.length} expired cache entries`);
       }
     }, this.CACHE_CHECK_INTERVAL);
     (this.cleanupInterval as any).unref?.();
@@ -292,7 +293,7 @@ class RedisService {
     // Warm cache with new session
     this.warmCache(sessionId, data, expiresIn * 1000);
     
-    console.log(`🔥 Cache warmed for session: ${sessionId}`);
+    logger.debug(`🔥 Cache warmed for session: ${sessionId}`);
   }
 
   /**
@@ -315,7 +316,7 @@ class RedisService {
       return sessionData;
     } catch (error) {
       if (error instanceof SyntaxError) throw error; // invalid JSON should reject in tests
-      console.warn(`⚠️  Redis getSession error for key: ${key}`, error);
+      logger.warn(`⚠️  Redis getSession error for key: ${key}`, error);
       return null;
     }
   }
@@ -331,12 +332,12 @@ class RedisService {
     const cachedEntry = this.cache.get(cacheKey);
     
     if (cachedEntry) {
-      console.log(`⚡ Cache hit for session: ${sessionId} (${(performance.now() - cacheStart).toFixed(2)}ms)`);
+      logger.debug(`⚡ Cache hit for session: ${sessionId} (${(performance.now() - cacheStart).toFixed(2)}ms)`);
       return cachedEntry.data;
     }
     
     // Cache miss - fetch from Redis
-    console.log(`💾 Cache miss for session: ${sessionId}, fetching from Redis`);
+    logger.debug(`💾 Cache miss for session: ${sessionId}, fetching from Redis`);
     const redisStart = performance.now();
     
     try {
@@ -352,7 +353,7 @@ class RedisService {
       const data = raced === 'timeout' ? null : (raced as string | null);
       
       if (!data) {
-        console.log(`❌ Session not found in Redis: ${sessionId}`);
+        logger.debug(`❌ Session not found in Redis: ${sessionId}`);
         return null;
       }
       
@@ -369,7 +370,7 @@ class RedisService {
         this.warmCache(sessionId, sessionData, ttl);
       }
       
-      console.log(`📡 Redis fetch completed: ${sessionId} (${(performance.now() - redisStart).toFixed(2)}ms)`);
+      logger.debug(`📡 Redis fetch completed: ${sessionId} (${(performance.now() - redisStart).toFixed(2)}ms)`);
       return sessionData;
       
     } catch (error) {
@@ -377,7 +378,7 @@ class RedisService {
       if (error instanceof SyntaxError) {
         throw error;
       }
-      console.warn(`⚠️  Redis getSession timeout or error for key: ${sessionId}`, error);
+      logger.warn(`⚠️  Redis getSession timeout or error for key: ${sessionId}`, error);
       return null; // Return null to trigger session expiry flow
     }
   }
@@ -408,7 +409,7 @@ class RedisService {
     // Invalidate cache
     this.cache.delete(key);
     
-    console.log(`🗑️  Session deleted and cache invalidated: ${sessionId}`);
+    logger.debug(`🗑️  Session deleted and cache invalidated: ${sessionId}`);
   }
 
   /**
@@ -521,7 +522,7 @@ class RedisService {
       await this.deleteSession(sessionId);
     }
     
-    console.log(`🧹 Invalidated ${sessions.length} sessions for teacher: ${teacherId}`);
+    logger.debug(`🧹 Invalidated ${sessions.length} sessions for teacher: ${teacherId}`);
   }
 
   /**
@@ -532,7 +533,7 @@ class RedisService {
       const result = await this.client.ping();
       return result === 'PONG';
     } catch (error) {
-      console.error('Redis ping failed:', error);
+      logger.error('Redis ping failed:', error);
       return false;
     }
   }
@@ -547,10 +548,10 @@ class RedisService {
     if (this.client && (this.client as any).status !== 'end') {
       try {
         await (this.client as any).quit?.();
-        console.log('✅ RedisService disconnected cleanly');
+        logger.debug('✅ RedisService disconnected cleanly');
       } catch (error) {
         // Connection already closed, ignore the error
-        console.log('ℹ️  Redis connection already closed during disconnect');
+        logger.debug('ℹ️  Redis connection already closed during disconnect');
       }
     }
   }
@@ -610,7 +611,7 @@ class RedisService {
    */
   clearCache(): void {
     this.cache.clear();
-    console.log('🧹 Cache cleared');
+    logger.debug('🧹 Cache cleared');
   }
 }
 

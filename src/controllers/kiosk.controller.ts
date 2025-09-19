@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { getCompositionRoot } from '../app/composition-root';
 import { KioskAuthRequest } from '../middleware/kiosk.auth.middleware';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
+import { logger } from '../utils/logger';
 
 export async function updateGroupStatus(req: KioskAuthRequest, res: Response): Promise<Response> {
   const { groupId } = req.params;
@@ -37,7 +38,7 @@ export async function updateGroupStatus(req: KioskAuthRequest, res: Response): P
     });
 
   } catch (error) {
-    console.error(`Failed to update status for group ${groupId}:`, error);
+    logger.error(`Failed to update status for group ${groupId}:`, error);
     return res.status(500).json({
       error: 'STATUS_UPDATE_FAILED',
       message: 'An internal error occurred while updating the group status.',

@@ -11,6 +11,7 @@ import { databricksService } from './databricks.service';
 import { queryCostMonitorService } from './query-cost-monitor.service';
 import { analyticsLogger } from '../utils/analytics-logger';
 import { SessionEvent } from '../types/websocket.types';
+import { logger } from '../utils/logger';
 
 interface QueryRoutingDecision {
   usePreAggregated: boolean;
@@ -76,20 +77,20 @@ export class AnalyticsQueryRouterService {
     timeframe: string,
     includeComparisons: boolean = false
   ): Promise<any> {
-    console.log('🔄 Starting teacher analytics query routing');
-    console.log('🔧 DEBUG: Bypassing routing decision for debugging');
+    logger.debug('🔄 Starting teacher analytics query routing');
+    logger.debug('🔧 DEBUG: Bypassing routing decision for debugging');
     
     try {
       // TEMPORARILY BYPASS ROUTING DECISION FOR DEBUGGING
-      console.log('🔧 DEBUG: Going directly to source query');
+      logger.debug('🔧 DEBUG: Going directly to source query');
       const result = await this.executeTeacherAnalyticsFromSource(teacherId, timeframe, includeComparisons);
       
-      console.log('🔧 DEBUG: Source query completed successfully');
+      logger.debug('🔧 DEBUG: Source query completed successfully');
       return result;
       
     } catch (error) {
-      console.error('❌ Teacher analytics query failed:', error);
-      console.error('🔧 DEBUG: Error details:', {
+      logger.error('❌ Teacher analytics query failed:', error);
+      logger.error('🔧 DEBUG: Error details:', {
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : 'No stack trace',
         teacherId,
@@ -159,7 +160,7 @@ export class AnalyticsQueryRouterService {
       
     } catch (error) {
       if (decision.usePreAggregated) {
-        console.warn('Dashboard pre-aggregated query failed, falling back to source:', error);
+        logger.warn('Dashboard pre-aggregated query failed, falling back to source:', error);
         return await this.executeDashboardMetricsFromSource(schoolId, timeframeHours);
       }
       throw error;
@@ -210,7 +211,7 @@ export class AnalyticsQueryRouterService {
       
     } catch (error) {
       if (decision.usePreAggregated) {
-        console.warn('Session cached query failed, falling back to source:', error);
+        logger.warn('Session cached query failed, falling back to source:', error);
         return await this.executeSessionAnalyticsFromSource(sessionId, includeRealTime);
       }
       throw error;
@@ -288,7 +289,7 @@ export class AnalyticsQueryRouterService {
       };
 
     } catch (error) {
-      console.error('Error making routing decision:', error);
+      logger.error('Error making routing decision:', error);
       return {
         usePreAggregated: false,
         tableName: 'source_tables',
@@ -315,7 +316,7 @@ export class AnalyticsQueryRouterService {
       // First check if the table exists
       const tableExists = await this.checkTableExists(tableName);
       if (!tableExists) {
-        console.log(`Table ${tableName} does not exist, falling back to source`);
+        logger.debug(`Table ${tableName} does not exist, falling back to source`);
         return { isFresh: false, ageHours: 999 };
       }
 
@@ -372,12 +373,12 @@ export class AnalyticsQueryRouterService {
           ageHours
         };
       } catch (queryError) {
-        console.warn(`Failed to check freshness for ${tableName}:`, queryError);
+        logger.warn(`Failed to check freshness for ${tableName}:`, queryError);
         return { isFresh: false, ageHours: 999 };
       }
 
     } catch (error) {
-      console.warn(`Error checking data freshness for ${tableName}:`, error);
+      logger.warn(`Error checking data freshness for ${tableName}:`, error);
       return { isFresh: false, ageHours: 999 };
     }
   }
@@ -436,7 +437,7 @@ export class AnalyticsQueryRouterService {
       return (result?.record_count || 0) > 0;
       
     } catch (error) {
-      console.warn('Failed to check data availability:', error);
+      logger.warn('Failed to check data availability:', error);
       return false;
     }
   }
@@ -481,7 +482,7 @@ export class AnalyticsQueryRouterService {
       // Transform to match expected format
       return this.transformTeacherAnalyticsResults(results, includeComparisons);
     } catch (error) {
-      console.warn('Pre-aggregated teacher analytics table not available, falling back to source:', error);
+      logger.warn('Pre-aggregated teacher analytics table not available, falling back to source:', error);
       // Fall back to source query if pre-aggregated table doesn't exist
       return this.executeTeacherAnalyticsFromSource(teacherId, timeframe, includeComparisons);
     }
@@ -523,7 +524,7 @@ export class AnalyticsQueryRouterService {
       
       return this.transformSessionAnalyticsResults(result, includeRealTime);
     } catch (error) {
-      console.warn('Session analytics cache table not available, falling back to source:', error);
+      logger.warn('Session analytics cache table not available, falling back to source:', error);
       // Fall back to source query if cache table doesn't exist
       return this.executeSessionAnalyticsFromSource(sessionId, includeRealTime);
     }
@@ -531,52 +532,52 @@ export class AnalyticsQueryRouterService {
 
   // Fallback methods (source table queries) - use existing analytics tables
   private async executeTeacherAnalyticsFromSource(teacherId: string, timeframe: string, includeComparisons: boolean): Promise<any> {
-    console.log('🔄 Executing teacher analytics from source tables');
-    console.log('🔧 DEBUG: teacherId:', teacherId, 'timeframe:', timeframe);
+    logger.debug('🔄 Executing teacher analytics from source tables');
+    logger.debug('🔧 DEBUG: teacherId:', teacherId, 'timeframe:', timeframe);
     
     try {
       const interval = this.getDatabricksIntervalFromTimeframe(timeframe);
-      console.log('🔧 DEBUG: Calculated interval:', interval);
+      logger.debug('🔧 DEBUG: Calculated interval:', interval);
       
       // First, test a simple query to verify Databricks connection
-      console.log('🔧 DEBUG: Testing basic Databricks connection...');
+      logger.debug('🔧 DEBUG: Testing basic Databricks connection...');
       try {
         const testResult = await databricksService.query('SELECT 1 as test_value');
-        console.log('🔧 DEBUG: Basic Databricks query successful:', testResult);
+        logger.debug('🔧 DEBUG: Basic Databricks query successful:', testResult);
       } catch (testError) {
-        console.error('❌ Basic Databricks query failed:', testError);
+        logger.error('❌ Basic Databricks query failed:', testError);
         throw new Error(`Databricks connection test failed: ${testError}`);
       }
       
       // Now test if the classroom_sessions table exists and has data
-      console.log('🔧 DEBUG: Testing classroom_sessions table access...');
+      logger.debug('🔧 DEBUG: Testing classroom_sessions table access...');
       try {
         const sessionsTest = await databricksService.query(`
           SELECT COUNT(*) as session_count 
           FROM classwaves.sessions.classroom_sessions 
           WHERE teacher_id = ?
         `, [teacherId]);
-        console.log('🔧 DEBUG: Classroom sessions query successful:', sessionsTest);
+        logger.debug('🔧 DEBUG: Classroom sessions query successful:', sessionsTest);
       } catch (sessionsError) {
-        console.error('❌ Classroom sessions query failed:', sessionsError);
+        logger.error('❌ Classroom sessions query failed:', sessionsError);
         throw new Error(`Classroom sessions query failed: ${sessionsError}`);
       }
       
       // Now test if the session_metrics table exists and has data
-      console.log('🔧 DEBUG: Testing session_metrics table access...');
+      logger.debug('🔧 DEBUG: Testing session_metrics table access...');
       try {
         const metricsTest = await databricksService.query(`
           SELECT COUNT(*) as metrics_count 
           FROM classwaves.analytics.session_metrics
         `);
-        console.log('🔧 DEBUG: Session metrics query successful:', metricsTest);
+        logger.debug('🔧 DEBUG: Session metrics query successful:', metricsTest);
       } catch (metricsError) {
-        console.error('❌ Session metrics query failed:', metricsError);
+        logger.error('❌ Session metrics query failed:', metricsError);
         throw new Error(`Session metrics query failed: ${metricsError}`);
       }
       
       // If we get here, both tables are accessible, so try the full query
-      console.log('🔧 DEBUG: Executing full analytics query...');
+      logger.debug('🔧 DEBUG: Executing full analytics query...');
       const sessionMetrics = await databricksService.query(`
         SELECT 
           sm.session_id,
@@ -594,8 +595,8 @@ export class AnalyticsQueryRouterService {
         ORDER BY sm.created_at DESC
       `, [teacherId]);
       
-      console.log('🔧 DEBUG: Full SQL query completed, result count:', sessionMetrics?.length || 0);
-      console.log('🔧 DEBUG: First result sample:', sessionMetrics?.[0]);
+      logger.debug('🔧 DEBUG: Full SQL query completed, result count:', sessionMetrics?.length || 0);
+      logger.debug('🔧 DEBUG: First result sample:', sessionMetrics?.[0]);
 
       // Return simplified analytics data
       return {
@@ -624,8 +625,8 @@ export class AnalyticsQueryRouterService {
         }
       };
     } catch (error) {
-      console.error('❌ Failed to execute teacher analytics from source:', error);
-      console.error('🔧 DEBUG: Error details:', {
+      logger.error('❌ Failed to execute teacher analytics from source:', error);
+      logger.error('🔧 DEBUG: Error details:', {
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : 'No stack trace',
         teacherId,
@@ -662,7 +663,7 @@ export class AnalyticsQueryRouterService {
   }
 
   private async executeDashboardMetricsFromSource(schoolId: string, timeframeHours: number): Promise<any> {
-    console.log('🔄 Executing dashboard metrics from source tables');
+    logger.debug('🔄 Executing dashboard metrics from source tables');
     
     try {
       // Query existing session_metrics for dashboard data
@@ -687,7 +688,7 @@ export class AnalyticsQueryRouterService {
         avgParticipation: metrics[0]?.avg_participation || 0
       };
     } catch (error) {
-      console.error('Failed to execute dashboard metrics from source:', error);
+      logger.error('Failed to execute dashboard metrics from source:', error);
       return {
         schoolId,
         totalSessions: 0,
@@ -699,7 +700,7 @@ export class AnalyticsQueryRouterService {
   }
 
   private async executeSessionAnalyticsFromSource(sessionId: string, includeRealTime: boolean): Promise<any> {
-    console.log('🔄 Executing session analytics from source tables');
+    logger.debug('🔄 Executing session analytics from source tables');
     
     try {
       // Query existing session_metrics table
@@ -745,7 +746,7 @@ export class AnalyticsQueryRouterService {
         groupFormationTime: sessionMetric.group_formation_time_seconds || 0
       };
     } catch (error) {
-      console.error('Failed to execute session analytics from source:', error);
+      logger.error('Failed to execute session analytics from source:', error);
       // Return minimal fallback data
       return {
         sessionId,
@@ -829,7 +830,7 @@ export class AnalyticsQueryRouterService {
     schoolId: string, 
     timeframeHours: number
   ): Promise<any> {
-    console.log('🚀 Executing dashboard metrics from hourly table (90% faster)');
+    logger.debug('🚀 Executing dashboard metrics from hourly table (90% faster)');
     
     try {
       const query = `
@@ -875,7 +876,7 @@ export class AnalyticsQueryRouterService {
       return result[0] || this.getEmptyDashboardMetrics();
       
     } catch (error) {
-      console.log('⚠️  Dashboard hourly table query failed, falling back to source tables');
+      logger.debug('⚠️  Dashboard hourly table query failed, falling back to source tables');
       return this.executeDashboardMetricsFromSource(schoolId, timeframeHours);
     }
   }
@@ -885,7 +886,7 @@ export class AnalyticsQueryRouterService {
    * Provides complete session lifecycle tracking for analytics and debugging
    */
   async getSessionEventsTimeline(sessionId: string): Promise<SessionEvent[]> {
-    console.log('📅 Retrieving session events timeline');
+    logger.debug('📅 Retrieving session events timeline');
     
     try {
       const query = `
@@ -910,7 +911,7 @@ export class AnalyticsQueryRouterService {
       }));
       
     } catch (error) {
-      console.error('❌ Failed to retrieve session events timeline:', error);
+      logger.error('❌ Failed to retrieve session events timeline:', error);
       return [];
     }
   }
@@ -942,13 +943,13 @@ export class AnalyticsQueryRouterService {
           created_at: new Date().toISOString()
         });
         
-        console.log(`📝 Session event logged: ${eventType} for session ${sessionId}`);
+        logger.debug(`📝 Session event logged: ${eventType} for session ${sessionId}`);
         return; // Success
         
       } catch (error) {
         attempt++;
         if (attempt >= maxRetries) {
-          console.error(`❌ Failed to log session event after ${maxRetries} attempts:`, error);
+          logger.error(`❌ Failed to log session event after ${maxRetries} attempts:`, error);
           // Don't throw - analytics failure shouldn't block session operations
         } else {
           // Exponential backoff

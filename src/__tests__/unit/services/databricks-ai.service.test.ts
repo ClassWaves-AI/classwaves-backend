@@ -8,6 +8,16 @@ describe('DatabricksAIService', () => {
   let service: DatabricksAIService;
   const mockFetch = fetch as jest.MockedFunction<typeof fetch>;
 
+  const wrapDatabricksResponse = (payload: unknown) => ({
+    choices: [
+      {
+        message: {
+          content: JSON.stringify(payload),
+        },
+      },
+    ],
+  });
+
 beforeEach(() => {
   mockFetch.mockClear();
   // Mock environment variables BEFORE constructing service
@@ -59,13 +69,16 @@ beforeEach(() => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => mockResponse
+        json: async () => wrapDatabricksResponse(mockResponse),
       } as Response);
 
       const result = await service.analyzeTier1(mockTranscripts, mockTier1Options);
 
-      expect(result).toEqual(mockResponse);
-      expect(result.topicalCohesion).toBe(0.85);
+      expect(result).toMatchObject({
+        topicalCohesion: 0.85,
+        conceptualDensity: 0.78,
+        confidence: 0.89,
+      });
       expect(result.insights).toHaveLength(1);
       expect(mockFetch).toHaveBeenCalledWith(
         'https://test.databricks.com/serving-endpoints/tier1/invocations',
@@ -90,7 +103,7 @@ beforeEach(() => {
         .mockResolvedValueOnce({
           ok: true,
           status: 200,
-          json: async () => ({
+          json: async () => wrapDatabricksResponse({
             topicalCohesion: 0.75,
             conceptualDensity: 0.80,
             analysisTimestamp: new Date().toISOString(),
@@ -98,8 +111,8 @@ beforeEach(() => {
             windowEndTime: new Date().toISOString(),
             transcriptLength: 50,
             confidence: 0.85,
-            insights: []
-          })
+            insights: [],
+          }),
         } as Response);
 
       const resultPromise = service.analyzeTier1(mockTranscripts, mockTier1Options);
@@ -140,6 +153,109 @@ beforeEach(() => {
 
       await expect(service.analyzeTier1(mockTranscripts, mockTier1Options))
         .rejects.toThrow('Databricks AI API error: 500 Internal Server Error');
+    });
+
+    it('normalizes provider context descriptors when present', async () => {
+      const mockResponse = {
+        topicalCohesion: 0.7,
+        conceptualDensity: 0.6,
+        analysisTimestamp: new Date().toISOString(),
+        windowStartTime: new Date().toISOString(),
+        windowEndTime: new Date().toISOString(),
+        transcriptLength: 42,
+        confidence: 0.75,
+        insights: [],
+        context: {
+          reason: 'Recent discussion drifted.',
+          currentTopic: 'Soccer practice',
+          supportingLines: [
+            { speakerLabel: 'Student A', text: 'We talked about soccer.', timestamp: Date.now() },
+          ],
+          confidence: 0.8,
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => wrapDatabricksResponse(mockResponse),
+      } as Response);
+
+      const result = await service.analyzeTier1(mockTranscripts, mockTier1Options);
+      expect(result.context).toBeDefined();
+      expect(result.context?.currentTopic).toBe('Soccer practice');
+      expect(result.context?.quotes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            speakerLabel: 'Participant 1',
+            text: 'We talked about soccer.'
+          })
+        ])
+      );
+      expect(result.context?.supportingLines).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            speaker: 'Participant 1',
+            quote: 'We talked about soccer.'
+          })
+        ])
+      );
+      expect(result.context?.confidence).toBe(0.8);
+    });
+
+    it('clamps derived scores and omits empty context payloads', async () => {
+      const mockResponse = {
+        topicalCohesion: 1.4,
+        conceptualDensity: -0.25,
+        offTopicHeat: 'not-a-number',
+        discussionMomentum: undefined,
+        confusionRisk: 1.7,
+        energyLevel: -0.35,
+        analysisTimestamp: new Date().toISOString(),
+        windowStartTime: new Date().toISOString(),
+        windowEndTime: new Date().toISOString(),
+        transcriptLength: 120,
+        confidence: 0.42,
+        insights: [],
+        context: {
+          reason: '',
+          quotes: [],
+        },
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => wrapDatabricksResponse(mockResponse),
+      } as Response);
+
+      const result = await service.analyzeTier1(mockTranscripts, mockTier1Options);
+
+      expect(result.topicalCohesion).toBe(1); // clamped upper bound
+      expect(result.conceptualDensity).toBe(0); // clamped lower bound
+      expect(result.offTopicHeat).toBeCloseTo(1); // inferred from min score
+      expect(result.confusionRisk).toBe(1); // clamped from >1
+      expect(result.energyLevel).toBe(0); // clamped from negative
+      expect(result.context).toBeUndefined(); // empty payload omitted
+    });
+
+    it('throws an analysis error when Databricks returns malformed JSON', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: '{"topicalCohesion":0.8,"conceptualDensity"', // truncated payload
+              },
+            },
+          ],
+        }),
+      } as Response);
+
+      await expect(service.analyzeTier1(mockTranscripts, mockTier1Options))
+        .rejects.toThrow(/Failed to parse Tier 1 response/);
     });
 
     it('should validate input parameters', async () => {
@@ -195,20 +311,23 @@ beforeEach(() => {
         sessionStartTime: new Date().toISOString(),
         totalDurationMinutes: 15,
         confidence: 0.91,
-        insights: []
+        insights: [],
+        recommendations: [],
       };
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => mockResponse
+        json: async () => wrapDatabricksResponse(mockResponse),
       } as Response);
 
       const result = await service.analyzeTier2(mockTranscripts, mockTier2Options);
 
-      expect(result).toEqual(mockResponse);
-      expect(result.argumentationQuality.score).toBe(0.82);
-      expect(result.collectiveEmotionalArc.trajectory).toBe('ascending');
+      expect(result).toMatchObject({
+        argumentationQuality: expect.objectContaining({ score: 0.82 }),
+        collectiveEmotionalArc: expect.objectContaining({ trajectory: 'ascending' }),
+        confidence: 0.91,
+      });
       expect(mockFetch).toHaveBeenCalledWith(
         'https://test.databricks.com/serving-endpoints/tier2/invocations',
         expect.objectContaining({
@@ -303,7 +422,7 @@ beforeEach(() => {
         .mockResolvedValueOnce({
           ok: true,
           status: 200,
-          json: async () => ({
+          json: async () => wrapDatabricksResponse({
             topicalCohesion: 0.80,
             conceptualDensity: 0.75,
             analysisTimestamp: new Date().toISOString(),
@@ -311,8 +430,8 @@ beforeEach(() => {
             windowEndTime: new Date().toISOString(),
             transcriptLength: 10,
             confidence: 0.85,
-            insights: []
-          })
+            insights: [],
+          }),
         } as Response);
 
       const resultPromise = service.analyzeTier1(mockTranscripts, mockOptions);
@@ -341,7 +460,7 @@ beforeEach(() => {
         .mockResolvedValueOnce({
           ok: true,
           status: 200,
-          json: async () => ({
+          json: async () => wrapDatabricksResponse({
             topicalCohesion: 0.85,
             conceptualDensity: 0.80,
             analysisTimestamp: new Date().toISOString(),
@@ -349,8 +468,8 @@ beforeEach(() => {
             windowEndTime: new Date().toISOString(),
             transcriptLength: 10,
             confidence: 0.85,
-            insights: []
-          })
+            insights: [],
+          }),
         } as Response);
 
       const resultPromise = service.analyzeTier1(mockTranscripts, mockOptions);

@@ -7,6 +7,7 @@
 
 import { databricksService } from '../services/databricks.service';
 import { redisService } from '../services/redis.service';
+import { logger } from '../utils/logger';
 
 /**
  * Standard cleanup function for integration tests that use database services
@@ -19,9 +20,9 @@ export const cleanupDatabaseServices = async (): Promise<void> => {
     (async () => {
       try {
         await databricksService.disconnect();
-        console.log('✅ Databricks service disconnected in test cleanup');
+        logger.debug('✅ Databricks service disconnected in test cleanup');
       } catch (error) {
-        console.warn('⚠️ Error disconnecting Databricks in test:', error);
+        logger.warn('⚠️ Error disconnecting Databricks in test:', error);
       }
     })()
   );
@@ -32,10 +33,10 @@ export const cleanupDatabaseServices = async (): Promise<void> => {
       try {
         if (redisService.isConnected()) {
           await redisService.disconnect();
-          console.log('✅ Redis service disconnected in test cleanup');
+          logger.debug('✅ Redis service disconnected in test cleanup');
         }
       } catch (error) {
-        console.warn('⚠️ Error disconnecting Redis in test:', error);
+        logger.warn('⚠️ Error disconnecting Redis in test:', error);
       }
     })()
   );

@@ -77,14 +77,21 @@ export function redactObject<T>(input: T, allowList: string[] = []): T {
   return out as T;
 }
 
-function write(level: Exclude<Level, 'silent'>, msg: string, ctx?: Record<string, unknown>) {
+function normalizeContext(ctx?: unknown): Record<string, unknown> | undefined {
+  if (ctx == null) return undefined;
+  if (isObject(ctx)) return ctx;
+  return { value: ctx };
+}
+
+function write(level: Exclude<Level, 'silent'>, msg: string, ctx?: unknown) {
   if (!levelEnabled(level)) return;
   const base: Record<string, unknown> = {
     level,
     msg,
     timestamp: new Date().toISOString(),
   };
-  const payload = ctx ? { ...base, ...redactObject(ctx) } : base;
+  const normalized = normalizeContext(ctx);
+  const payload = normalized ? { ...base, ...redactObject(normalized) } : base;
   // Single-line JSON for log processors
   const line = JSON.stringify(payload);
   if (level === 'error') console.error(line);
@@ -92,11 +99,17 @@ function write(level: Exclude<Level, 'silent'>, msg: string, ctx?: Record<string
   else console.log(line);
 }
 
+function toContext(args: unknown[]): unknown {
+  if (args.length === 0) return undefined;
+  if (args.length === 1) return args[0];
+  return args;
+}
+
 export const logger = {
-  debug: (msg: string, ctx?: Record<string, unknown>) => write('debug', msg, ctx),
-  info: (msg: string, ctx?: Record<string, unknown>) => write('info', msg, ctx),
-  warn: (msg: string, ctx?: Record<string, unknown>) => write('warn', msg, ctx),
-  error: (msg: string, ctx?: Record<string, unknown>) => write('error', msg, ctx),
+  debug: (msg: string, ...ctx: unknown[]) => write('debug', msg, toContext(ctx)),
+  info: (msg: string, ...ctx: unknown[]) => write('info', msg, toContext(ctx)),
+  warn: (msg: string, ...ctx: unknown[]) => write('warn', msg, toContext(ctx)),
+  error: (msg: string, ...ctx: unknown[]) => write('error', msg, toContext(ctx)),
 };
 
 export type { Level };

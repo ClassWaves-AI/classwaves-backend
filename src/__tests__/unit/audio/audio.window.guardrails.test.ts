@@ -51,7 +51,7 @@ describe('audio.window.controller guardrails (REST min-interval)', () => {
       .attach('audio', audioBuf, { filename: 'b.webm', contentType: 'audio/webm' });
     expect([429, 503]).toContain(r2.status);
     expect(r2.headers['retry-after']).toBeDefined();
-    try { const j = r2.body; expect(j && j.ok === false && j.error === 'RATE_LIMITED').toBe(true); } catch {}
+    try { const j = r2.body; expect(j && j.ok === false && j.error === 'RATE_LIMITED').toBe(true); } catch { /* intentionally ignored: best effort cleanup */ }
   });
 });
 

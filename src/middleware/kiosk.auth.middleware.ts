@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { databricksService } from '../services/databricks.service';
 import jwt from 'jsonwebtoken';
 import { JWTConfigService } from '../config/jwt.config';
+import { logger } from '../utils/logger';
 
 // Use centralized JWT configuration for consistent algorithm handling
 const jwtConfig = JWTConfigService.getInstance();
@@ -80,8 +81,7 @@ export async function authenticateKiosk(req: KioskAuthRequest, res: Response, ne
     if (error instanceof jwt.JsonWebTokenError) {
         return res.status(401).json({ error: 'INVALID_TOKEN', message: 'Kiosk token is invalid.' });
     }
-    console.error('Kiosk Auth Error:', error);
+    logger.error('Kiosk Auth Error:', error);
     return res.status(500).json({ error: 'INTERNAL_SERVER_ERROR', message: 'Failed to authenticate kiosk.' });
   }
 }
-

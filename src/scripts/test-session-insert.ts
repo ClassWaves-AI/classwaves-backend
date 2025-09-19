@@ -2,41 +2,42 @@
 
 import * as dotenv from 'dotenv';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function testSessionInsert() {
-  console.log('🔍 Testing session insert to diagnose schema issue...\n');
+  logger.debug('🔍 Testing session insert to diagnose schema issue...\n');
 
   try {
     // Test 1: Check if we can see the table and its schema
-    console.log('📊 STEP 1: Checking table schema visibility...');
+    logger.debug('📊 STEP 1: Checking table schema visibility...');
     const currentSchema = await databricksService.query(
       'DESCRIBE classwaves.sessions.classroom_sessions'
     );
     
-    console.log('Columns visible via DESCRIBE:');
+    logger.debug('Columns visible via DESCRIBE:');
     currentSchema.forEach((row: any, index: number) => {
-      console.log(`  ${index + 1}. ${row.col_name}: ${row.data_type}`);
+      logger.debug(`  ${index + 1}. ${row.col_name}: ${row.data_type}`);
     });
 
     const columnNames = currentSchema.map((row: any) => row.col_name);
     const hasEngagementScore = columnNames.includes('engagement_score');
-    console.log(`\n✅ engagement_score column visible: ${hasEngagementScore}`);
+    logger.debug(`\n✅ engagement_score column visible: ${hasEngagementScore}`);
 
     // Test 2: Try a simple SELECT to see what columns we can actually query
-    console.log('\n📊 STEP 2: Testing SELECT access...');
+    logger.debug('\n📊 STEP 2: Testing SELECT access...');
     try {
       const selectResult = await databricksService.query(
         'SELECT id, title, engagement_score FROM classwaves.sessions.classroom_sessions LIMIT 1'
       );
-      console.log('✅ SELECT with engagement_score works fine');
+      logger.debug('✅ SELECT with engagement_score works fine');
     } catch (selectError) {
-      console.log('❌ SELECT with engagement_score failed:', selectError);
+      logger.debug('❌ SELECT with engagement_score failed:', selectError);
     }
 
     // Test 3: Check what schema the insert method will use
-    console.log('\n📊 STEP 3: Testing databricks service schema mapping...');
+    logger.debug('\n📊 STEP 3: Testing databricks service schema mapping...');
     const testData = {
       id: 'test_session_123',
       title: 'Test Session',
@@ -49,18 +50,18 @@ async function testSessionInsert() {
 
     // Get the schema for this table
     const schema = (databricksService as any).getSchemaForTable('classroom_sessions');
-    console.log(`Schema for 'classroom_sessions' table: ${schema}`);
+    logger.debug(`Schema for 'classroom_sessions' table: ${schema}`);
 
     // Build the SQL that would be executed
     const columns = Object.keys(testData);
     const placeholders = columns.map(() => '?').join(', ');
     const wouldExecuteSql = `INSERT INTO classwaves.${schema}.classroom_sessions (${columns.join(', ')}) VALUES (${placeholders})`;
     
-    console.log('SQL that would be executed:');
-    console.log(wouldExecuteSql);
+    logger.debug('SQL that would be executed:');
+    logger.debug(wouldExecuteSql);
     
     // Test 4: Try to insert a minimal record first
-    console.log('\n📊 STEP 4: Testing minimal insert...');
+    logger.debug('\n📊 STEP 4: Testing minimal insert...');
     const minimalData = {
       id: 'test_minimal_' + Date.now(),
       title: 'Minimal Test',
@@ -83,23 +84,23 @@ async function testSessionInsert() {
       updated_at: new Date()
     };
 
-    console.log('Attempting minimal insert (without engagement_score)...');
+    logger.debug('Attempting minimal insert (without engagement_score)...');
     try {
       await databricksService.insert('classroom_sessions', minimalData);
-      console.log('✅ Minimal insert succeeded');
+      logger.debug('✅ Minimal insert succeeded');
       
       // Clean up
       await databricksService.query(
         'DELETE FROM classwaves.sessions.classroom_sessions WHERE id = ?',
         [minimalData.id]
       );
-      console.log('✅ Test record cleaned up');
+      logger.debug('✅ Test record cleaned up');
     } catch (insertError) {
-      console.log('❌ Minimal insert failed:', insertError);
+      logger.debug('❌ Minimal insert failed:', insertError);
     }
 
   } catch (error) {
-    console.error('❌ Error during session insert test:', error);
+    logger.error('❌ Error during session insert test:', error);
     throw error;
   }
 }
@@ -107,10 +108,10 @@ async function testSessionInsert() {
 // Run the test
 testSessionInsert()
   .then(() => {
-    console.log('\n🎉 Session insert test completed');
+    logger.debug('\n🎉 Session insert test completed');
     process.exit(0);
   })
   .catch((error) => {
-    console.error('💥 Session insert test failed:', error);
+    logger.error('💥 Session insert test failed:', error);
     process.exit(1);
   });

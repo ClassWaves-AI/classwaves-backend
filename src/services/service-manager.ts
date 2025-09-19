@@ -6,6 +6,7 @@
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
 import { emailService } from './email.service';
+import { logger } from '../utils/logger';
 
 interface ServiceStatus {
   name: string;
@@ -22,7 +23,7 @@ class ServiceManager {
    * Initialize all services
    */
   async initializeServices(): Promise<boolean> {
-    console.log('🚀 Initializing ClassWaves services...');
+    logger.debug('🚀 Initializing ClassWaves services...');
     
     let allHealthy = true;
 
@@ -33,9 +34,9 @@ class ServiceManager {
         // Redis connection handled automatically by ioredis
       }
       this.updateServiceStatus('redis', 'healthy', undefined, new Date());
-      console.log('✅ Redis service initialized');
+      logger.debug('✅ Redis service initialized');
     } catch (error) {
-      console.error('❌ Redis service initialization failed:', error);
+      logger.error('❌ Redis service initialization failed:', error);
       this.updateServiceStatus('redis', 'unhealthy', error instanceof Error ? error.message : String(error));
       allHealthy = false;
     }
@@ -46,19 +47,19 @@ class ServiceManager {
         this.updateServiceStatus('databricks', 'initializing');
         await databricksService.connect();
         this.updateServiceStatus('databricks', 'healthy', undefined, new Date());
-        console.log('✅ Databricks service initialized');
+        logger.debug('✅ Databricks service initialized');
       } catch (error) {
-        console.error('❌ Databricks service initialization failed:', error);
+        logger.error('❌ Databricks service initialization failed:', error);
         this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
         allHealthy = false;
       }
     } else {
       if (process.env.NODE_ENV === 'test' && process.env.DATABRICKS_ENABLED === 'true') {
         this.updateServiceStatus('databricks', 'unhealthy', 'Failed to initialize in test mode');
-        console.log('❌ Databricks service failed to initialize in test mode');
+        logger.debug('❌ Databricks service failed to initialize in test mode');
       } else {
         this.updateServiceStatus('databricks', 'healthy', 'Skipped in test environment');
-        console.log('⚠️ Databricks service skipped (test environment)');
+        logger.debug('⚠️ Databricks service skipped (test environment)');
       }
     }
 
@@ -67,23 +68,23 @@ class ServiceManager {
       this.updateServiceStatus('email', 'initializing');
       await emailService.initialize();
       this.updateServiceStatus('email', 'healthy', undefined, new Date());
-      console.log('✅ Email service initialized');
+      logger.debug('✅ Email service initialized');
     } catch (error) {
-      console.error('❌ Email service initialization failed:', error);
+      logger.error('❌ Email service initialization failed:', error);
       this.updateServiceStatus('email', 'unhealthy', error instanceof Error ? error.message : String(error));
       
       // Allow degraded mode for development
       if (process.env.NODE_ENV !== 'production') {
-        console.warn('⚠️ Running without email service in development mode');
+        logger.warn('⚠️ Running without email service in development mode');
       } else {
         allHealthy = false;
       }
     }
 
     if (allHealthy) {
-      console.log('🎉 All services initialized successfully');
+      logger.debug('🎉 All services initialized successfully');
     } else {
-      console.warn('⚠️ Some services failed to initialize - check logs above');
+      logger.warn('⚠️ Some services failed to initialize - check logs above');
     }
 
     return allHealthy;
@@ -125,7 +126,7 @@ class ServiceManager {
    * Health check for all services
    */
   async performHealthCheck(): Promise<{ healthy: boolean; details: ServiceStatus[] }> {
-    console.log('🔍 Performing service health check...');
+    logger.debug('🔍 Performing service health check...');
 
     // Check Redis
     try {
@@ -154,7 +155,7 @@ class ServiceManager {
     const statuses = this.getServiceStatus();
     const healthy = statuses.every(s => s.status === 'healthy');
 
-    console.log(`🏥 Health check complete. Overall status: ${healthy ? 'HEALTHY' : 'UNHEALTHY'}`);
+    logger.debug(`🏥 Health check complete. Overall status: ${healthy ? 'HEALTHY' : 'UNHEALTHY'}`);
     
     return { healthy, details: statuses };
   }
@@ -163,23 +164,23 @@ class ServiceManager {
    * Graceful shutdown of all services
    */
   async shutdown(): Promise<void> {
-    console.log('🛑 Shutting down services...');
+    logger.debug('🛑 Shutting down services...');
 
     try {
       await redisService.disconnect();
-      console.log('✅ Redis disconnected');
+      logger.debug('✅ Redis disconnected');
     } catch (error) {
-      console.error('❌ Redis disconnect failed:', error);
+      logger.error('❌ Redis disconnect failed:', error);
     }
 
     try {
       await databricksService.disconnect();
-      console.log('✅ Databricks disconnected');
+      logger.debug('✅ Databricks disconnected');
     } catch (error) {
-      console.error('❌ Databricks disconnect failed:', error);
+      logger.error('❌ Databricks disconnect failed:', error);
     }
 
-    console.log('🏁 Service shutdown complete');
+    logger.debug('🏁 Service shutdown complete');
   }
 
   /**

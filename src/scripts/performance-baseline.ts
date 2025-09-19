@@ -33,6 +33,7 @@ import { redisService } from '../services/redis.service';
 import { databricksConfig } from '../config/databricks.config';
 import axios from 'axios';
 import { performance } from 'perf_hooks';
+import { logger } from '../utils/logger';
 
 interface EndpointMetric {
   path: string;
@@ -147,7 +148,7 @@ class PerformanceBaselineTool {
   }
 
   async runBaseline(): Promise<PerformanceBaseline> {
-    console.log('📊 Starting ClassWaves Performance Baseline Capture...\n');
+    logger.debug('📊 Starting ClassWaves Performance Baseline Capture...\n');
     
     const startTime = performance.now();
 
@@ -156,19 +157,19 @@ class PerformanceBaselineTool {
       await this.testDatabaseConnectivity();
 
       // Step 2: Capture Redis metrics
-      console.log('💾 Capturing Redis performance metrics...');
+      logger.debug('💾 Capturing Redis performance metrics...');
       await this.captureRedisMetrics();
 
       // Step 3: Capture database query performance 
-      console.log('🗄️  Analyzing database query performance...');
+      logger.debug('🗄️  Analyzing database query performance...');
       await this.analyzeDatabasePerformance();
 
       // Step 4: Test API endpoint performance (if server is running)
-      console.log('🌐 Testing API endpoint performance...');
+      logger.debug('🌐 Testing API endpoint performance...');
       await this.testEndpointPerformance();
 
       // Step 5: Capture system metrics
-      console.log('⚙️  Capturing system metrics...');
+      logger.debug('⚙️  Capturing system metrics...');
       await this.captureSystemMetrics();
 
       // Step 6: Generate recommendations
@@ -180,7 +181,7 @@ class PerformanceBaselineTool {
       await this.generateReport();
 
     } catch (error) {
-      console.error('❌ Baseline capture failed:', error);
+      logger.error('❌ Baseline capture failed:', error);
       process.exit(1);
     }
 
@@ -189,12 +190,12 @@ class PerformanceBaselineTool {
 
   private async testDatabaseConnectivity(): Promise<void> {
     try {
-      console.log('🔗 Testing database connectivity...');
+      logger.debug('🔗 Testing database connectivity...');
       await this.databricksService.query('SELECT 1 as test_connection LIMIT 1');
-      console.log('✅ Database connection successful\n');
+      logger.debug('✅ Database connection successful\n');
     } catch (error) {
-      console.warn('⚠️  Database connection failed - skipping DB metrics');
-      console.log('💡 Run with proper Databricks credentials for complete metrics\n');
+      logger.warn('⚠️  Database connection failed - skipping DB metrics');
+      logger.debug('💡 Run with proper Databricks credentials for complete metrics\n');
     }
   }
 
@@ -234,12 +235,12 @@ class PerformanceBaselineTool {
         memoryUtilization: maxMemory > 0 ? Math.round((usedMemory / maxMemory) * 10000) / 100 : 0,
       };
 
-      console.log(`   ✅ Redis Hit Rate: ${hitRate.toFixed(2)}%`);
-      console.log(`   ✅ Memory Usage: ${(usedMemory / 1024 / 1024).toFixed(1)} MB`);
-      console.log(`   ✅ Total Connections: ${totalConnections}`);
+      logger.debug(`   ✅ Redis Hit Rate: ${hitRate.toFixed(2)}%`);
+      logger.debug(`   ✅ Memory Usage: ${(usedMemory / 1024 / 1024).toFixed(1)} MB`);
+      logger.debug(`   ✅ Total Connections: ${totalConnections}`);
 
     } catch (error) {
-      console.warn('⚠️  Failed to capture Redis metrics:', error);
+      logger.warn('⚠️  Failed to capture Redis metrics:', error);
     }
   }
 
@@ -321,14 +322,14 @@ class PerformanceBaselineTool {
         ],
       };
 
-      console.log(`   ✅ Analyzed ${this.results.database.totalQueriesAnalyzed} query patterns`);
-      console.log(`   ✅ Avg Query Latency: ${this.results.database.avgQueryLatency}ms`);
-      console.log(`   🔍 Query Optimization: ${this.results.database.queryOptimization.totalOptimizedQueries} endpoints optimized`);
-      console.log(`   🔍 Avg Fields Selected: ${this.results.database.queryOptimization.avgFieldsSelected} (vs ~${this.results.database.queryOptimization.avgFieldsSelected + this.results.database.queryOptimization.avgFieldsAvoided} before)`);
-      console.log(`   🔍 Estimated Bytes Reduction: ${this.results.database.queryOptimization.bytesReductionPercent}%`);
+      logger.debug(`   ✅ Analyzed ${this.results.database.totalQueriesAnalyzed} query patterns`);
+      logger.debug(`   ✅ Avg Query Latency: ${this.results.database.avgQueryLatency}ms`);
+      logger.debug(`   🔍 Query Optimization: ${this.results.database.queryOptimization.totalOptimizedQueries} endpoints optimized`);
+      logger.debug(`   🔍 Avg Fields Selected: ${this.results.database.queryOptimization.avgFieldsSelected} (vs ~${this.results.database.queryOptimization.avgFieldsSelected + this.results.database.queryOptimization.avgFieldsAvoided} before)`);
+      logger.debug(`   🔍 Estimated Bytes Reduction: ${this.results.database.queryOptimization.bytesReductionPercent}%`);
 
     } catch (error) {
-      console.warn('⚠️  Failed to analyze database performance:', error);
+      logger.warn('⚠️  Failed to analyze database performance:', error);
       // Set default values for when DB is not accessible
       this.results.database = {
         totalQueriesAnalyzed: 0,
@@ -366,7 +367,7 @@ class PerformanceBaselineTool {
         const measurements = [];
         const testRuns = 5;
 
-        console.log(`   🔍 Testing ${endpoint.method} ${endpoint.path}...`);
+        logger.debug(`   🔍 Testing ${endpoint.method} ${endpoint.path}...`);
 
         for (let i = 0; i < testRuns; i++) {
           const startTime = performance.now();
@@ -412,10 +413,10 @@ class PerformanceBaselineTool {
 
         this.results.endpoints.push(completedMetric);
 
-        console.log(`     ✅ Avg: ${avg.toFixed(1)}ms, P95: ${p95.toFixed(1)}ms, Errors: ${errors}/${testRuns}`);
+        logger.debug(`     ✅ Avg: ${avg.toFixed(1)}ms, P95: ${p95.toFixed(1)}ms, Errors: ${errors}/${testRuns}`);
 
       } catch (error) {
-        console.warn(`   ⚠️  Failed to test ${endpoint.path}:`, error);
+        logger.warn(`   ⚠️  Failed to test ${endpoint.path}:`, error);
         
         // Add placeholder data
         this.results.endpoints.push({
@@ -441,10 +442,10 @@ class PerformanceBaselineTool {
         // CPU usage calculation would need a baseline measurement
       };
 
-      console.log(`   ✅ Memory Usage: ${this.results.system.memoryUsage} MB`);
+      logger.debug(`   ✅ Memory Usage: ${this.results.system.memoryUsage} MB`);
 
     } catch (error) {
-      console.warn('⚠️  Failed to capture system metrics:', error);
+      logger.warn('⚠️  Failed to capture system metrics:', error);
     }
   }
 
@@ -491,47 +492,47 @@ class PerformanceBaselineTool {
   }
 
   private async generateReport(): Promise<void> {
-    console.log('\n' + '='.repeat(80));
-    console.log('📊 CLASSWAVES PERFORMANCE BASELINE REPORT');
-    console.log('='.repeat(80) + '\n');
+    logger.debug('\n' + '='.repeat(80));
+    logger.debug('📊 CLASSWAVES PERFORMANCE BASELINE REPORT');
+    logger.debug('='.repeat(80) + '\n');
 
     // Redis Summary
-    console.log('💾 REDIS PERFORMANCE:');
-    console.log(`   Hit Rate: ${this.results.redis.hitRate.toFixed(2)}%`);
-    console.log(`   Memory Usage: ${(this.results.redis.usedMemory / 1024 / 1024).toFixed(1)} MB`);
-    console.log(`   Total Connections: ${this.results.redis.totalConnections}`);
-    console.log(`   Evicted Keys: ${this.results.redis.evictedKeys}\n`);
+    logger.debug('💾 REDIS PERFORMANCE:');
+    logger.debug(`   Hit Rate: ${this.results.redis.hitRate.toFixed(2)}%`);
+    logger.debug(`   Memory Usage: ${(this.results.redis.usedMemory / 1024 / 1024).toFixed(1)} MB`);
+    logger.debug(`   Total Connections: ${this.results.redis.totalConnections}`);
+    logger.debug(`   Evicted Keys: ${this.results.redis.evictedKeys}\n`);
 
     // Database Summary
-    console.log('🗄️  DATABASE PERFORMANCE:');
-    console.log(`   Queries Analyzed: ${this.results.database.totalQueriesAnalyzed}`);
-    console.log(`   Avg Query Latency: ${this.results.database.avgQueryLatency}ms`);
-    console.log(`   P95 Query Latency: ${this.results.database.p95QueryLatency}ms`);
-    console.log(`   Total Rows Scanned: ${this.results.database.totalRowsScanned.toLocaleString()}`);
-    console.log(`   Total Bytes Scanned: ${(this.results.database.totalBytesScanned / 1024 / 1024).toFixed(1)} MB\n`);
+    logger.debug('🗄️  DATABASE PERFORMANCE:');
+    logger.debug(`   Queries Analyzed: ${this.results.database.totalQueriesAnalyzed}`);
+    logger.debug(`   Avg Query Latency: ${this.results.database.avgQueryLatency}ms`);
+    logger.debug(`   P95 Query Latency: ${this.results.database.p95QueryLatency}ms`);
+    logger.debug(`   Total Rows Scanned: ${this.results.database.totalRowsScanned.toLocaleString()}`);
+    logger.debug(`   Total Bytes Scanned: ${(this.results.database.totalBytesScanned / 1024 / 1024).toFixed(1)} MB\n`);
 
     // API Summary
-    console.log('🌐 API PERFORMANCE:');
+    logger.debug('🌐 API PERFORMANCE:');
     if (this.results.endpoints.length > 0) {
       this.results.endpoints.forEach(endpoint => {
-        console.log(`   ${endpoint.method} ${endpoint.path}:`);
-        console.log(`     Avg: ${endpoint.avgResponseTime?.toFixed(1)}ms, P95: ${endpoint.p95ResponseTime?.toFixed(1)}ms, Errors: ${endpoint.errorRate?.toFixed(1)}%`);
+        logger.debug(`   ${endpoint.method} ${endpoint.path}:`);
+        logger.debug(`     Avg: ${endpoint.avgResponseTime?.toFixed(1)}ms, P95: ${endpoint.p95ResponseTime?.toFixed(1)}ms, Errors: ${endpoint.errorRate?.toFixed(1)}%`);
       });
     } else {
-      console.log('   ⚠️  No API endpoints tested (server may not be running)');
+      logger.debug('   ⚠️  No API endpoints tested (server may not be running)');
     }
-    console.log('');
+    logger.debug('');
 
     // System Summary
-    console.log('⚙️  SYSTEM METRICS:');
-    console.log(`   Memory Usage: ${this.results.system.memoryUsage || 'N/A'} MB\n`);
+    logger.debug('⚙️  SYSTEM METRICS:');
+    logger.debug(`   Memory Usage: ${this.results.system.memoryUsage || 'N/A'} MB\n`);
 
     // Recommendations
-    console.log('🎯 RECOMMENDATIONS:');
+    logger.debug('🎯 RECOMMENDATIONS:');
     this.results.recommendations.forEach(rec => {
-      console.log(`   ${rec}`);
+      logger.debug(`   ${rec}`);
     });
-    console.log('');
+    logger.debug('');
 
     // Save detailed report
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -546,10 +547,10 @@ class PerformanceBaselineTool {
     }
     
     fs.writeFileSync(reportPath, JSON.stringify(this.results, null, 2));
-    console.log(`📄 Detailed report saved to: ${reportPath}`);
+    logger.debug(`📄 Detailed report saved to: ${reportPath}`);
     
-    console.log(`\n⏱️  Baseline capture completed in ${this.results.duration}ms`);
-    console.log('\n🚀 Use this data to measure improvements after Phase 2 optimizations!\n');
+    logger.debug(`\n⏱️  Baseline capture completed in ${this.results.duration}ms`);
+    logger.debug('\n🚀 Use this data to measure improvements after Phase 2 optimizations!\n');
   }
 }
 
@@ -559,10 +560,10 @@ async function main() {
   
   try {
     await tool.runBaseline();
-    console.log('✅ Performance baseline captured successfully!');
+    logger.debug('✅ Performance baseline captured successfully!');
     process.exit(0);
   } catch (error) {
-    console.error('❌ Baseline capture failed:', error);
+    logger.error('❌ Baseline capture failed:', error);
     process.exit(1);
   }
 }

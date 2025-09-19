@@ -6,6 +6,7 @@ import { initializeNamespacedWebSocket } from './services/websocket';
 import { closeNamespacedWebSocket } from './services/websocket/namespaced-websocket.service';
 import type { Worker as BullWorker } from 'bullmq';
 import { healthController } from './controllers/health.controller';
+import { logger } from './utils/logger';
 
 // Robust port parsing to guard against malformed env (e.g., '3000DATABRICKS_...')
 const envPort = process.env.PORT;
@@ -19,16 +20,16 @@ async function startServer() {
     const allowDegraded = process.env.NODE_ENV === 'test' || process.env.E2E_ALLOW_DEGRADED === '1';
     
     if (!servicesInitialized) {
-      console.error('❌ Critical services failed to initialize');
+      logger.error('❌ Critical services failed to initialize');
       if (!serviceManager.isHealthy()) {
         if (allowDegraded) {
-          console.warn('⚠️  Starting server with degraded functionality (test mode)');
+          logger.warn('⚠️  Starting server with degraded functionality (test mode)');
         } else {
-          console.error('❌ Cannot start server without critical services');
+          logger.error('❌ Cannot start server without critical services');
           process.exit(1);
         }
       } else {
-        console.warn('⚠️  Starting server with partially initialized services');
+        logger.warn('⚠️  Starting server with partially initialized services');
       }
     }
     
@@ -44,7 +45,7 @@ async function startServer() {
     // Optional debug: Log HTTP requests (enable with API_DEBUG=1)
     if (process.env.API_DEBUG === '1') {
       httpServer.on('request', (req, res) => {
-        console.log('🔧 DEBUG: HTTP SERVER - Request received:', {
+        logger.debug('🔧 DEBUG: HTTP SERVER - Request received:', {
           method: req.method,
           url: req.url,
           headers: {
@@ -58,30 +59,32 @@ async function startServer() {
     
     // Initialize Namespaced WebSocket server (after Redis is ready)
     const wsService = initializeNamespacedWebSocket(httpServer);
-    console.log('✅ Namespaced WebSocket server initialized');
+    logger.debug('✅ Namespaced WebSocket server initialized');
     
     // Start HTTP server
     httpServer.listen(PORT, () => {
-      console.log(`🚀 ClassWaves Backend Server running on port ${PORT}`);
-      console.log(`📍 Environment: ${process.env.NODE_ENV}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/api/v1/health`);
-      console.log(`🔌 WebSocket endpoint: ws://localhost:${PORT}`);
+      logger.debug(`🚀 ClassWaves Backend Server running on port ${PORT}`);
+      logger.debug(`📍 Environment: ${process.env.NODE_ENV}`);
+      logger.debug(`🔗 Health check: http://localhost:${PORT}/api/v1/health`);
+      logger.debug(`🔌 WebSocket endpoint: ws://localhost:${PORT}`);
       
       // Start periodic health monitoring
       healthController.startPeriodicHealthCheck();
-      console.log('🏥 Periodic health monitoring started (5-minute intervals)');
+      logger.debug('🏥 Periodic health monitoring started (5-minute intervals)');
       
       // Log final service health status
       if (serviceManager.isHealthy()) {
-        console.log('✅ All critical services healthy');
+        logger.debug('✅ All critical services healthy');
       } else {
-        console.warn('⚠️  Server running with some services degraded');
+        logger.warn('⚠️  Server running with some services degraded');
       }
       // Initialize rate limiters now that services are up
       try {
         const { initializeRateLimiters } = require('./middleware/rate-limit.middleware');
         initializeRateLimiters()?.catch?.(() => undefined);
-      } catch {}
+      } catch (_error) {
+        // Best effort: rate limiter init failures are logged elsewhere and should not block startup.
+      }
 
       // Optionally run STT worker inline in this process for dev convenience
       let sttWorker: BullWorker | undefined;
@@ -89,34 +92,52 @@ async function startServer() {
         if (String(process.env.STT_INLINE_WORKER || '0') === '1') {
           const { startAudioSttWorker } = require('./workers/audio-stt.worker');
           sttWorker = startAudioSttWorker();
-          try { (global as any).sttWorker = sttWorker; } catch {}
-          console.log('🎧 STT worker running inline with server (STT_INLINE_WORKER=1)');
+          try { (global as any).sttWorker = sttWorker; } catch (_error) {
+            // Non-fatal: global assignment is advisory for tests and can be safely ignored.
+          }
+          logger.debug('🎧 STT worker running inline with server (STT_INLINE_WORKER=1)');
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn('⚠️ Failed to start inline STT worker (non-blocking):', msg);
+        logger.warn('⚠️ Failed to start inline STT worker (non-blocking):', msg);
       }
     });
 
     // Graceful shutdown handling
     const graceful = async (signal: string) => {
-      console.log(`🔄 Received ${signal}, shutting down gracefully...`);
-      try { await closeNamespacedWebSocket(); } catch {}
-      try { healthController.stopPeriodicHealthCheck(); } catch {}
+      logger.debug(`🔄 Received ${signal}, shutting down gracefully...`);
+      try { await closeNamespacedWebSocket(); } catch (_error) {
+        // Ignore: shutdown proceeds even if websocket namespace was not initialized.
+      }
+      try { healthController.stopPeriodicHealthCheck(); } catch (_error) {
+        // Ignore: health checks are best-effort and may already be stopped.
+      }
       try {
         // Attempt to stop inline worker if present
         const anyGlobal: any = global as any;
         if (typeof (anyGlobal?.sttWorker?.close) === 'function') {
           await anyGlobal.sttWorker.close();
         }
-      } catch {}
-      try { await serviceManager.shutdown(); } catch {}
+      } catch (_error) {
+        // Ignore: STT worker cleanup is best effort during shutdown.
+      }
+      try { await serviceManager.shutdown(); } catch (_error) {
+        // Ignore: service manager handles partial shutdown internally.
+      }
       try {
         // Destroy open sockets to allow httpServer.close callback to fire
-        sockets.forEach((s) => { try { s.destroy(); } catch {} });
-      } catch {}
+        sockets.forEach((s) => {
+          try {
+            s.destroy();
+          } catch (_socketError) {
+            // Ignore: destroying an already closed socket is safe to skip.
+          }
+        });
+      } catch (_error) {
+        // Ignore: failing to destroy individual sockets should not block shutdown.
+      }
       httpServer.close(() => {
-        console.log('✅ Server shut down complete');
+        logger.debug('✅ Server shut down complete');
         process.exit(0);
       });
       // Fallback hard-exit if close hangs
@@ -132,7 +153,7 @@ async function startServer() {
     });
 
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    logger.error('❌ Failed to start server:', error);
     await serviceManager.shutdown();
     process.exit(1);
   }

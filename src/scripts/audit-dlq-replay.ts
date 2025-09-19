@@ -1,5 +1,6 @@
 import { redisService } from '../services/redis.service';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 const DLQ_KEY = process.env.AUDIT_LOG_DLQ_KEY || 'audit:log:dlq';
 const STREAM_KEY = process.env.AUDIT_LOG_STREAM_KEY || 'audit:log';
@@ -8,7 +9,7 @@ const BATCH = parseInt(process.env.AUDIT_DLQ_REPLAY_BATCH || '200', 10);
 
 async function main(): Promise<void> {
   const client = redisService.getClient();
-  console.log(`🔁 DLQ replay starting (mode=${MODE})`);
+  logger.debug(`🔁 DLQ replay starting (mode=${MODE})`);
   let cursor: string | null = '0-0';
   let processed = 0;
   while (cursor) {
@@ -31,7 +32,7 @@ async function main(): Promise<void> {
           await client.xdel(DLQ_KEY, id);
           processed++;
         } catch (e) {
-          console.warn('DLQ replay stream failed for id', id, e);
+          logger.warn('DLQ replay stream failed for id', id, e);
         }
       }
     } else {
@@ -46,7 +47,7 @@ async function main(): Promise<void> {
           rows.push(row);
           idsToDel.push(id);
         } catch (e) {
-          console.warn('DLQ parse failed for id', id, e);
+          logger.warn('DLQ parse failed for id', id, e);
         }
       }
       if (rows.length > 0) {
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
           await client.xdel(DLQ_KEY, ...idsToDel);
           processed += rows.length;
         } catch (e) {
-          console.error('DLQ DB replay failed, stopping to avoid data loss', e);
+          logger.error('DLQ DB replay failed, stopping to avoid data loss', e);
           break;
         }
       }
@@ -65,13 +66,12 @@ async function main(): Promise<void> {
     cursor = lastId;
     if (res.length < BATCH) break; // done
   }
-  console.log(`✅ DLQ replay complete. processed=${processed}`);
+  logger.debug(`✅ DLQ replay complete. processed=${processed}`);
 }
 
 if (require.main === module) {
   main().catch((e) => {
-    console.error('DLQ replay failed', e);
+    logger.error('DLQ replay failed', e);
     process.exit(1);
   });
 }
-

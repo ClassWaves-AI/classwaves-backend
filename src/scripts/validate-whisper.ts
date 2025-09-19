@@ -8,6 +8,7 @@
 import axios from 'axios';
 import FormData = require('form-data');
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -49,7 +50,7 @@ async function main() {
   const key = process.env.OPENAI_API_KEY || '';
   const timeout = Number(process.env.OPENAI_WHISPER_TIMEOUT_MS || 15000);
   if (!key) {
-    console.error('OPENAI_API_KEY is not set.');
+    logger.error('OPENAI_API_KEY is not set.');
     process.exit(1);
   }
   const wav = makeSilentWav({ seconds: 1, sampleRate: 16000 });
@@ -59,26 +60,25 @@ async function main() {
   form.append('response_format', 'json');
   form.append('language', 'en');
 
-  console.log('Posting 1s silent WAV to Whisper…');
+  logger.debug('Posting 1s silent WAV to Whisper…');
   const resp = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
     headers: { Authorization: `Bearer ${key}`, ...form.getHeaders() },
     timeout,
     validateStatus: () => true,
   });
 
-  console.log('HTTP', resp.status);
+  logger.debug('HTTP', resp.status);
   if (resp.status >= 200 && resp.status < 300) {
     const text = (resp.data?.text || '').toString();
-    console.log('OK. Text length:', text.length);
-    console.log('Preview:', text.slice(0, 120));
+    logger.debug('OK. Text length:', text.length);
+    logger.debug('Preview:', text.slice(0, 120));
     process.exit(0);
   }
-  console.error('Whisper error:', resp.status, resp.data?.error || resp.data);
+  logger.error('Whisper error:', resp.status, resp.data?.error || resp.data);
   process.exit(2);
 }
 
 main().catch((e) => {
-  console.error('Script error:', e?.message || String(e));
+  logger.error('Script error:', e?.message || String(e));
   process.exit(3);
 });
-

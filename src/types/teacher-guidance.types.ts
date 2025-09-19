@@ -37,6 +37,20 @@ export interface TeacherPrompt {
   subject: SubjectArea;
   targetMetric?: string; // Which AI insight triggered this prompt
   learningObjectives?: string[];
+  contextSummary?: string;
+  contextEvidence?: {
+    actionLine?: string;
+    reason?: string;
+    priorTopic?: string;
+    currentTopic?: string;
+    transitionIdea?: string;
+    contextSummary?: string;
+    quotes?: Array<{ speakerLabel: string; text: string; timestamp: string }>;
+    supportingLines?: Array<{ speaker: string; quote: string; timestamp: string }>;
+    confidence?: number;
+  };
+  bridgingPrompt?: string;
+  onTrackSummary?: string;
   
   // Effectiveness
   effectivenessScore?: number;

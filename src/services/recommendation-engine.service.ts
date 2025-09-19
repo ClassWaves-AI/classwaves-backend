@@ -13,10 +13,8 @@
  * ✅ PERFORMANCE: Cached recommendations with real-time updates
  */
 
-import { databricksService } from './databricks.service';
-import { databricksAIService } from './databricks-ai.service';
-import { TeacherPrompt } from '../types/teacher-guidance.types';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
+import { logger } from '../utils/logger';
 
 // Validation moved to edges; define types here.
 type RecommendationContext = {
@@ -158,7 +156,7 @@ export class RecommendationEngineService {
     
     // Initialize teacher profiles asynchronously (non-blocking)
     this.loadTeacherProfiles().catch(error => {
-      console.warn('⚠️  Teacher profile initialization failed, using fallback:', error);
+      logger.warn('⚠️  Teacher profile initialization failed, using fallback:', error);
     });
     
     // Start periodic model updates (skip in tests to avoid open-handle leaks)
@@ -166,7 +164,7 @@ export class RecommendationEngineService {
       this.startModelUpdateProcess();
     }
     
-    console.log('🤖 Recommendation Engine Service initialized', {
+    logger.debug('🤖 Recommendation Engine Service initialized', {
       modelsLoaded: this.models.size,
       knowledgeBaseEntries: this.knowledgeBase.size,
       cacheExpiration: this.config.cacheExpirationMs,
@@ -208,7 +206,7 @@ export class RecommendationEngineService {
       const cacheKey = this.generateCacheKey(insights, validatedContext);
       const cached = this.getCachedRecommendations(cacheKey);
       if (cached) {
-        console.log(`📋 Returning cached recommendations for ${validatedContext.sessionId}`);
+        logger.debug(`📋 Returning cached recommendations for ${validatedContext.sessionId}`);
         return cached;
       }
 
@@ -254,13 +252,17 @@ export class RecommendationEngineService {
       this.cacheRecommendations(cacheKey, finalRecommendations);
 
       const processingTime = Date.now() - startTime;
-      console.log(`✅ Generated ${finalRecommendations.length} recommendations for ${validatedContext.sessionId} in ${processingTime}ms`);
+      logger.debug(`✅ Generated ${finalRecommendations.length} recommendations for ${validatedContext.sessionId} in ${processingTime}ms`);
 
       return finalRecommendations;
 
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      console.error(`❌ Recommendation generation failed:`, error);
+      logger.error('❌ Recommendation generation failed', {
+        sessionId: context.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+        processingTime,
+      });
       
       // ✅ COMPLIANCE: Audit log for errors
       await this.auditLog({
@@ -313,10 +315,10 @@ export class RecommendationEngineService {
         feedbackUsed: feedback.used
       });
 
-      console.log(`📊 Recommendation feedback recorded: ${recommendationId} (rating: ${feedback.rating})`);
+      logger.debug(`📊 Recommendation feedback recorded: ${recommendationId} (rating: ${feedback.rating})`);
 
     } catch (error) {
-      console.error(`❌ Failed to record recommendation feedback:`, error);
+      logger.error(`❌ Failed to record recommendation feedback:`, error);
       throw error;
     }
   }
@@ -390,7 +392,7 @@ export class RecommendationEngineService {
   private async generateInsightBasedRecommendations(
     insights: Tier1Insights | Tier2Insights,
     context: RecommendationContext,
-    teacherProfile: TeacherProfile
+    _teacherProfile: TeacherProfile
   ): Promise<TeachingRecommendation[]> {
     const recommendations: TeachingRecommendation[] = [];
 
@@ -509,7 +511,7 @@ export class RecommendationEngineService {
       }
 
     } catch (error) {
-      console.warn('Historical analysis failed:', error);
+      logger.warn('Historical analysis failed:', error);
     }
 
     return recommendations;
@@ -815,6 +817,7 @@ export class RecommendationEngineService {
 
   private generateSuccessIndicators(expectedOutcome: string): string[] {
     return [
+      `Observable progress toward: ${expectedOutcome}`,
       'Increased student participation',
       'More on-topic discussion',
       'Higher engagement levels',
@@ -890,12 +893,12 @@ export class RecommendationEngineService {
     return profile;
   }
 
-  private async getHistoricalSessionData(teacherId: string, subject: string, phase: string): Promise<any[]> {
+  private async getHistoricalSessionData(_teacherId: string, _subject: string, _phase: string): Promise<any[]> {
     // Placeholder for historical data retrieval
     return [];
   }
 
-  private identifySuccessfulStrategies(historicalData: any[], profile: TeacherProfile): any[] {
+  private identifySuccessfulStrategies(_historicalData: any[], _profile: TeacherProfile): any[] {
     // Placeholder for strategy identification
     return [];
   }
@@ -954,7 +957,7 @@ export class RecommendationEngineService {
   }
 
   private initializeModels(): void {
-    console.log('🤖 Initializing recommendation models...');
+    logger.debug('🤖 Initializing recommendation models...');
     
     // Initialize core recommendation models
     const models = [
@@ -1015,11 +1018,11 @@ export class RecommendationEngineService {
       this.models.set(model.modelId, model);
     });
 
-    console.log(`✅ Loaded ${this.models.size} recommendation models`);
+    logger.debug(`✅ Loaded ${this.models.size} recommendation models`);
   }
 
   private loadKnowledgeBase(): void {
-    console.log('📚 Loading teaching knowledge base...');
+    logger.debug('📚 Loading teaching knowledge base...');
     
     // Load subject-specific best practices
     const knowledgeBaseEntries = [
@@ -1127,11 +1130,11 @@ export class RecommendationEngineService {
       this.knowledgeBase.set(entry.id, entry);
     });
 
-    console.log(`✅ Loaded ${this.knowledgeBase.size} knowledge base entries`);
+    logger.debug(`✅ Loaded ${this.knowledgeBase.size} knowledge base entries`);
   }
 
   private async loadTeacherProfiles(): Promise<void> {
-    console.log('👥 Loading teacher profiles...');
+    logger.debug('👥 Loading teacher profiles...');
     
     try {
       // In production, this would query the database
@@ -1177,10 +1180,10 @@ export class RecommendationEngineService {
         this.knowledgeBase.set(`profile_template_${profile.pattern}`, profile.template);
       });
 
-      console.log('✅ Teacher profile system initialized (on-demand loading enabled)');
+      logger.debug('✅ Teacher profile system initialized (on-demand loading enabled)');
       
     } catch (error) {
-      console.error('❌ Failed to initialize teacher profiles:', error);
+      logger.error('❌ Failed to initialize teacher profiles:', error);
       // Don't throw - graceful degradation
     }
   }
@@ -1189,14 +1192,14 @@ export class RecommendationEngineService {
     // Periodic model retraining
     const t = setInterval(() => {
       this.updateModels().catch(error => {
-        console.error('❌ Model update failed:', error);
+        logger.error('❌ Model update failed:', error);
       });
     }, this.config.modelUpdateIntervalHours * 60 * 60 * 1000);
     (t as any).unref?.();
   }
 
   private async updateModels(): Promise<void> {
-    console.log('🔄 Updating recommendation models...');
+    logger.debug('🔄 Updating recommendation models...');
     // Model update logic
   }
 
@@ -1222,12 +1225,12 @@ export class RecommendationEngineService {
 
   private async storeFeedbackForTraining(
     recommendationId: string,
-    teacherId: string,
-    sessionId: string,
-    feedback: any
+    _teacherId: string,
+    _sessionId: string,
+    _feedback: any
   ): Promise<void> {
     // Store in database for ML training
-    console.log(`📊 Storing feedback for training: ${recommendationId}`);
+    logger.debug(`📊 Storing feedback for training: ${recommendationId}`);
   }
 
   private async auditLog(data: {
@@ -1259,7 +1262,7 @@ export class RecommendationEngineService {
         dataAccessed: data.error ? `error: ${data.error}` : 'recommendation_metadata'
       }).catch(() => {});
     } catch (error) {
-      console.warn('⚠️ Audit logging failed in recommendation engine:', error);
+      logger.warn('⚠️ Audit logging failed in recommendation engine:', error);
     }
   }
 }

@@ -1,15 +1,16 @@
 import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function testSessionCreation() {
   try {
-    console.log('🧪 Testing session creation with updated schema...');
+    logger.debug('🧪 Testing session creation with updated schema...');
     
     await databricksService.connect();
-    console.log('✅ Connected to Databricks');
+    logger.debug('✅ Connected to Databricks');
     
     // Test creating a session - this should now work without the 500 error
     const sessionData = {
@@ -25,11 +26,11 @@ async function testSessionCreation() {
     };
     
     const session = await databricksService.createSession(sessionData);
-    console.log('🎉 Session created successfully!');
-    console.log('📋 Session details:');
-    console.log('   Session ID:', session.sessionId);
-    console.log('   Access Code:', session.accessCode);
-    console.log('   Created At:', session.createdAt);
+    logger.debug('🎉 Session created successfully!');
+    logger.debug('📋 Session details:');
+    logger.debug('   Session ID:', session.sessionId);
+    logger.debug('   Access Code:', session.accessCode);
+    logger.debug('   Created At:', session.createdAt);
     
     // Verify the session was inserted correctly by querying it back
     const retrievedSession = await databricksService.queryOne(
@@ -38,20 +39,20 @@ async function testSessionCreation() {
     );
     
     if (retrievedSession) {
-      console.log('✅ Session retrieval successful');
-      console.log('   Has access_code:', !!retrievedSession.access_code);
-      console.log('   Has engagement_score:', typeof retrievedSession.engagement_score !== 'undefined');
-      console.log('   No participation_rate:', typeof retrievedSession.participation_rate === 'undefined');
-      console.log('   Title:', retrievedSession.title);
-      console.log('   Description:', retrievedSession.description);
+      logger.debug('✅ Session retrieval successful');
+      logger.debug('   Has access_code:', !!retrievedSession.access_code);
+      logger.debug('   Has engagement_score:', typeof retrievedSession.engagement_score !== 'undefined');
+      logger.debug('   No participation_rate:', typeof retrievedSession.participation_rate === 'undefined');
+      logger.debug('   Title:', retrievedSession.title);
+      logger.debug('   Description:', retrievedSession.description);
     } else {
-      console.log('❌ Could not retrieve session');
+      logger.debug('❌ Could not retrieve session');
     }
     
   } catch (error: any) {
-    console.error('❌ Error testing session creation:', error.message);
+    logger.error('❌ Error testing session creation:', error.message);
     if (error.stack) {
-      console.error('Stack trace:', error.stack.split('\n').slice(0, 5).join('\n'));
+      logger.error('Stack trace:', error.stack.split('\n').slice(0, 5).join('\n'));
     }
   }
   

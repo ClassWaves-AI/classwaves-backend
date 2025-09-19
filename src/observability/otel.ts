@@ -6,62 +6,62 @@
 */
 
 import type { Request, Response, NextFunction } from 'express';
+import { logger } from '../utils/logger';
 
 let tracer: any = null;
-let otelApi: any = null;
 let provider: any = null;
 let otelEnabled = false;
 
-export function initOtel() {
+export async function initOtel(): Promise<void> {
   if (otelEnabled) return;
   if (process.env.OTEL_ENABLED !== '1') return;
 
   try {
-    // Dynamic require avoids TypeScript compile-time resolution of optional deps
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { trace, context, propagation } = require('@opentelemetry/api');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { Resource } = require('@opentelemetry/resources');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+    const apiModule = await import('@opentelemetry/api');
+    const trace = apiModule.trace;
+    const { NodeTracerProvider } = await import('@opentelemetry/sdk-trace-node');
+    const { SimpleSpanProcessor } = await import('@opentelemetry/sdk-trace-base');
+    const resourcesModule = await import('@opentelemetry/resources');
+    const semanticModule = await import('@opentelemetry/semantic-conventions');
 
-    const resource = new Resource({
-      [SemanticResourceAttributes.SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || 'classwaves-backend',
-      [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: process.env.NODE_ENV || 'development',
-    });
+    const semanticAttrs = (semanticModule as any).SemanticResourceAttributes ?? (semanticModule as any).default?.SemanticResourceAttributes;
+    const resourceFactory = (resourcesModule as any).resourceFromAttributes ?? (resourcesModule as any).default?.resourceFromAttributes;
 
-    provider = new NodeTracerProvider({ resource });
+    const attributes = {
+      [semanticAttrs?.SERVICE_NAME ?? 'service.name']:
+        process.env.OTEL_SERVICE_NAME || 'classwaves-backend',
+      [semanticAttrs?.DEPLOYMENT_ENVIRONMENT ?? 'deployment.environment']:
+        process.env.NODE_ENV || 'development',
+    };
 
-    // Optional OTLP/gRPC exporter via env var
+    const resource = resourceFactory ? resourceFactory(attributes) : undefined;
+
+    provider = resource
+      ? new NodeTracerProvider({ resource })
+      : new NodeTracerProvider();
+
     try {
       const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
       if (endpoint) {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+        const { OTLPTraceExporter } = await import('@opentelemetry/exporter-trace-otlp-http');
         const exporter = new OTLPTraceExporter({ url: endpoint });
         provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
       }
-    } catch (e) {
-      // Exporter optional; carry on without it
-      // eslint-disable-next-line no-console
-      console.warn('OTEL exporter not configured or not installed; continuing without exporter');
+    } catch (exporterError) {
+      logger.debug('OTEL exporter not configured or not installed; continuing without exporter', {
+        error: exporterError instanceof Error ? exporterError.message : String(exporterError),
+      });
     }
 
     provider.register();
-    tracer = provider.getTracer('classwaves-tracer');
-    otelApi = { trace, context, propagation };
+    tracer = trace.getTracer('classwaves-tracer');
     otelEnabled = true;
-    // eslint-disable-next-line no-console
-    console.log('✅ OpenTelemetry initialized');
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('OTEL init skipped (packages not installed or failed to load):', (e as Error).message);
+    logger.debug('✅ OpenTelemetry initialized');
+  } catch (error) {
+    logger.warn('OTEL init skipped (packages not installed or failed to load)', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     tracer = null;
-    otelApi = null;
     provider = null;
     otelEnabled = false;
   }
@@ -87,7 +87,12 @@ export function httpTraceMiddleware() {
       try {
         span.setAttribute('http.status_code', res.statusCode);
         span.end();
-      } catch {}
+      } catch (error) {
+        logger.debug('OTEL span finish failed', {
+          name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     });
 
     next();
@@ -110,9 +115,13 @@ export function createRouteSpanMiddleware(component: string) {
       try {
         span.setAttribute('http.status_code', res.statusCode);
         span.end();
-      } catch {}
+      } catch (error) {
+        logger.debug('OTEL route span finish failed', {
+          component,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     });
     next();
   };
 }
-

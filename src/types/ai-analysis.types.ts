@@ -10,12 +10,62 @@
 // Tier 1 Analysis Types (30s Real-time Insights)
 // ============================================================================
 
+export interface PromptContextQuote {
+  speakerLabel: string;
+  text: string;
+  timestamp: string;
+}
+
+export interface PromptContextDescriptor {
+  actionLine?: string;
+  reason?: string;
+  priorTopic?: string;
+  currentTopic?: string;
+  transitionIdea?: string;
+  contextSummary?: string;
+  quotes?: PromptContextQuote[];
+  supportingLines?: Array<{
+    speaker?: string;
+    speakerLabel?: string;
+    quote?: string;
+    text?: string;
+    timestamp: string;
+  }>;
+  confidence?: number;
+}
+
+export interface GuidanceContextWindowLine {
+  speaker?: string;
+  text: string;
+}
+
+export interface GuidanceDriftSignal {
+  metric: string;
+  detail: string;
+  trend?: string;
+}
+
+export interface GuidanceContextSummarizerInput {
+  sessionGoal?: string;
+  domainTerms?: string[];
+  titlecaseMap?: Array<{ match: string; replacement: string }>;
+  driftSignals?: GuidanceDriftSignal[];
+  aligned: GuidanceContextWindowLine[];
+  current: GuidanceContextWindowLine[];
+}
+
+export interface EvidenceWindows {
+  aligned: PromptContextQuote[];
+  tangent: PromptContextQuote[];
+}
+
 export interface Tier1Options {
   groupId: string;
   sessionId: string;
   focusAreas?: ('topical_cohesion' | 'conceptual_density')[];
   windowSize?: number; // seconds, default 30
   includeMetadata?: boolean;
+  evidenceWindows?: EvidenceWindows;
   // Injected teacher-provided context for anchoring analysis
   sessionContext?: {
     subject?: string;
@@ -55,6 +105,7 @@ export interface Tier1Insights {
     modelVersion: string;
     rawScores?: Record<string, number>;
   };
+  context?: PromptContextDescriptor;
 }
 
 // ============================================================================

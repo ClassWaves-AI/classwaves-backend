@@ -17,6 +17,7 @@ import { databricksService } from './databricks.service';
 import { teacherPromptService } from './teacher-prompt.service';
 import { guidanceSystemHealthService } from './guidance-system-health.service';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Analytics Validation Types
@@ -70,7 +71,7 @@ export class AnalyticsTrackingValidatorService {
    */
   async validateAnalyticsTracking(): Promise<AnalyticsValidationReport> {
     const startTime = Date.now();
-    console.log('🔍 Starting comprehensive analytics tracking validation...');
+    logger.debug('🔍 Starting comprehensive analytics tracking validation...');
 
     const results: ValidationResult[] = [];
     
@@ -127,7 +128,7 @@ export class AnalyticsTrackingValidatorService {
     };
 
     // Log results
-    console.log(`✅ Analytics validation completed: ${passedTests}/${results.length} tests passed (${(successRate * 100).toFixed(1)}%)`);
+    logger.debug(`✅ Analytics validation completed: ${passedTests}/${results.length} tests passed (${(successRate * 100).toFixed(1)}%)`);
     
     // Record in health monitoring
     if (successRate > 0.8) {
@@ -143,7 +144,7 @@ export class AnalyticsTrackingValidatorService {
    * Test specific analytics component
    */
   async testComponent(component: string): Promise<ValidationResult[]> {
-    console.log(`🔍 Testing analytics component: ${component}`);
+    logger.debug(`🔍 Testing analytics component: ${component}`);
     
     const componentTests: Record<string, () => Promise<ValidationResult>> = {
       'prompt_generation': () => this.testPromptGeneration(),
@@ -177,7 +178,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'prompt_generation_tracking';
     
     try {
-      console.log('   Testing prompt generation tracking...');
+      logger.debug('   Testing prompt generation tracking...');
       
       // Generate test insights
       const testInsights = {
@@ -238,7 +239,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'prompt_database_storage';
     
     try {
-      console.log('   Testing prompt database storage...');
+      logger.debug('   Testing prompt database storage...');
 
       // Check if test prompts were stored in database
       const storedPrompts = await databricksService.query(`
@@ -287,7 +288,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'interaction_tracking';
     
     try {
-      console.log('   Testing interaction tracking...');
+      logger.debug('   Testing interaction tracking...');
 
       // Create a test prompt interaction
       const testPromptId = `test_prompt_${uuidv4()}`;
@@ -342,7 +343,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'effectiveness_calculation';
     
     try {
-      console.log('   Testing effectiveness calculation...');
+      logger.debug('   Testing effectiveness calculation...');
 
       // Check if effectiveness calculations are working
       const effectivenessData = await databricksService.query(`
@@ -398,7 +399,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'session_analytics';
     
     try {
-      console.log('   Testing session analytics...');
+      logger.debug('   Testing session analytics...');
 
       // Get session metrics from teacher prompt service
       const sessionMetrics = teacherPromptService.getSessionMetrics(this.testSessionId);
@@ -441,7 +442,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'group_analytics';
     
     try {
-      console.log('   Testing group analytics...');
+      logger.debug('   Testing group analytics...');
 
       // Check for group-level prompt data
       const groupAnalytics = await databricksService.query(`
@@ -492,7 +493,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'data_integrity';
     
     try {
-      console.log('   Testing data integrity...');
+      logger.debug('   Testing data integrity...');
 
       // Check for required columns and constraints
       const tableSchema = await databricksService.query(`
@@ -543,7 +544,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'performance_metrics';
     
     try {
-      console.log('   Testing performance metrics...');
+      logger.debug('   Testing performance metrics...');
 
       // Test prompt generation performance
       const perfStartTime = Date.now();
@@ -604,7 +605,7 @@ export class AnalyticsTrackingValidatorService {
     const testName = 'compliance_auditing';
     
     try {
-      console.log('   Testing compliance auditing...');
+      logger.debug('   Testing compliance auditing...');
 
       // Check if audit logs are being created for analytics operations
       const auditLogs = await databricksService.query(`
@@ -701,7 +702,7 @@ export class AnalyticsTrackingValidatorService {
    */
   async cleanup(): Promise<void> {
     try {
-      console.log('🧹 Cleaning up test data...');
+      logger.debug('🧹 Cleaning up test data...');
       
       // Remove test data from database
       await databricksService.query(`
@@ -709,10 +710,10 @@ export class AnalyticsTrackingValidatorService {
         WHERE session_id = ? OR teacher_id = ? OR group_id = ?
       `, [this.testSessionId, this.testTeacherId, this.testGroupId]);
 
-      console.log('✅ Test data cleanup completed');
+      logger.debug('✅ Test data cleanup completed');
       
     } catch (error) {
-      console.warn('⚠️ Test data cleanup failed:', error);
+      logger.warn('⚠️ Test data cleanup failed:', error);
     }
   }
 }

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -16,12 +17,12 @@ async function showCatalogStructure() {
     }
   };
 
-  console.log('📚 ClassWaves Unity Catalog Structure\n');
-  console.log('=' .repeat(60));
-  console.log(`Catalog: ${catalog}`);
-  console.log(`Host: ${host}`);
-  console.log(`Warehouse: ${warehouseId}`);
-  console.log('=' .repeat(60) + '\n');
+  logger.debug('📚 ClassWaves Unity Catalog Structure\n');
+  logger.debug('=' .repeat(60));
+  logger.debug(`Catalog: ${catalog}`);
+  logger.debug(`Host: ${host}`);
+  logger.debug(`Warehouse: ${warehouseId}`);
+  logger.debug('=' .repeat(60) + '\n');
 
   async function executeStatement(statement: string): Promise<any> {
     try {
@@ -79,11 +80,11 @@ async function showCatalogStructure() {
     .filter((s: string) => s !== 'information_schema' && s !== 'default')
     .sort();
 
-  console.log(`Found ${schemas.length} schemas:\n`);
+  logger.debug(`Found ${schemas.length} schemas:\n`);
 
   // For each schema, get tables
   for (const schema of schemas) {
-    console.log(`📁 ${schema}`);
+    logger.debug(`📁 ${schema}`);
     
     const tablesResult = await executeStatement(`SHOW TABLES IN ${catalog}.${schema}`);
     
@@ -106,19 +107,19 @@ async function showCatalogStructure() {
         );
         
         const rowCount = countResult ? countResult.data_array[0][0] : '?';
-        console.log(`   📋 ${table} (${rowCount} rows)`);
+        logger.debug(`   📋 ${table} (${rowCount} rows)`);
       }
     } else {
-      console.log(`   (no tables)`);
+      logger.debug(`   (no tables)`);
     }
     
-    console.log('');
+    logger.debug('');
   }
 
   // Summary statistics
-  console.log('=' .repeat(60));
-  console.log('📊 Summary Statistics:');
-  console.log('=' .repeat(60));
+  logger.debug('=' .repeat(60));
+  logger.debug('📊 Summary Statistics:');
+  logger.debug('=' .repeat(60));
   
   const stats = [
     { table: 'users.schools', label: 'Schools' },
@@ -137,11 +138,11 @@ async function showCatalogStructure() {
     
     if (result && result.data_array.length > 0) {
       const count = result.data_array[0][0];
-      console.log(`${label}: ${count}`);
+      logger.debug(`${label}: ${count}`);
     }
   }
 
-  console.log('\n✨ Catalog structure display complete!');
+  logger.debug('\n✨ Catalog structure display complete!');
 }
 
 showCatalogStructure().catch(console.error);

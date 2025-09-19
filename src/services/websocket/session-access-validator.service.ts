@@ -8,6 +8,7 @@
 import { Socket } from 'socket.io';
 import { databricksService } from '../databricks.service';
 import { SecurityContext } from './websocket-security-validator.service';
+import { logger } from '../../utils/logger';
 
 export interface SessionAccessResult {
   allowed: boolean;
@@ -73,7 +74,7 @@ export class SessionAccessValidator {
       };
 
     } catch (error) {
-      console.error('Session access validation error:', error);
+      logger.error('Session access validation error:', error);
       return {
         allowed: false,
         reason: 'Session access validation failed'
@@ -194,7 +195,7 @@ export class SessionAccessValidator {
       
       return !!session;
     } catch (error) {
-      console.error('Error validating session existence:', error);
+      logger.error('Error validating session existence:', error);
       return false;
     }
   }
@@ -267,7 +268,7 @@ export class SessionAccessValidator {
       }
 
     } catch (error) {
-      console.error('Error fetching accessible sessions:', error);
+      logger.error('Error fetching accessible sessions:', error);
     }
 
     return result;
@@ -328,7 +329,7 @@ export class SessionAccessValidator {
       };
 
     } catch (error) {
-      console.error('Group access validation error:', error);
+      logger.error('Group access validation error:', error);
       return {
         allowed: false,
         reason: 'Group access validation failed'

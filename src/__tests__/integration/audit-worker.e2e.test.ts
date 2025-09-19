@@ -21,8 +21,8 @@ describe('Audit Worker E2E', () => {
   });
 
   afterAll(async () => {
-    try { await client.del(STREAM_KEY); } catch {}
-    try { await client.del(DLQ_KEY); } catch {}
+    try { await client.del(STREAM_KEY); } catch { /* intentionally ignored: best effort cleanup */ }
+    try { await client.del(DLQ_KEY); } catch { /* intentionally ignored: best effort cleanup */ }
     await client.quit();
   });
 

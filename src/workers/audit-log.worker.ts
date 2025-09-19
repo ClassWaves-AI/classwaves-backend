@@ -3,6 +3,7 @@ import { databricksService } from '../services/databricks.service';
 import { createAuditSampler } from './audit-sampler';
 import { createAuditRollups } from './audit-rollups';
 import { incDbFailures, incDropped, incProcessed, incRollupFlushed, startMetricsLogger, stopMetricsLogger } from './audit-metrics';
+import { logger } from '../utils/logger';
 
 const STREAM_KEY = process.env.AUDIT_LOG_STREAM_KEY || 'audit:log';
 const GROUP = process.env.AUDIT_LOG_CONSUMER_GROUP || 'auditlog';
@@ -27,12 +28,12 @@ export class AuditLogWorker {
     const client = redisService.getClient();
     try {
       await client.xgroup('CREATE', STREAM_KEY, GROUP, '$', 'MKSTREAM');
-      console.log(`✅ Created consumer group ${GROUP} on ${STREAM_KEY}`);
+      logger.debug(`✅ Created consumer group ${GROUP} on ${STREAM_KEY}`);
     } catch (e: any) {
       if (e?.message?.includes('BUSYGROUP')) {
         // exists
       } else {
-        console.warn('audit: xgroup create failed', e);
+        logger.warn('audit: xgroup create failed', e);
       }
     }
   }
@@ -52,7 +53,7 @@ export class AuditLogWorker {
     const sampler = createAuditSampler();
     const rollups = createAuditRollups();
     startMetricsLogger(() => this.getQueueDepth());
-    console.log('🚀 AuditLogWorker started', { STREAM_KEY, GROUP, CONSUMER, BATCH_SIZE, BLOCK_MS });
+    logger.debug('🚀 AuditLogWorker started', { STREAM_KEY, GROUP, CONSUMER, BATCH_SIZE, BLOCK_MS });
 
     const client = redisService.getClient();
 
@@ -146,7 +147,7 @@ export class AuditLogWorker {
             incRollupFlushed(rollupRows.length);
             this.lastRollupFlush = Date.now();
           } catch (e) {
-            console.warn('audit: rollup flush failed', e);
+            logger.warn('audit: rollup flush failed', e);
             // on failure, drop silently; we still ack below to avoid pile-up
           }
         }
@@ -160,7 +161,7 @@ export class AuditLogWorker {
               await databricksService.recordAuditLogBatch(rows as any);
               incProcessed(rows.length);
             } catch (e) {
-              console.error('audit: batch insert failed, entering cooldown', e);
+              logger.error('audit: batch insert failed, entering cooldown', e);
               incDbFailures(1);
               this.dbCooldownUntil = Date.now() + DB_COOLDOWN_MS;
               // DLQ criticals
@@ -185,11 +186,11 @@ export class AuditLogWorker {
           try {
             await client.xack(STREAM_KEY, GROUP, id);
           } catch (e) {
-            console.warn('audit: xack failed', e);
+            logger.warn('audit: xack failed', e);
           }
         }
       } catch (loopErr) {
-        console.warn('audit worker loop error', loopErr);
+        logger.warn('audit worker loop error', loopErr);
       }
     }
   }
@@ -204,11 +205,11 @@ export class AuditLogWorker {
 if (require.main === module) {
   const worker = new AuditLogWorker();
   worker.start().catch((e) => {
-    console.error('audit worker failed to start', e);
+    logger.error('audit worker failed to start', e);
     process.exitCode = 1;
   });
   const shutdown = async () => {
-    console.log('🛑 Shutting down audit worker...');
+    logger.debug('🛑 Shutting down audit worker...');
     await worker.stop();
     process.exit(0);
   };

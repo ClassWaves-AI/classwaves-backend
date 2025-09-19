@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
 import { validate, validateQuery, validateParams } from '../middleware/validation.middleware';
 import * as aiController from '../controllers/ai-analysis.controller';
+import { logger } from '../utils/logger';
 
 // ============================================================================
 // Input Validation Schemas
@@ -171,12 +172,12 @@ const aiSecurityMiddleware = (req: express.Request, res: express.Response, next:
   
   // Allow public access to status endpoints
   if (publicPaths.includes(requestPath)) {
-    console.log(`🔓 AI Status endpoint accessed publicly: ${requestPath}`);
+    logger.debug(`🔓 AI Status endpoint accessed publicly: ${requestPath}`);
     return next();
   }
   
   // Require authentication for all other AI endpoints
-  console.log(`🔐 AI endpoint requires authentication: ${requestPath}`);
+  logger.debug(`🔐 AI endpoint requires authentication: ${requestPath}`);
   return authenticate(req, res, next);
 };
 
@@ -339,7 +340,7 @@ router.post('/sessions/:sessionId/generate-prompts',
         }
       });
     } catch (error) {
-      console.error('Teacher prompt generation failed:', error);
+      logger.error('Teacher prompt generation failed:', error);
       res.status(500).json({
         success: false,
         error: 'PROMPT_GENERATION_FAILED',
@@ -411,7 +412,7 @@ router.get('/sessions/:sessionId/prompts',
         }
       });
     } catch (error) {
-      console.error('Failed to get session prompts:', error);
+      logger.error('Failed to get session prompts:', error);
       res.status(500).json({
         success: false,
         error: 'PROMPTS_RETRIEVAL_FAILED',
@@ -452,7 +453,7 @@ router.post('/sessions/:sessionId/prompts/:promptId/interact',
         message: `Prompt ${interactionType} recorded successfully`
       });
     } catch (error) {
-      console.error('Failed to record prompt interaction:', error);
+      logger.error('Failed to record prompt interaction:', error);
       res.status(500).json({
         success: false,
         error: 'INTERACTION_RECORDING_FAILED',
@@ -516,7 +517,7 @@ router.get('/status',
       // Return filtered response for public access
       res.json(getPublicStatusResponse(fullStatus));
     } catch (error) {
-      console.error('Status check failed:', error);
+      logger.error('Status check failed:', error);
       res.status(500).json({
         success: false,
         error: 'STATUS_CHECK_FAILED',
@@ -550,7 +551,7 @@ router.get('/tier1/status',
         uptime: Math.floor(process.uptime())
       });
     } catch (error) {
-      console.error('Tier 1 status check failed:', error);
+      logger.error('Tier 1 status check failed:', error);
       res.status(500).json({
         success: false,
         error: 'TIER1_STATUS_FAILED',
@@ -584,7 +585,7 @@ router.get('/tier2/status',
         uptime: Math.floor(process.uptime())
       });
     } catch (error) {
-      console.error('Tier 2 status check failed:', error);
+      logger.error('Tier 2 status check failed:', error);
       res.status(500).json({
         success: false,
         error: 'TIER2_STATUS_FAILED',
@@ -599,7 +600,7 @@ router.get('/tier2/status',
 // ============================================================================
 
 router.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('AI Analysis Routes Error:', error);
+  logger.error('AI Analysis Routes Error:', error);
   
   // Handle specific AI analysis errors
   if (error.code && ['DATABRICKS_TIMEOUT', 'DATABRICKS_AUTH', 'DATABRICKS_QUOTA', 'ANALYSIS_FAILED'].includes(error.code)) {

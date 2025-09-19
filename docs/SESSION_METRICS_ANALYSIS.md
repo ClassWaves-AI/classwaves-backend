@@ -1,6 +1,6 @@
 # Session Metrics Data Flow Analysis
 
-**Generated:** 2025-09-14T20:03:36.667Z
+**Generated:** 2025-09-17T15:54:03.584Z
 **Purpose:** Analyze how session metrics should flow across different tables
 
 ## Key Tables for Session Data
@@ -84,6 +84,7 @@
 - `summary_json` (string)
 - `analysis_timestamp` (timestamp)
 - `created_at` (timestamp)
+- `updated_at` (timestamp)
 
 ---
 
@@ -126,6 +127,14 @@
 - `data_retention_date` (date)
 - `created_at` (timestamp)
 - `updated_at` (timestamp)
+- `context_reason` (string)
+- `context_prior_topic` (string)
+- `context_current_topic` (string)
+- `context_transition_idea` (string)
+- `context_supporting_lines` (array<struct<speaker:string,quote:string,timestamp:timestamp>>)
+- `bridging_prompt` (string)
+- `context_confidence` (double)
+- `on_track_summary` (string)
 
 ---
 
@@ -283,6 +292,7 @@
 - `leader_ready_at` (timestamp)
 - `members_configured` (int)
 - `members_present` (int)
+- `updated_at` (timestamp)
 
 ---
 
@@ -366,6 +376,7 @@
 - `event_time` (timestamp)
 - `payload` (string)
 - `created_at` (timestamp)
+- `updated_at` (timestamp)
 
 ---
 
@@ -430,6 +441,7 @@
 - `ready_groups_at_5m` (int)
 - `ready_groups_at_10m` (int)
 - `adherence_members_ratio` (double)
+- `updated_at` (timestamp)
 
 ---
 

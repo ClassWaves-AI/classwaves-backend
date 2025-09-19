@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { cacheManager } from './cache-manager.service';
 import { bumpTagEpoch } from './tag-epoch.service';
 import { getNamespacedWebSocketService } from './websocket/namespaced-websocket.service';
+import { logger } from '../utils/logger';
 
 /**
  * Event-Driven Cache Invalidation System
@@ -83,7 +84,7 @@ export class CacheInvalidationStrategies {
       // Emit to guidance:all for dashboards/teacher pages
       ws.getGuidanceService().emitCacheUpdatedGlobal(stamp);
     } catch (e) {
-      console.warn('⚠️  WS cache:updated emit failed:', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️  WS cache:updated emit failed:', e instanceof Error ? e.message : String(e));
     }
   }
   
@@ -93,7 +94,7 @@ export class CacheInvalidationStrategies {
   static async handleSessionCreated(event: SessionCreatedEvent): Promise<void> {
     const { teacherId, schoolId } = event.payload;
     
-    console.log(`🔄 Handling session created event for teacher ${teacherId}`);
+    logger.debug(`🔄 Handling session created event for teacher ${teacherId}`);
     
     // Invalidate teacher's session lists
     await cacheManager.invalidateByTag(`teacher:${teacherId}`);
@@ -116,7 +117,7 @@ export class CacheInvalidationStrategies {
   static async handleSessionUpdated(event: SessionUpdatedEvent): Promise<void> {
     const { sessionId, teacherId, changes } = event.payload;
     
-    console.log(`🔄 Handling session updated event for session ${sessionId}, changes:`, changes);
+    logger.debug(`🔄 Handling session updated event for session ${sessionId}, changes:`, changes);
     
     // Always invalidate the specific session detail
     await cacheManager.invalidateByTag(`session:${sessionId}`);
@@ -146,7 +147,7 @@ export class CacheInvalidationStrategies {
   static async handleSessionDeleted(event: SessionDeletedEvent): Promise<void> {
     const { sessionId, teacherId } = event.payload;
     
-    console.log(`🔄 Handling session deleted event for session ${sessionId}`);
+    logger.debug(`🔄 Handling session deleted event for session ${sessionId}`);
     
     // Invalidate all session-related caches
     await Promise.all([
@@ -166,7 +167,7 @@ export class CacheInvalidationStrategies {
   static async handleSessionStatusChanged(event: SessionStatusChangedEvent): Promise<void> {
     const { sessionId, teacherId, oldStatus, newStatus } = event.payload;
     
-    console.log(`🔄 Session ${sessionId} status: ${oldStatus} → ${newStatus}`);
+    logger.debug(`🔄 Session ${sessionId} status: ${oldStatus} → ${newStatus}`);
     
     // Always invalidate session detail and teacher lists
     await Promise.all([
@@ -198,7 +199,7 @@ export class CacheInvalidationStrategies {
   static async handleTeacherUpdated(event: TeacherUpdatedEvent): Promise<void> {
     const { teacherId, changes } = event.payload;
     
-    console.log(`🔄 Teacher ${teacherId} updated, changes:`, changes);
+    logger.debug(`🔄 Teacher ${teacherId} updated, changes:`, changes);
     
     // If profile data changed, invalidate teacher-related caches
     const profileChanges = ['name', 'email', 'role', 'status'];
@@ -220,7 +221,7 @@ export class CacheWarmer {
    */
   static async warmTeacherSessions(teacherId: string): Promise<void> {
     try {
-      console.log(`🔥 Warming session caches for teacher ${teacherId}`);
+      logger.debug(`🔥 Warming session caches for teacher ${teacherId}`);
       
       // Import dynamically to avoid circular dependencies
       const { getTeacherSessionsOptimized, getTeacherSessionsForDashboard } = await import('../controllers/session.controller');
@@ -241,17 +242,17 @@ export class CacheWarmer {
               ? await getTeacherSessionsForDashboard(teacherId, limit)
               : await getTeacherSessionsOptimized(teacherId, limit);
             await cacheManager.set(cacheKey, data, { tags, ttl, autoWarm: false });
-            console.log(`🔥 Warmed cache: ${cacheKey}`);
+            logger.debug(`🔥 Warmed cache: ${cacheKey}`);
           } catch (error) {
-            console.warn(`⚠️ Cache warming failed for ${teacherId}:`, error);
+            logger.warn(`⚠️ Cache warming failed for ${teacherId}:`, error);
           }
         })
       ).catch(error => {
-        console.warn('Cache warming batch failed:', error);
+        logger.warn('Cache warming batch failed:', error);
       });
       
     } catch (error) {
-      console.warn(`Cache warming failed for teacher ${teacherId}:`, error);
+      logger.warn(`Cache warming failed for teacher ${teacherId}:`, error);
     }
   }
   
@@ -260,13 +261,13 @@ export class CacheWarmer {
    */
   static async warmActiveSessionData(sessionId: string): Promise<void> {
     try {
-      console.log(`🔥 Warming active session data for ${sessionId}`);
+      logger.debug(`🔥 Warming active session data for ${sessionId}`);
       
       // Pre-warm commonly accessed data for active sessions
       // This is a placeholder - implement based on actual data access patterns
       
     } catch (error) {
-      console.warn(`Active session cache warming failed for ${sessionId}:`, error);
+      logger.warn(`Active session cache warming failed for ${sessionId}:`, error);
     }
   }
 }
@@ -297,13 +298,13 @@ export class CacheEventBus extends EventEmitter {
    */
   async emitCacheEvent(event: CacheEvent): Promise<void> {
     if (!this.isEnabled) {
-      console.log('Cache event bus disabled, skipping event:', event.type);
+      logger.debug('Cache event bus disabled, skipping event:', event.type);
       return;
     }
     
     try {
       this.eventCount++;
-      console.log(`📡 Cache event #${this.eventCount}: ${event.type}`);
+      logger.debug(`📡 Cache event #${this.eventCount}: ${event.type}`);
       
       // Emit to internal handlers
       this.emit(event.type, event);
@@ -312,7 +313,7 @@ export class CacheEventBus extends EventEmitter {
       this.emit('cache:event', event);
       
     } catch (error) {
-      console.error('Cache event emission failed:', error);
+      logger.error('Cache event emission failed:', error);
     }
   }
   
@@ -361,7 +362,7 @@ export class CacheEventBus extends EventEmitter {
    */
   setEnabled(enabled: boolean): void {
     this.isEnabled = enabled;
-    console.log(`Cache event bus ${enabled ? 'enabled' : 'disabled'}`);
+    logger.debug(`Cache event bus ${enabled ? 'enabled' : 'disabled'}`);
   }
   
   /**
@@ -387,13 +388,13 @@ export class CacheEventBus extends EventEmitter {
     
     // Global error handler
     this.on('error', (error) => {
-      console.error('Cache event bus error:', error);
+      logger.error('Cache event bus error:', error);
     });
     
     // Monitoring events
     this.on('cache:event', (event: CacheEvent) => {
       // Could send to monitoring service (DataDog, New Relic, etc.)
-      console.log(`📊 Cache event processed: ${event.type} at ${new Date(event.timestamp).toISOString()}`);
+      logger.debug(`📊 Cache event processed: ${event.type} at ${new Date(event.timestamp).toISOString()}`);
     });
   }
 }

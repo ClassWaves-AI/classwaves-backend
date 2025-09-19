@@ -2,6 +2,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 // Load environment variables (.env.local preferred, then .env)
 (() => {
@@ -45,9 +46,9 @@ Return JSON object: {"overview":"...","teacher_actions":[{"action":"...","priori
         temperature: 0.1,
       };
 
-  console.log('🔎 Validating summarizer endpoint...');
-  console.log('  URL:', url);
-  console.log('  Mode:', mode);
+  logger.debug('🔎 Validating summarizer endpoint...');
+  logger.debug('  URL:', url);
+  logger.debug('  Mode:', mode);
 
   try {
     const res = await axios.post(url, body, {
@@ -59,15 +60,15 @@ Return JSON object: {"overview":"...","teacher_actions":[{"action":"...","priori
       validateStatus: () => true,
     });
 
-    console.log('✅ HTTP status:', res.status, res.statusText);
+    logger.debug('✅ HTTP status:', res.status, res.statusText);
 
     const data = res.data;
     // Try to extract in common formats (chat, output, direct)
     const chatContent = data?.choices?.[0]?.message?.content;
     const output = data?.output;
     const preview = typeof chatContent === 'string' ? chatContent : (typeof output === 'string' ? output : JSON.stringify(output ?? data));
-    console.log('🗒️  Model content (first 300 chars):');
-    console.log(String(preview).slice(0, 300));
+    logger.debug('🗒️  Model content (first 300 chars):');
+    logger.debug(String(preview).slice(0, 300));
 
     const tryParse = (s: string) => {
       try { return JSON.parse(s); } catch { /* ignore */ }
@@ -93,12 +94,12 @@ Return JSON object: {"overview":"...","teacher_actions":[{"action":"...","priori
     if (!parsed && data && typeof data === 'object' && (data.overview || data.themes)) parsed = data;
 
     if (parsed) {
-      console.log('🧩 Parsed JSON keys:', Object.keys(parsed));
+      logger.debug('🧩 Parsed JSON keys:', Object.keys(parsed));
     } else {
-      console.log('ℹ️ Could not extract strict JSON. If content uses markdown fences, this is expected.');
+      logger.debug('ℹ️ Could not extract strict JSON. If content uses markdown fences, this is expected.');
     }
   } catch (err: any) {
-    console.error('❌ Summarizer validation failed:', err?.message || err);
+    logger.error('❌ Summarizer validation failed:', err?.message || err);
     process.exitCode = 1;
   }
 }

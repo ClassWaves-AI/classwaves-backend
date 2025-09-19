@@ -49,7 +49,7 @@ describe('Access Code Dual-Read (prefixed/legacy)', () => {
         if (Array.isArray(keys) && keys.length) await client.del(...keys);
         cursor = next;
       } while (cursor !== '0');
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   });
 
   it('reads access code from prefixed mapping', async () => {

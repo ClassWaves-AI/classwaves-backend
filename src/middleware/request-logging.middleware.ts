@@ -36,7 +36,7 @@ export function requestLoggingMiddleware(req: Request, res: Response, next: Next
         sessionId,
         groupId,
       });
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
   });
 
   next();

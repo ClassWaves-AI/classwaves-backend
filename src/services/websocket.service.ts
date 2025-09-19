@@ -40,12 +40,13 @@ interface SocketData {
   pendingJoins?: Set<string>;
 }
 
+import { logger } from '../utils/logger';
 import type {
   WsGroupStatusUpdatePayload,
   WsAudioStreamLifecyclePayload,
   WsStudentSessionJoinPayload,
   WsAudioErrorEvent,
-} from '@classwaves/shared'
+} from '@classwaves/shared';
 
 interface ClientToServerEvents {
   joinSession: (sessionCode: string) => void;
@@ -184,7 +185,7 @@ export class WebSocketService {
     // Diagnostic: server-level connection state (guarded for test environments)
     if ((this.io as any)?.engine?.on) {
       this.io.engine.on('connection_error', (err: any) => {
-        console.warn('⚠️  Engine.io connection error:', {
+        logger.warn('⚠️  Engine.io connection error:', {
           code: (err as any)?.code,
           message: (err as any)?.message,
           req: {
@@ -197,7 +198,7 @@ export class WebSocketService {
       this.io.engine.on('heartbeat', (transport: any) => {
         // Low-cost heartbeat log to correlate timeouts (opt-in)
         if (process.env.WS_DEBUG === '1') {
-          console.log('💓 WS heartbeat', transport?.name);
+          logger.debug('💓 WS heartbeat', transport?.name);
         }
       });
     }
@@ -223,13 +224,13 @@ export class WebSocketService {
         }
         
         this.io.adapter(createAdapter(pubClient, subClient));
-        console.log('✅ WebSocket Redis adapter configured with pub/sub clients');
+        logger.debug('✅ WebSocket Redis adapter configured with pub/sub clients');
       } else {
-        console.warn('⚠️  WebSocket using in-memory adapter (Redis not connected)');
+        logger.warn('⚠️  WebSocket using in-memory adapter (Redis not connected)');
       }
     } catch (error) {
-      console.error('Failed to setup Redis adapter:', error);
-      console.warn('⚠️  Falling back to in-memory WebSocket adapter');
+      logger.error('Failed to setup Redis adapter:', error);
+      logger.warn('⚠️  Falling back to in-memory WebSocket adapter');
     }
   }
 
@@ -283,7 +284,7 @@ export class WebSocketService {
 
   private setupEventHandlers() {
     this.io.on('connection', (socket) => {
-      console.log(`🔧 DEBUG: User ${socket.data.userId} connected via WebSocket with role ${socket.data.role}`);
+      logger.debug(`🔧 DEBUG: User ${socket.data.userId} connected via WebSocket with role ${socket.data.role}`);
       this.connectedUsers.set(socket.data.userId, socket);
       // Initialize per-socket tracking structures
       socket.data.joinedSessions = socket.data.joinedSessions || new Set<string>();
@@ -308,7 +309,7 @@ export class WebSocketService {
               const repo = getCompositionRoot()?.getSessionRepository();
               const session = repo ? await repo.getOwnedSessionBasic(sessionId, socket.data.userId) : null;
               if (session) socket.emit('session:status_changed', { sessionId, status: session.status });
-            } catch {}
+            } catch { /* intentionally ignored: best effort cleanup */ }
             return;
           }
           if (socket.data.pendingJoins?.has(sessionId)) return;
@@ -320,7 +321,7 @@ export class WebSocketService {
             const { getCompositionRoot } = await import('../app/composition-root');
             const repo = getCompositionRoot()?.getSessionRepository();
             session = repo ? await repo.getOwnedSessionBasic(sessionId, socket.data.userId) : null;
-          } catch {}
+          } catch { /* intentionally ignored: best effort cleanup */ }
           if (!session) {
             session = await databricksService.queryOne(
               `SELECT id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
@@ -340,7 +341,7 @@ export class WebSocketService {
           socket.data.pendingJoins?.delete(sessionId);
         } catch (err) {
           socket.emit('error', { code: 'SESSION_JOIN_FAILED', message: 'Failed to join session' });
-          try { socket.data.pendingJoins?.clear(); } catch {}
+          try { socket.data.pendingJoins?.clear(); } catch { /* intentionally ignored: best effort cleanup */ }
         }
       });
 
@@ -357,7 +358,7 @@ export class WebSocketService {
             if (info?.groupId) {
               await socket.leave(`group:${info.groupId}`);
             }
-          } catch {}
+          } catch { /* intentionally ignored: best effort cleanup */ }
           if (socket.data.joinedSessions?.has(sessionId)) {
             socket.data.joinedSessions.delete(sessionId);
           }
@@ -434,15 +435,15 @@ export class WebSocketService {
             };
           }
           
-          console.log(`Student ${socket.data.userId} joined session ${sessionId} and group ${participant.group_id}`);
+          logger.debug(`Student ${socket.data.userId} joined session ${sessionId} and group ${participant.group_id}`);
           socket.data.pendingJoins?.delete(sessionId);
         } catch (error) {
-          console.error('Student session join error:', error);
+          logger.error('Student session join error:', error);
           socket.emit('error', { 
             code: 'STUDENT_SESSION_JOIN_FAILED', 
             message: 'Failed to join session as student' 
           });
-          try { socket.data.pendingJoins?.clear(); } catch {}
+          try { socket.data.pendingJoins?.clear(); } catch { /* intentionally ignored: best effort cleanup */ }
         }
       });
 
@@ -486,14 +487,14 @@ export class WebSocketService {
             isReady: data.ready,
           }
           
-          console.log(`🎯 [WEBSOCKET DEBUG] Broadcasting group:status_changed to session:${data.sessionId}`);
-          console.log(`🎯 [WEBSOCKET DEBUG] Broadcast payload:`, broadcastEvent);
+          logger.debug(`🎯 [WEBSOCKET DEBUG] Broadcasting group:status_changed to session:${data.sessionId}`);
+          logger.debug(`🎯 [WEBSOCKET DEBUG] Broadcast payload:`, broadcastEvent);
           
           this.io.to(`session:${data.sessionId}`).emit('group:status_changed', broadcastEvent);
           
-          console.log(`🎯 Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
+          logger.debug(`🎯 Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
         } catch (error) {
-          console.error('Error handling group leader ready:', error);
+          logger.error('Error handling group leader ready:', error);
           socket.emit('error', {
             code: 'LEADER_READY_FAILED',
             message: 'Failed to update leader readiness',
@@ -507,7 +508,7 @@ export class WebSocketService {
           // Backpressure diagnostics: drop too-large payloads to prevent disconnects
           const approxSize = (data as any)?.audioData?.length || 0;
           if (approxSize > 1024 * 1024 * 2) { // >2MB
-            console.warn(`⚠️  Dropping oversized audio chunk (~${approxSize} bytes) for group ${data.groupId}`);
+            logger.warn(`⚠️  Dropping oversized audio chunk (~${approxSize} bytes) for group ${data.groupId}`);
             socket.emit('audio:error', { groupId: data.groupId, error: 'PAYLOAD_TOO_LARGE' });
             return;
           }
@@ -519,7 +520,7 @@ export class WebSocketService {
             // Increment metric via processor (reusing the drop counter by simulating 1 dropped chunk)
             // We cannot directly access the private counter; instead, trigger backpressure handling which increments it
             try { await (inMemoryAudioProcessor as any).handleBackPressure?.(data.groupId); } catch { /* ignore */ }
-            console.warn(`⚠️  Socket backpressure: rejecting audio chunk for group ${data.groupId} (bytes=${windowInfo.bytes}, chunks=${windowInfo.chunks})`);
+            logger.warn(`⚠️  Socket backpressure: rejecting audio chunk for group ${data.groupId} (bytes=${windowInfo.bytes}, chunks=${windowInfo.chunks})`);
             socket.emit('audio:error', { groupId: data.groupId, error: 'BACKPRESSURE' });
             return;
           }
@@ -528,7 +529,7 @@ export class WebSocketService {
           const audioBuffer = coerceToBuffer(data.audioData);
           const resolvedMime = (data as any).mimeType || (data as any).format;
           validateMimeType(resolvedMime);
-          console.log(`🎤 Processing audio chunk for group ${data.groupId}, format: ${resolvedMime}, size: ${audioBuffer.length} bytes`);
+          logger.debug(`🎤 Processing audio chunk for group ${data.groupId}, format: ${resolvedMime}, size: ${audioBuffer.length} bytes`);
           
           // Process audio with InMemoryAudioProcessor (zero-disk guarantee, windowed)
           const result = await inMemoryAudioProcessor.ingestGroupAudioChunk(
@@ -579,15 +580,15 @@ export class WebSocketService {
               // Check if we should trigger analysis
               await this.checkAndTriggerAIAnalysis(data.groupId, socket.data.sessionId, socket.data.userId);
             } catch (error) {
-              console.error(`⚠️ AI buffering failed for group ${data.groupId}:`, error);
+              logger.error(`⚠️ AI buffering failed for group ${data.groupId}:`, error);
               // Don't fail the main transcription flow
             }
             
-            console.log(`✅ Window submitted for group ${data.groupId}: "${result.text.substring(0, 50)}..."`);
+            logger.debug(`✅ Window submitted for group ${data.groupId}: "${result.text.substring(0, 50)}..."`);
           }
           
         } catch (error) {
-          console.error(`❌ Audio processing failed for group ${data.groupId}:`, error);
+          logger.error(`❌ Audio processing failed for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
             error: 'AUDIO_PROCESSING_FAILED',
@@ -599,7 +600,7 @@ export class WebSocketService {
       // Handle audio stream lifecycle - start
       socket.on('audio:stream:start', async (data: { groupId: string }) => {
         try {
-          console.log(`🎤 Audio stream started for group ${data.groupId}`);
+          logger.debug(`🎤 Audio stream started for group ${data.groupId}`);
           
           // Join group room for audio streaming
           await socket.join(`group:${data.groupId}:audio`);
@@ -616,7 +617,7 @@ export class WebSocketService {
           });
           
         } catch (error) {
-          console.error(`❌ Failed to start audio stream for group ${data.groupId}:`, error);
+          logger.error(`❌ Failed to start audio stream for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
             error: 'AUDIO_PROCESSING_FAILED',
@@ -628,7 +629,7 @@ export class WebSocketService {
       // Handle audio stream lifecycle - end
       socket.on('audio:stream:end', async (data: { groupId: string }) => {
         try {
-          console.log(`🎤 Audio stream ended for group ${data.groupId}`);
+          logger.debug(`🎤 Audio stream ended for group ${data.groupId}`);
           
           // Leave group audio room
           await socket.leave(`group:${data.groupId}:audio`);
@@ -645,7 +646,7 @@ export class WebSocketService {
           });
           
         } catch (error) {
-          console.error(`❌ Failed to end audio stream for group ${data.groupId}:`, error);
+          logger.error(`❌ Failed to end audio stream for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
             error: 'AUDIO_PROCESSING_FAILED',
@@ -716,10 +717,10 @@ export class WebSocketService {
 
           if (session) {
             await alertPrioritizationService.confirmAlertDelivery(data.alertId, data.deliveryId, data.sessionId);
-            console.log(`✅ Alert delivery confirmed by teacher: ${data.alertId}`);
+            logger.debug(`✅ Alert delivery confirmed by teacher: ${data.alertId}`);
           }
         } catch (error) {
-          console.error(`❌ Failed to confirm alert delivery:`, error);
+          logger.error(`❌ Failed to confirm alert delivery:`, error);
           socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm alert delivery' });
         }
       });
@@ -735,10 +736,10 @@ export class WebSocketService {
 
           if (session) {
             await alertPrioritizationService.confirmBatchDelivery(data.batchId, data.deliveryId, data.sessionId);
-            console.log(`✅ Batch delivery confirmed by teacher: ${data.batchId}`);
+            logger.debug(`✅ Batch delivery confirmed by teacher: ${data.batchId}`);
           }
         } catch (error) {
-          console.error(`❌ Failed to confirm batch delivery:`, error);
+          logger.error(`❌ Failed to confirm batch delivery:`, error);
           socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm batch delivery' });
         }
       });
@@ -769,17 +770,17 @@ export class WebSocketService {
               dataAccessed: `${data.insightType}_insight_delivery_confirmation`
             }).catch(() => {});
 
-            console.log(`✅ AI insight delivery confirmed by teacher: ${data.insightId} (${data.insightType})`);
+            logger.debug(`✅ AI insight delivery confirmed by teacher: ${data.insightId} (${data.insightType})`);
           }
         } catch (error) {
-          console.error(`❌ Failed to confirm insight delivery:`, error);
+          logger.error(`❌ Failed to confirm insight delivery:`, error);
           socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm insight delivery' });
         }
       });
 
       // Handle disconnect
       socket.on('disconnect', () => {
-        console.log(`User ${socket.data.userId} disconnected`);
+        logger.debug(`User ${socket.data.userId} disconnected`);
         this.connectedUsers.delete(socket.data.userId);
         
         // Notify all rooms the user was in
@@ -863,7 +864,7 @@ export class WebSocketService {
       }
 
     } catch (error) {
-      console.error(`❌ AI analysis check failed for group ${groupId}:`, error);
+      logger.error(`❌ AI analysis check failed for group ${groupId}:`, error);
     }
   }
 
@@ -892,7 +893,7 @@ export class WebSocketService {
     const startTime = Date.now();
     
     try {
-      console.log(`🧠 Triggering Tier 1 analysis for group ${groupId}`);
+      logger.debug(`🧠 Triggering Tier 1 analysis for group ${groupId}`);
 
       // Import AI analysis controller dynamically to avoid circular dependencies
       const { databricksAIService } = await import('./databricks-ai.service');
@@ -924,11 +925,11 @@ export class WebSocketService {
       const duration = Date.now() - startTime;
       guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier1_analysis', duration);
 
-      console.log(`✅ Tier 1 analysis completed and broadcasted for group ${groupId}`);
+      logger.debug(`✅ Tier 1 analysis completed and broadcasted for group ${groupId}`);
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(`❌ Tier 1 analysis failed for group ${groupId}:`, error);
+      logger.error(`❌ Tier 1 analysis failed for group ${groupId}:`, error);
       
       // ✅ HEALTH MONITORING: Record failed AI analysis
       guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier1_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
@@ -942,7 +943,7 @@ export class WebSocketService {
     const startTime = Date.now();
     
     try {
-      console.log(`🧠 Triggering Tier 2 analysis for session ${sessionId}`);
+      logger.debug(`🧠 Triggering Tier 2 analysis for session ${sessionId}`);
 
       // Import AI analysis controller dynamically
       const { databricksAIService } = await import('./databricks-ai.service');
@@ -970,11 +971,11 @@ export class WebSocketService {
       const duration = Date.now() - startTime;
       guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier2_analysis', duration);
 
-      console.log(`✅ Tier 2 analysis completed and broadcasted for session ${sessionId}`);
+      logger.debug(`✅ Tier 2 analysis completed and broadcasted for session ${sessionId}`);
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(`❌ Tier 2 analysis failed for session ${sessionId}:`, error);
+      logger.error(`❌ Tier 2 analysis failed for session ${sessionId}:`, error);
       
       // ✅ HEALTH MONITORING: Record failed AI analysis
       guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier2_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
@@ -1018,7 +1019,7 @@ export class WebSocketService {
           });
           successfulDeliveries++;
         } catch (deliveryError) {
-          console.error(`❌ Failed to deliver prompt ${prompt.id}:`, deliveryError);
+          logger.error(`❌ Failed to deliver prompt ${prompt.id}:`, deliveryError);
           
           // ✅ HEALTH MONITORING: Record alert delivery failure
           guidanceSystemHealthService.recordFailure('alertDelivery', 'prompt_delivery', Date.now() - startTime, deliveryError instanceof Error ? deliveryError.message : 'Unknown delivery error');
@@ -1034,11 +1035,11 @@ export class WebSocketService {
         guidanceSystemHealthService.recordSuccess('alertDelivery', 'prompt_delivery', duration);
       }
 
-      console.log(`📝 Generated ${prompts.length} teacher prompts from AI insights (${successfulDeliveries} delivered)`);
+      logger.debug(`📝 Generated ${prompts.length} teacher prompts from AI insights (${successfulDeliveries} delivered)`);
 
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(`❌ Teacher prompt generation failed:`, error);
+      logger.error(`❌ Teacher prompt generation failed:`, error);
       
       // ✅ HEALTH MONITORING: Record prompt generation failure
       guidanceSystemHealthService.recordFailure('promptGeneration', 'prompt_generation', duration, error instanceof Error ? error.message : 'Unknown error');
@@ -1054,10 +1055,10 @@ export class WebSocketService {
 let wsService: WebSocketService | null = null;
 
 export function initializeWebSocket(httpServer: HTTPServer): WebSocketService {
-  console.log('🔧 DEBUG: Initializing WebSocket service...');
+  logger.debug('🔧 DEBUG: Initializing WebSocket service...');
   if (!wsService) {
     wsService = new WebSocketService(httpServer);
-    console.log('🔧 DEBUG: WebSocket service created successfully');
+    logger.debug('🔧 DEBUG: WebSocket service created successfully');
   }
   return wsService;
 }
@@ -1120,10 +1121,10 @@ async function recordLeaderReady(sessionId: string, groupId: string, leaderId: s
         }
       );
     } catch (error) {
-      console.error('Failed to log leader ready event via analytics router:', error);
+      logger.error('Failed to log leader ready event via analytics router:', error);
     }
   } catch (error) {
-    console.error('Failed to record leader ready analytics:', error);
+    logger.error('Failed to record leader ready analytics:', error);
     // Don't throw - analytics failure shouldn't block readiness update
   }
 }

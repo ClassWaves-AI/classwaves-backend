@@ -31,6 +31,8 @@ describe('TeacherPromptService.getActivePrompts()', () => {
     
     // Mock audit logging
     (auditLogPort.enqueue as jest.Mock).mockResolvedValue(undefined);
+
+    mockDatabricksService.tableHasColumns.mockResolvedValue(false);
   });
 
   describe('Real Data Integration', () => {
@@ -433,6 +435,77 @@ describe('TeacherPromptService.getActivePrompts()', () => {
         const priorityOrder = { 'high': 3, 'medium': 2, 'low': 1 };
         expect(priorityOrder[current.priority]).toBeGreaterThanOrEqual(priorityOrder[next.priority]);
       }
+    });
+  });
+
+  describe('Structured Context Columns', () => {
+    it('hydrates prompts with structured context and summaries when available', async () => {
+      const generatedAt = new Date(Date.now() - 4 * 60000).toISOString();
+      const expiresAt = new Date(Date.now() + 26 * 60000).toISOString();
+
+      mockDatabricksService.tableHasColumns.mockResolvedValueOnce(true);
+      mockDatabricksService.query.mockResolvedValueOnce([
+        {
+          id: 'prompt-db-context',
+          prompt_id: 'prompt-db-context',
+          session_id: mockSessionId,
+          teacher_id: mockTeacherId,
+          group_id: 'group-ctx',
+          prompt_category: 'redirection',
+          priority_level: 'medium',
+          prompt_message: 'Guide students back to the essential question.',
+          prompt_context: 'Recent talk has drifted.',
+          suggested_timing: 'immediate',
+          session_phase: 'development',
+          subject_area: 'science',
+          target_metric: 'topicalCohesion',
+          learning_objectives: '["Explain photosynthesis"]',
+          generated_at: generatedAt,
+          expires_at: expiresAt,
+          acknowledged_at: null,
+          used_at: null,
+          dismissed_at: null,
+          effectiveness_score: 0.7,
+          feedback_rating: null,
+          feedback_text: null,
+          created_at: generatedAt,
+          updated_at: generatedAt,
+          context_reason: 'Recent discussion has drifted to unrelated stories.',
+          context_prior_topic: 'Explaining the steps of photosynthesis',
+          context_current_topic: 'Weekend sports highlights',
+          context_transition_idea: 'Bridge by asking how the sports strategy compares to plant energy transfer.',
+          context_supporting_lines: JSON.stringify([
+            { speaker: 'Participant 3', quote: 'Remember when we described chlorophyll yesterday?', timestamp: new Date().toISOString() },
+            { speaker: 'Participant 4', quote: 'This reminds me of the soccer match last night.', timestamp: new Date().toISOString() },
+          ]),
+          context_confidence: 0.84,
+          bridging_prompt: 'Invite the group to connect back to photosynthesis.',
+          on_track_summary: 'Group is on track — cohesion 82%, depth 80%. Celebrate their focus.',
+        },
+      ]);
+
+      const results = await service.getActivePrompts(mockSessionId);
+      expect(results).toHaveLength(1);
+      const prompt = results[0];
+
+      expect(prompt.contextEvidence).toMatchObject({
+        reason: expect.stringContaining('drifted'),
+        priorTopic: expect.stringContaining('photosynthesis'),
+        currentTopic: expect.stringContaining('sports'),
+        transitionIdea: expect.stringContaining('Bridge'),
+        confidence: 0.84,
+      });
+      expect(prompt.contextEvidence?.quotes).toHaveLength(2);
+      expect(prompt.contextEvidence?.quotes?.[0]).toEqual(
+        expect.objectContaining({ speakerLabel: 'Participant 3' })
+      );
+      expect(prompt.contextEvidence?.supportingLines).toHaveLength(2);
+      expect(prompt.contextEvidence?.supportingLines?.[0]).toEqual(
+        expect.objectContaining({ speaker: 'Participant 3' })
+      );
+      expect(prompt.contextEvidence?.quotes?.[0]?.text).not.toMatch(/["'“”‘’]/);
+      expect(prompt.bridgingPrompt).toContain('photosynthesis');
+      expect(prompt.onTrackSummary).toContain('on track');
     });
   });
 });

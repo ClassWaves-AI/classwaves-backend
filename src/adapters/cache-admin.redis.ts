@@ -1,5 +1,6 @@
 import type { CacheAdminPort } from '../services/cache-admin.port';
 import { redisService } from '../services/redis.service';
+import { logger } from '../utils/logger';
 
 export class RedisCacheAdminAdapter implements CacheAdminPort {
   async scan(matchPattern: string, count: number = 1000): Promise<string[]> {
@@ -35,7 +36,12 @@ export class RedisCacheAdminAdapter implements CacheAdminPort {
       try {
         const n: number = await client.del(k);
         total += typeof n === 'number' ? n : 0;
-      } catch {}
+      } catch (error) {
+        logger.warn('cache-admin: DEL fallback failed', {
+          key: k,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return total;
   }
@@ -57,11 +63,20 @@ export class RedisCacheAdminAdapter implements CacheAdminPort {
       try {
         const n: number = await client.unlink(k);
         total += typeof n === 'number' ? n : 0;
-      } catch {
+      } catch (unlinkError) {
+        logger.warn('cache-admin: UNLINK fallback error, retrying with DEL', {
+          key: k,
+          error: unlinkError instanceof Error ? unlinkError.message : String(unlinkError),
+        });
         try {
           const n: number = await client.del(k);
           total += typeof n === 'number' ? n : 0;
-        } catch {}
+        } catch (delError) {
+          logger.error('cache-admin: DEL fallback failed', {
+            key: k,
+            error: delError instanceof Error ? delError.message : String(delError),
+          });
+        }
       }
     }
     return total;

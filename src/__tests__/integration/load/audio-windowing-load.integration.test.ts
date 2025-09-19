@@ -34,7 +34,7 @@ describe('Load (simulated): multiple groups, limiter caps concurrency, window ad
     // Run all flushes; limiter should prevent unbounded concurrency
     try {
       await Promise.allSettled(flushes);
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
 
     // Ensure we had at least as many calls as groups (some may retry internally)
     expect(spy.mock.calls.length).toBeGreaterThanOrEqual(25);

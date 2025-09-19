@@ -6,12 +6,51 @@ const crypto = require('crypto');
 // Load environment variables
 config({ path: join(__dirname, '../.env') });
 
+const useMock = process.env.DATABRICKS_MOCK === '1'
+  || !process.env.DATABRICKS_HOST
+  || !process.env.DATABRICKS_TOKEN
+  || !process.env.DATABRICKS_WAREHOUSE_ID;
+
+let databricksService = null;
+let databricksMockService = null;
+let isDbServiceReady = false;
+let isMockReady = false;
+
+if (useMock) {
+  try {
+    require('ts-node/register');
+    ({ databricksMockService } = require('../src/services/databricks.mock.service'));
+    isMockReady = true;
+  } catch (err) {
+    try {
+      ({ databricksMockService } = require('../dist/services/databricks.mock.service'));
+      isMockReady = true;
+    } catch {
+      console.warn('⚠️ Databricks mock service unavailable; falling back to API');
+    }
+  }
+} else {
+  try {
+    require('ts-node/register');
+    ({ databricksService } = require('../src/services/databricks.service'));
+    isDbServiceReady = true;
+  } catch (err) {
+    try {
+      ({ databricksService } = require('../dist/services/databricks.service'));
+      isDbServiceReady = true;
+    } catch {
+      console.warn('⚠️ Databricks service unavailable; falling back to SQL Statements endpoint');
+    }
+  }
+}
+
 class MigrationTracker {
   constructor() {
     this.host = process.env.DATABRICKS_HOST;
     this.token = process.env.DATABRICKS_TOKEN;
     this.warehouse = process.env.DATABRICKS_WAREHOUSE_ID;
-    
+    this.useMock = useMock;
+
     this.headers = {
       'Authorization': `Bearer ${this.token}`,
       'Content-Type': 'application/json'
@@ -20,6 +59,21 @@ class MigrationTracker {
 
   async executeSQL(sql) {
     console.log(`🔄 Executing: ${sql.substring(0, 80)}...`);
+
+    if (this.useMock && isMockReady && databricksMockService) {
+      try {
+        const result = await databricksMockService.query(sql);
+        return Array.isArray(result) ? result : [];
+      } catch (mockError) {
+        throw new Error(`Mock SQL failed: ${mockError.message}`);
+      }
+    }
+
+    if (!this.useMock && isDbServiceReady && databricksService) {
+      const rows = await databricksService.query(sql);
+      return rows || [];
+    }
+
     const response = await fetch(`${this.host}/api/2.0/sql/statements`, {
       method: 'POST',
       headers: this.headers,
@@ -44,17 +98,15 @@ class MigrationTracker {
     console.log('🔧 Setting up migration tracking...');
     
     const createTableSQL = `
-      CREATE TABLE IF NOT EXISTS classwaves.admin.schema_migrations (
-        id STRING NOT NULL,
-        migration_name STRING NOT NULL,
-        migration_file STRING NOT NULL,
-        sql_hash STRING NOT NULL,
-        executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CREATE TABLE IF NOT EXISTS classwaves.ai_insights.schema_migrations (
+        id STRING,
+        migration_name STRING,
+        migration_file STRING,
+        sql_hash STRING,
+        executed_at TIMESTAMP,
         execution_time_ms BIGINT,
-        status STRING NOT NULL DEFAULT 'SUCCESS',
-        error_message STRING,
-        
-        PRIMARY KEY (id)
+        status STRING,
+        error_message STRING
       ) USING DELTA
       COMMENT 'Tracks which database migrations have been applied'
     `;
@@ -73,7 +125,7 @@ class MigrationTracker {
     const id = `migration_${Date.now()}_${Math.random().toString(36).substring(7)}`;
     
     const insertSQL = `
-      INSERT INTO classwaves.admin.schema_migrations 
+      INSERT INTO classwaves.ai_insights.schema_migrations 
       (id, migration_name, migration_file, sql_hash, executed_at, execution_time_ms, status)
       VALUES 
       ('${id}', '${migrationName}', '${migrationFile}', '${sqlHash}', CURRENT_TIMESTAMP(), ${executionTimeMs}, 'SUCCESS')
@@ -90,7 +142,7 @@ class MigrationTracker {
     try {
       const migrations = await this.executeSQL(`
         SELECT migration_name, migration_file, executed_at, status 
-        FROM classwaves.admin.schema_migrations 
+        FROM classwaves.ai_insights.schema_migrations 
         ORDER BY executed_at DESC
       `);
 
@@ -164,10 +216,10 @@ class MigrationTracker {
       // Record failed migration
       const sqlHash = crypto.createHash('md5').update(sqlContent).digest('hex');
       const id = `migration_failed_${Date.now()}`;
-      
+
       try {
         await this.executeSQL(`
-          INSERT INTO classwaves.admin.schema_migrations 
+          INSERT INTO classwaves.ai_insights.schema_migrations 
           (id, migration_name, migration_file, sql_hash, executed_at, execution_time_ms, status, error_message)
           VALUES 
           ('${id}', '${migrationName}', '${filePath}', '${sqlHash}', CURRENT_TIMESTAMP(), ${Date.now() - startTime}, 'FAILED', '${error.message.replace(/'/g, "''")}')
@@ -214,4 +266,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = MigrationTracker;
+module.exports = { MigrationTracker };

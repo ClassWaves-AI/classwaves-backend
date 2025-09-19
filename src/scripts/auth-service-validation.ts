@@ -36,6 +36,7 @@ import { databricksService } from '../services/databricks.service';
 import { InfrastructureValidationResult } from './validate-integration-infrastructure';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -60,55 +61,55 @@ export class AuthServiceValidator {
    */
   async validateAuthIntegration(): Promise<InfrastructureValidationResult> {
     const startTime = performance.now();
-    console.log('   🔍 Validating authentication service integration...');
+    logger.debug('   🔍 Validating authentication service integration...');
 
     try {
       const errors: string[] = [];
       const warnings: string[] = [];
 
       // 1. Test JWT service infrastructure
-      console.log('   🔑 Testing JWT service infrastructure...');
+      logger.debug('   🔑 Testing JWT service infrastructure...');
       const jwtResult = await this.testJWTServiceHealth();
       if (!jwtResult.operational) {
         errors.push(...(jwtResult.errors || [`JWT service failed: ${jwtResult.details}`]));
       } else {
-        console.log('   ✅ JWT service operational');
+        logger.debug('   ✅ JWT service operational');
       }
 
       // 2. Test session management infrastructure
-      console.log('   🗄️ Testing session management infrastructure...');
+      logger.debug('   🗄️ Testing session management infrastructure...');
       const sessionResult = await this.testSessionManagement();
       if (!sessionResult.operational) {
         errors.push(...(sessionResult.errors || [`Session management failed: ${sessionResult.details}`]));
       } else {
-        console.log('   ✅ Session management operational');
+        logger.debug('   ✅ Session management operational');
       }
 
       // 3. Test database authentication infrastructure
-      console.log('   🏛️ Testing database authentication infrastructure...');
+      logger.debug('   🏛️ Testing database authentication infrastructure...');
       const dbAuthResult = await this.testDatabaseAuthIntegration();
       if (!dbAuthResult.operational) {
         warnings.push(`Database auth integration issues: ${dbAuthResult.details}`);
       } else {
-        console.log('   ✅ Database auth integration operational');
+        logger.debug('   ✅ Database auth integration operational');
       }
 
       // 4. Test auth middleware infrastructure
-      console.log('   🛡️ Testing auth middleware infrastructure...');
+      logger.debug('   🛡️ Testing auth middleware infrastructure...');
       const middlewareResult = await this.testAuthMiddlewareInfrastructure();
       if (!middlewareResult.operational) {
         warnings.push(`Auth middleware issues: ${middlewareResult.details}`);
       } else {
-        console.log('   ✅ Auth middleware operational');
+        logger.debug('   ✅ Auth middleware operational');
       }
 
       // 5. Test integration test token generation
-      console.log('   🧪 Testing integration test token generation...');
+      logger.debug('   🧪 Testing integration test token generation...');
       const testTokenResult = await this.testIntegrationTestTokenGeneration();
       if (!testTokenResult.operational) {
         errors.push(`Integration test token generation failed: ${testTokenResult.details}`);
       } else {
-        console.log('   ✅ Integration test token generation operational');
+        logger.debug('   ✅ Integration test token generation operational');
       }
 
       const status = errors.length > 0 ? 'FAILED' : 
@@ -379,7 +380,7 @@ export class AuthServiceValidator {
       recommendations: string[];
     };
   }> {
-    console.log('📊 Generating authentication infrastructure report...');
+    logger.debug('📊 Generating authentication infrastructure report...');
 
     const jwtService = await this.testJWTServiceHealth();
     const sessionManagement = await this.testSessionManagement();
@@ -427,7 +428,7 @@ export class AuthServiceValidator {
     minResponseTime: number;
     successRate: number;
   }> {
-    console.log(`⚡ Testing auth service performance with ${iterations} iterations...`);
+    logger.debug(`⚡ Testing auth service performance with ${iterations} iterations...`);
 
     const responseTimes: number[] = [];
     let successCount = 0;
@@ -440,7 +441,7 @@ export class AuthServiceValidator {
         successCount++;
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.log(`   ❌ Auth performance test iteration ${i + 1} failed: ${errorMessage}`);
+        logger.debug(`   ❌ Auth performance test iteration ${i + 1} failed: ${errorMessage}`);
       }
       
       responseTimes.push(performance.now() - startTime);
@@ -462,36 +463,36 @@ async function main() {
   try {
     const result = await validator.validateAuthIntegration();
     
-    console.log('\n📊 Auth Service Integration Result:');
-    console.log(`   Status: ${result.status}`);
-    console.log(`   Details: ${result.details}`);
-    console.log(`   Response Time: ${Math.round(result.responseTime || 0)}ms`);
+    logger.debug('\n📊 Auth Service Integration Result:');
+    logger.debug(`   Status: ${result.status}`);
+    logger.debug(`   Details: ${result.details}`);
+    logger.debug(`   Response Time: ${Math.round(result.responseTime || 0)}ms`);
     
     if (result.errors?.length) {
-      console.log('   ❌ Errors:');
-      result.errors.forEach(error => console.log(`      ${error}`));
+      logger.debug('   ❌ Errors:');
+      result.errors.forEach(error => logger.debug(`      ${error}`));
     }
     
     if (result.warnings?.length) {
-      console.log('   ⚠️ Warnings:');  
-      result.warnings.forEach(warning => console.log(`      ${warning}`));
+      logger.debug('   ⚠️ Warnings:');  
+      result.warnings.forEach(warning => logger.debug(`      ${warning}`));
     }
 
     // Generate detailed report
     const report = await validator.generateAuthInfrastructureReport();
-    console.log('\n🏗️ Auth Infrastructure Report:');
-    console.log(`   Overall Status: ${report.overall.status}`);
-    console.log(`   Components: ${[report.jwtService, report.sessionManagement, report.databaseAuth, report.middlewareInfrastructure, report.testTokenGeneration].filter(c => c.operational).length}/5 operational`);
+    logger.debug('\n🏗️ Auth Infrastructure Report:');
+    logger.debug(`   Overall Status: ${report.overall.status}`);
+    logger.debug(`   Components: ${[report.jwtService, report.sessionManagement, report.databaseAuth, report.middlewareInfrastructure, report.testTokenGeneration].filter(c => c.operational).length}/5 operational`);
 
     if (report.overall.recommendations.length > 0) {
-      console.log('   📝 Recommendations:');
-      report.overall.recommendations.forEach(rec => console.log(`      ${rec}`));
+      logger.debug('   📝 Recommendations:');
+      report.overall.recommendations.forEach(rec => logger.debug(`      ${rec}`));
     }
 
     process.exit(result.status === 'FAILED' ? 1 : 0);
     
   } catch (error) {
-    console.error('💥 FATAL ERROR during auth service validation:', error);
+    logger.error('💥 FATAL ERROR during auth service validation:', error);
     process.exit(1);
   }
 }

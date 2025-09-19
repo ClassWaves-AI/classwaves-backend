@@ -11,15 +11,17 @@
 
 import { Request, Response } from 'express';
 import { getCompositionRoot } from '../app/composition-root';
+import type { DbProvider } from '@classwaves/shared';
 import { redisService } from '../services/redis.service';
 import { errorLoggingMiddleware } from '../middleware/error-logging.middleware';
 import { getNamespacedWebSocketService } from '../services/websocket';
 import { cacheHealthMonitor } from '../services/cache-health-monitor.service';
 import { ok, fail, ErrorCodes } from '../utils/api-response';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 interface ServiceHealth {
-  status: 'healthy' | 'degraded' | 'unhealthy';
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'skipped';
   responseTime: number;
   lastCheck: string;
   details?: any;
@@ -30,6 +32,7 @@ interface SystemHealth {
   timestamp: string;
   uptime: number;
   memory: NodeJS.MemoryUsage;
+  dbProvider: DbProvider;
   services: {
     redis: ServiceHealth;
     databricks: ServiceHealth;
@@ -160,7 +163,7 @@ class HealthController {
       recommendations.push('Redis connection issues detected. Check Redis service and configuration.');
     }
 
-    if (health.services.databricks.status !== 'healthy') {
+    if (health.services.databricks.status !== 'healthy' && health.services.databricks.status !== 'skipped') {
       recommendations.push('Databricks connection issues detected. Verify credentials and network connectivity.');
     }
 
@@ -184,27 +187,42 @@ class HealthController {
   }
 
   async getSystemHealth(): Promise<SystemHealth> {
-    const [redisHealth, databricksHealth, databaseHealth, cacheMonitor] = await Promise.all([
+    const composition = getCompositionRoot();
+    const currentProvider = composition.getDbProvider();
+
+    const [redisHealth, databaseHealth, cacheMonitor] = await Promise.all([
       this.checkRedisHealth(),
-      this.checkDatabricksHealth(),
       this.checkDatabaseHealth(),
       cacheHealthMonitor.checkHealth(),
     ]);
+
+    const databricksHealth = currentProvider === 'databricks'
+      ? await this.checkDatabricksHealth()
+      : {
+          status: 'skipped' as const,
+          responseTime: 0,
+          lastCheck: new Date().toISOString(),
+          details: { reason: 'Databricks disabled when local Postgres provider active' },
+        };
 
     const errorSummary = errorLoggingMiddleware.getErrorSummary();
     
     // Determine overall health
     const cacheStatus = cacheMonitor.overall === 'critical' ? 'unhealthy' : cacheMonitor.overall === 'degraded' ? 'degraded' : 'healthy';
     const serviceStatuses = [redisHealth.status, databricksHealth.status, databaseHealth.status, cacheStatus];
-    const overall = serviceStatuses.every(s => s === 'healthy') ? 'healthy' 
-                   : serviceStatuses.some(s => s === 'unhealthy') ? 'unhealthy' 
-                   : 'degraded';
+    const normalizedStatuses = serviceStatuses.map((status) => (status === 'skipped' ? 'healthy' : status));
+    const overall = normalizedStatuses.every((s) => s === 'healthy')
+      ? 'healthy'
+      : normalizedStatuses.some((s) => s === 'unhealthy')
+        ? 'unhealthy'
+        : 'degraded';
 
     const health: SystemHealth = {
       overall,
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       memory: process.memoryUsage(),
+      dbProvider: currentProvider,
       services: {
         redis: redisHealth,
         databricks: databricksHealth,
@@ -243,7 +261,7 @@ class HealthController {
         data: health
       });
     } catch (error) {
-      console.error('Health check failed:', error);
+      logger.error('Health check failed:', error);
       return res.status(503).json({
         success: false,
         error: {
@@ -306,7 +324,11 @@ class HealthController {
         const v = await client.get(key);
         getOk = v === '1';
         operations.get = getOk ? 'ok' : 'failed';
-        try { await client.del(key); } catch {}
+        try {
+          await client.del(key);
+        } catch (deleteError) {
+          logger.debug('Redis health probe cleanup failed', deleteError instanceof Error ? deleteError.message : deleteError);
+        }
       }
       timings.rw = Date.now() - trw;
 
@@ -354,6 +376,7 @@ class HealthController {
       const probe = await databricksService.healthProbe(timeoutMs);
       const total = Date.now() - t0;
       const status = probe.ok ? 'healthy' : (probe.breaker.state === 'OPEN' ? 'unhealthy' : 'degraded');
+      const serverTime = (probe as { serverTime?: string }).serverTime ?? null;
       if (!probe.ok) {
         return fail(res, ErrorCodes.SERVICE_UNAVAILABLE, 'Databricks probe failed', 503, {
           status,
@@ -361,7 +384,7 @@ class HealthController {
           breaker: probe.breaker
         });
       }
-      return ok(res, { status, timings: { total }, breaker: probe.breaker, serverTime: probe.serverTime });
+      return ok(res, { status, timings: { total }, breaker: probe.breaker, serverTime });
     } catch (err: any) {
       const total = Date.now() - t0;
       return fail(res, ErrorCodes.SERVICE_UNAVAILABLE, 'Databricks health probe failed', 503, {
@@ -390,8 +413,8 @@ class HealthController {
 
       // Get namespace information
       const io = wsService.getIO();
-      const sessionsService = wsService.getSessionsService();
-      const guidanceService = wsService.getGuidanceService();
+      const sessionsNamespaceService = wsService.getSessionsService();
+      const guidanceNamespaceService = wsService.getGuidanceService();
 
       // Check Redis connection status
       const redisConnected = redisService.isConnected();
@@ -439,6 +462,14 @@ class HealthController {
           sessions: sessionsStats,
           guidance: guidanceStats
         },
+        services: {
+          sessionsNamespace: {
+            available: Boolean(sessionsNamespaceService)
+          },
+          guidanceNamespace: {
+            available: Boolean(guidanceNamespaceService)
+          }
+        },
         redis: {
           connected: redisConnected,
           adapter: redisAdapter,
@@ -458,7 +489,7 @@ class HealthController {
       });
 
     } catch (error) {
-      console.error('WebSocket health check failed:', error);
+      logger.error('WebSocket health check failed:', error);
       return res.status(503).json({
         success: false,
         error: {
@@ -481,14 +512,14 @@ class HealthController {
         const health = await this.getSystemHealth();
         
         if (health.overall !== 'healthy') {
-          console.warn('⚠️ System health degraded:', {
+          logger.warn('⚠️ System health degraded:', {
             overall: health.overall,
             recommendations: health.recommendations,
             errors: health.errors.total
           });
         }
       } catch (error) {
-        console.error('❌ Periodic health check failed:', error);
+        logger.error('❌ Periodic health check failed:', error);
       }
     }, intervalMs);
   }

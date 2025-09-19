@@ -6,6 +6,7 @@
  */
 
 import { analyticsLogger } from '../utils/analytics-logger';
+import { logger } from '../utils/logger';
 
 interface QueryMetrics {
   queryId: string;
@@ -81,7 +82,7 @@ export class QueryCostMonitorService {
 
     // Log expensive queries immediately
     if (queryMetric.estimatedCost > 1.0 || metrics.executionTime > 5000) {
-      console.warn('💰 Expensive query detected:', {
+      logger.warn('💰 Expensive query detected:', {
         queryName: metrics.queryName,
         cost: `$${queryMetric.estimatedCost.toFixed(3)}`,
         executionTime: `${metrics.executionTime}ms`,

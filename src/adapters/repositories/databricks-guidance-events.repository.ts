@@ -1,5 +1,6 @@
 import { databricksService } from '../../services/databricks.service';
 import type { GuidanceEventsRepositoryPort, GuidanceEventRecord } from '../../services/ports/guidance-events.repository.port.ts';
+import { logger } from '../../utils/logger';
 
 class DatabricksGuidanceEventsRepository implements GuidanceEventsRepositoryPort {
   async insert(event: GuidanceEventRecord): Promise<void> {
@@ -16,7 +17,7 @@ class DatabricksGuidanceEventsRepository implements GuidanceEventsRepositoryPort
       });
     } catch (e) {
       // Non-blocking on persistence failure
-      console.warn('⚠️ Failed to persist guidance event (non-blocking):', e instanceof Error ? e.message : String(e));
+      logger.warn('⚠️ Failed to persist guidance event (non-blocking):', e instanceof Error ? e.message : String(e));
     }
   }
 }

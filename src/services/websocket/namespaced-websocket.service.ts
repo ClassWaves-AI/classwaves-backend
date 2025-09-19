@@ -5,6 +5,7 @@ import { redisService } from '../redis.service';
 import { SessionsNamespaceService } from './sessions-namespace.service';
 import { GuidanceNamespaceService } from './guidance-namespace.service';
 import type { Redis } from 'ioredis';
+import { logger } from '../../utils/logger';
 
 export class NamespacedWebSocketService {
   private io: SocketIOServer;
@@ -40,7 +41,7 @@ export class NamespacedWebSocketService {
       if (anyIO?.engine?.on) {
         anyIO.engine.on('connection_error', (err: any) => {
           try {
-            console.warn('⚠️  Engine.io connection error:', {
+            logger.warn('⚠️  Engine.io connection error:', {
               code: err?.code,
               message: err?.message,
               req: {
@@ -48,10 +49,10 @@ export class NamespacedWebSocketService {
                 url: err?.req?.url,
               },
             });
-          } catch {}
+          } catch { /* intentionally ignored: best effort cleanup */ }
         });
       }
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
 
     this.setupRedisAdapter();
     this.initializeNamespaces();
@@ -64,13 +65,13 @@ export class NamespacedWebSocketService {
         this.pubClient = redisClient as unknown as Redis;
         this.subClient = (redisClient as any).duplicate();
         this.io.adapter(createAdapter(this.pubClient as any, this.subClient as any));
-        console.log('✅ WebSocket Redis adapter configured');
+        logger.debug('✅ WebSocket Redis adapter configured');
       } else {
-        console.warn('⚠️ WebSocket running without Redis adapter (degraded mode)');
+        logger.warn('⚠️ WebSocket running without Redis adapter (degraded mode)');
       }
     } catch (error) {
-      console.error('❌ Failed to setup WebSocket Redis adapter:', error);
-      console.warn('⚠️ WebSocket continuing without Redis adapter');
+      logger.error('❌ Failed to setup WebSocket Redis adapter:', error);
+      logger.warn('⚠️ WebSocket continuing without Redis adapter');
     }
   }
 
@@ -78,12 +79,12 @@ export class NamespacedWebSocketService {
     // Initialize Sessions namespace (/sessions)
     const sessionsNamespace = this.io.of('/sessions');
     this.sessionsService = new SessionsNamespaceService(sessionsNamespace);
-    console.log('✅ Sessions namespace service initialized');
+    logger.debug('✅ Sessions namespace service initialized');
 
     // Initialize Guidance namespace (/guidance) 
     const guidanceNamespace = this.io.of('/guidance');
     this.guidanceService = new GuidanceNamespaceService(guidanceNamespace);
-    console.log('✅ Guidance namespace service initialized');
+    logger.debug('✅ Guidance namespace service initialized');
   }
 
   public getIO(): SocketIOServer {
@@ -101,9 +102,9 @@ export class NamespacedWebSocketService {
   public async shutdown(): Promise<void> {
     try {
       await this.io.close();
-    } catch {}
+    } catch { /* intentionally ignored: best effort cleanup */ }
     // Ensure Redis adapter clients are closed to avoid hanging the process
-    try { await (this.subClient as any)?.quit?.(); } catch {}
+    try { await (this.subClient as any)?.quit?.(); } catch { /* intentionally ignored: best effort cleanup */ }
     this.subClient = null;
     // Do not quit pubClient here; it belongs to redisService which handles its own shutdown
   }
@@ -114,7 +115,7 @@ let namespacedWSService: NamespacedWebSocketService | null = null;
 export function initializeNamespacedWebSocket(httpServer: HTTPServer): NamespacedWebSocketService {
   if (!namespacedWSService) {
     namespacedWSService = new NamespacedWebSocketService(httpServer);
-    console.log('✅ Namespaced WebSocket service created');
+    logger.debug('✅ Namespaced WebSocket service created');
   }
   return namespacedWSService;
 }
@@ -126,6 +127,6 @@ export function getNamespacedWebSocketService(): NamespacedWebSocketService | nu
 export async function closeNamespacedWebSocket(): Promise<void> {
   try {
     await namespacedWSService?.shutdown();
-  } catch {}
+  } catch { /* intentionally ignored: best effort cleanup */ }
   namespacedWSService = null;
 }

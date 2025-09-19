@@ -13,6 +13,7 @@ import { analyticsLogger } from '../utils/analytics-logger';
 import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
 import { CacheTTLPolicy, ttlWithJitter } from './cache-ttl.policy';
 import { cacheAdminPort } from '../utils/cache-admin.port.instance';
+import { logger } from '../utils/logger';
 
 interface SessionMetricsCache {
   sessionId: string;
@@ -118,7 +119,7 @@ export class RealTimeAnalyticsCacheService {
         }
       );
       
-      console.error('Failed to get session metrics from cache:', error);
+      logger.error('Failed to get session metrics from cache:', error);
       return null;
     }
   }
@@ -195,7 +196,7 @@ export class RealTimeAnalyticsCacheService {
         }
       );
       
-      console.error('Failed to update session metrics cache:', error);
+      logger.error('Failed to update session metrics cache:', error);
     }
   }
 
@@ -230,7 +231,7 @@ export class RealTimeAnalyticsCacheService {
       return null;
       
     } catch (error) {
-      console.error('Failed to get group metrics from cache:', error);
+      logger.error('Failed to get group metrics from cache:', error);
       return null;
     }
   }
@@ -286,7 +287,7 @@ export class RealTimeAnalyticsCacheService {
       );
       
     } catch (error) {
-      console.error('Failed to update group metrics cache:', error);
+      logger.error('Failed to update group metrics cache:', error);
     }
   }
 
@@ -380,7 +381,7 @@ export class RealTimeAnalyticsCacheService {
       return dashboardMetrics;
       
     } catch (error) {
-      console.error('Failed to get teacher dashboard metrics:', error);
+      logger.error('Failed to get teacher dashboard metrics:', error);
       
       // Return empty metrics on error
       return {
@@ -436,9 +437,9 @@ export class RealTimeAnalyticsCacheService {
         } else {
           await this.cache.del(legacyKey);
         }
-        console.log(`🗑️ Invalidated cache for completed session ${sessionId}`);
+        logger.debug(`🗑️ Invalidated cache for completed session ${sessionId}`);
       } else {
-        console.log(`ℹ️ No cache found for session ${sessionId} (already invalidated)`);
+        logger.debug(`ℹ️ No cache found for session ${sessionId} (already invalidated)`);
       }
     } catch (error) {
       analyticsLogger.logOperation(
@@ -457,7 +458,7 @@ export class RealTimeAnalyticsCacheService {
         }
       );
       
-      console.error('Failed to invalidate session cache:', error);
+      logger.error('Failed to invalidate session cache:', error);
     }
   }
 
@@ -468,7 +469,7 @@ export class RealTimeAnalyticsCacheService {
     const startTime = Date.now();
     
     try {
-      console.log('🔄 Starting cache sync to Databricks...');
+      logger.debug('🔄 Starting cache sync to Databricks...');
       
       // Get all active session cache keys from Redis
       const sessionKeys = await this.getActiveSessionCacheKeys();
@@ -476,7 +477,7 @@ export class RealTimeAnalyticsCacheService {
       let failedCount = 0;
       const failedSessions: string[] = [];
       
-      console.log(`📊 Found ${sessionKeys.length} active session caches to sync`);
+      logger.debug(`📊 Found ${sessionKeys.length} active session caches to sync`);
       
       for (const key of sessionKeys) {
         try {
@@ -534,7 +535,7 @@ export class RealTimeAnalyticsCacheService {
             );
             
             syncedCount++;
-            console.log(`✅ Synced session ${metrics.sessionId} (${metrics.totalParticipants} participants)`);
+            logger.debug(`✅ Synced session ${metrics.sessionId} (${metrics.totalParticipants} participants)`);
           }
         } catch (error) {
           failedCount++;
@@ -558,7 +559,7 @@ export class RealTimeAnalyticsCacheService {
             }
           );
           
-          console.error(`❌ Failed to sync session cache ${key}:`, error);
+          logger.error(`❌ Failed to sync session cache ${key}:`, error);
         }
       }
       
@@ -584,9 +585,9 @@ export class RealTimeAnalyticsCacheService {
         }
       );
       
-      console.log(`✅ Cache sync completed: ${syncedCount}/${sessionKeys.length} sessions synced`);
+      logger.debug(`✅ Cache sync completed: ${syncedCount}/${sessionKeys.length} sessions synced`);
       if (failedCount > 0) {
-        console.warn(`⚠️ ${failedCount} sessions failed to sync:`, failedSessions);
+        logger.warn(`⚠️ ${failedCount} sessions failed to sync:`, failedSessions);
       }
       
     } catch (error) {
@@ -607,7 +608,7 @@ export class RealTimeAnalyticsCacheService {
         }
       );
       
-      console.error('❌ Cache sync to Databricks failed:', error);
+      logger.error('❌ Cache sync to Databricks failed:', error);
     }
   }
 
@@ -652,7 +653,7 @@ export class RealTimeAnalyticsCacheService {
       return metrics;
       
     } catch (error) {
-      console.error('Failed to fetch session metrics from Databricks:', error);
+      logger.error('Failed to fetch session metrics from Databricks:', error);
       return null;
     }
   }
@@ -694,7 +695,7 @@ export class RealTimeAnalyticsCacheService {
       });
       
     } catch (error) {
-      console.error('Failed to update session aggregates:', error);
+      logger.error('Failed to update session aggregates:', error);
     }
   }
 
@@ -710,7 +711,7 @@ export class RealTimeAnalyticsCacheService {
       return sessions.map(s => s.id);
       
     } catch (error) {
-      console.error('Failed to get active sessions for teacher:', error);
+      logger.error('Failed to get active sessions for teacher:', error);
       return [];
     }
   }
@@ -724,11 +725,11 @@ export class RealTimeAnalyticsCacheService {
       const keys: string[] = await cacheAdminPort.scan(`${this.SESSION_PREFIX}*`, 1000);
       
       if (!keys || keys.length === 0) {
-        console.log('ℹ️ No active session caches found in Redis');
+        logger.debug('ℹ️ No active session caches found in Redis');
         return [];
       }
       
-      console.log(`🔍 Found ${keys.length} potential session cache keys`);
+      logger.debug(`🔍 Found ${keys.length} potential session cache keys`);
       
       // Filter out expired or invalid keys
       const validKeys: string[] = [];
@@ -751,21 +752,21 @@ export class RealTimeAnalyticsCacheService {
               // Remove expired cache entries
               await cachePort.del(key);
               expiredCount++;
-              console.log(`🗑️ Removed expired cache entry: ${key} (age: ${Math.round(cacheAge / 1000)}s)`);
+              logger.debug(`🗑️ Removed expired cache entry: ${key} (age: ${Math.round(cacheAge / 1000)}s)`);
             }
           }
         } catch (parseError) {
           // Remove corrupted cache entries
           await cachePort.del(key);
           corruptedCount++;
-          console.warn(`🗑️ Removed corrupted cache entry: ${key} (parse error: ${parseError instanceof Error ? parseError.message : String(parseError)})`);
+          logger.warn(`🗑️ Removed corrupted cache entry: ${key} (parse error: ${parseError instanceof Error ? parseError.message : String(parseError)})`);
         }
       }
       
-      console.log(`📊 Cache cleanup: ${validKeys.length} valid, ${expiredCount} expired, ${corruptedCount} corrupted`);
+      logger.debug(`📊 Cache cleanup: ${validKeys.length} valid, ${expiredCount} expired, ${corruptedCount} corrupted`);
       return validKeys;
     } catch (error) {
-      console.error('Failed to get active session cache keys:', error);
+      logger.error('Failed to get active session cache keys:', error);
       return [];
     }
   }
@@ -783,7 +784,7 @@ export class RealTimeAnalyticsCacheService {
     const startTime = Date.now();
     
     try {
-      console.log('🚀 Manual cache sync triggered...');
+      logger.debug('🚀 Manual cache sync triggered...');
       
       await this.syncCacheToDatabriks();
       
@@ -802,7 +803,7 @@ export class RealTimeAnalyticsCacheService {
     } catch (error) {
       const duration = Date.now() - startTime;
       
-      console.error('❌ Manual cache sync failed:', error);
+      logger.error('❌ Manual cache sync failed:', error);
       
       return {
         success: false,
@@ -823,7 +824,7 @@ export const realTimeAnalyticsCacheService = new RealTimeAnalyticsCacheService()
 if (process.env.NODE_ENV !== 'test') {
   const t = setInterval(() => {
     realTimeAnalyticsCacheService.syncCacheToDatabriks().catch(error => {
-      console.error('Scheduled cache sync failed:', error);
+      logger.error('Scheduled cache sync failed:', error);
     });
   }, 5 * 60 * 1000);
   (t as any).unref?.();

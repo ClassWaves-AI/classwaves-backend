@@ -35,7 +35,6 @@ import { openAIWhisperService } from './services/openai-whisper.service';
 import { inMemoryAudioProcessor } from './services/audio/InMemoryAudioProcessor';
 import { rateLimitMiddleware, authRateLimitMiddleware } from './middleware/rate-limit.middleware';
 import { csrfTokenGenerator, requireCSRF } from './middleware/csrf.middleware';
-import { initializeRateLimiters } from './middleware/rate-limit.middleware';
 import { errorLoggingHandler } from './middleware/error-logging.middleware';
 import client from 'prom-client';
 import { traceIdMiddleware } from './middleware/trace-id.middleware';
@@ -46,15 +45,17 @@ import { databricksConfig } from './config/databricks.config';
 import { fail } from './utils/api-response';
 import { ErrorCodes } from '@classwaves/shared';
 import { logger } from './utils/logger';
+import { getCompositionRoot } from './app/composition-root';
+import { initOtel, httpTraceMiddleware, createRouteSpanMiddleware } from './observability/otel';
 
 // Optional OTEL: initialize and wire tracing when enabled
-try {
-  if (process.env.OTEL_ENABLED === '1') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const otel = require('./observability/otel');
-    try { otel.initOtel(); } catch {}
-  }
-} catch {}
+if (process.env.OTEL_ENABLED === '1') {
+  void initOtel().catch((error) => {
+    logger.warn('OTEL initialization failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
 
 const app = express();
 
@@ -109,13 +110,9 @@ app.use(traceIdMiddleware);
 app.use(requestLoggingMiddleware);
 
 // Attach OTEL HTTP tracing middleware if enabled
-try {
-  if (process.env.OTEL_ENABLED === '1') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { httpTraceMiddleware } = require('./observability/otel');
-    app.use(httpTraceMiddleware());
-  }
-} catch {}
+if (process.env.OTEL_ENABLED === '1') {
+  app.use(httpTraceMiddleware());
+}
 
 /**
  * SECURITY HARDENING - Phase 2 Implementation
@@ -139,7 +136,7 @@ const corsOptions = {
         'http://127.0.0.1:3003'   // Student Portal (alternative)
       ];
       if (origin && !allowedDevOrigins.includes(origin)) {
-        console.warn(`🚨 CORS VIOLATION: Origin ${origin} not in dev whitelist`);
+        logger.warn(`🚨 CORS VIOLATION: Origin ${origin} not in dev whitelist`);
         // Do not allow unknown origins in test/dev either
         return callback(null, false);
       }
@@ -151,7 +148,7 @@ const corsOptions = {
       callback(null, true);
     } else {
       const error = new Error(`CORS policy: Origin ${origin} is not allowed`);
-      console.error(error);
+      logger.error('CORS policy violation', { error: error.message });
       callback(error);
     }
   },
@@ -161,7 +158,13 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 // Explicitly handle preflight requests globally
-try { app.options('*', cors(corsOptions)); } catch {}
+try {
+  app.options('*', cors(corsOptions));
+} catch (error) {
+  logger.warn('Failed to register CORS preflight handler', {
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
 
 // SECURITY 1: Global rate limiting to prevent brute-force attacks
 const globalRateLimit = rateLimit({
@@ -311,7 +314,7 @@ app.use('/api/v1/auth', authRateLimitMiddleware);
 // Body parsing middleware with debugging
 app.use((req, res, next) => {
   if (process.env.API_DEBUG === '1' && (req.headers['content-type'] || '').includes('application/json')) {
-    console.log('🔧 DEBUG: About to parse JSON body for:', req.method, req.path);
+    logger.debug('🔧 DEBUG: About to parse JSON body for:', req.method, req.path);
   }
   next();
 });
@@ -319,13 +322,13 @@ app.use((req, res, next) => {
 app.use(express.json({ 
   limit: '10mb',
   verify: (req: any, res, buf) => {
-    if (process.env.API_DEBUG === '1') console.log('🔧 DEBUG: JSON parsing - body length:', buf.length);
+    if (process.env.API_DEBUG === '1') logger.debug('🔧 DEBUG: JSON parsing - body length:', buf.length);
   }
 }));
 
 app.use((err: any, req: any, res: any, next: any) => {
   if (err && err.type === 'entity.parse.failed') {
-    console.error('🔧 DEBUG: JSON parsing error:', err);
+    logger.error('🔧 DEBUG: JSON parsing error:', err);
     return res.status(400).json({ error: 'JSON_PARSE_ERROR', message: err.message });
   }
   next(err);
@@ -405,7 +408,11 @@ app.get('/api/v1/health', async (_req, res) => {
     try {
       const breaker = databricksService.getBreakerStatus?.();
       if (breaker) checks.services.databricks_breaker = breaker.state;
-    } catch {}
+    } catch (error) {
+      logger.debug('Databricks breaker status fetch failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     // Whisper health check can cause outbound traffic/errors; gate behind env flag
     if (process.env.OPENAI_WHISPER_HEALTH_ENABLED === '1') {
@@ -439,6 +446,9 @@ app.get('/api/v1/health', async (_req, res) => {
       res.json(checks);
     }
   } catch (err) {
+    logger.error('Health check failed unexpectedly', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.status(500).json({
       status: 'unhealthy',
@@ -451,9 +461,43 @@ app.get('/api/v1/health', async (_req, res) => {
 // Metrics endpoint (use default global registry to include metrics from all modules)
 // Avoid starting default metrics collector during tests to prevent Jest open-handle leaks
 if (process.env.NODE_ENV !== 'test' && process.env.METRICS_DEFAULT_DISABLED !== '1') {
-  try { client.collectDefaultMetrics(); } catch {}
+  try {
+    client.collectDefaultMetrics();
+  } catch (error) {
+    logger.debug('Failed to start default Prometheus metrics collection', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
+
+const appInfoGauge = (() => {
+  const name = 'classwaves_app_info';
+  const existing = client.register.getSingleMetric(name) as client.Gauge<string> | undefined;
+  if (existing) return existing;
+  return new client.Gauge({
+    name,
+    help: 'ClassWaves app metadata',
+    labelNames: ['db_provider'],
+  });
+})();
+
+function updateAppInfoGauge(): void {
+  try {
+    const provider = getCompositionRoot().getDbProvider();
+    appInfoGauge.set({ db_provider: provider }, 1);
+  } catch (error) {
+    if (process.env.API_DEBUG === '1') {
+      logger.warn('Unable to update app info gauge', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+updateAppInfoGauge();
+
 app.get('/metrics', async (_req, res) => {
+  updateAppInfoGauge();
   res.set('Content-Type', client.register.contentType);
   res.end(await client.register.metrics());
 });
@@ -465,14 +509,10 @@ app.use('/', jwksRoutes);
 
 // API routes
 // Add OTEL route-level spans for key controllers
-try {
-  if (process.env.OTEL_ENABLED === '1') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { createRouteSpanMiddleware } = require('./observability/otel');
-    app.use('/api/v1/sessions', createRouteSpanMiddleware('sessions'));
-    app.use('/api/v1/analytics', createRouteSpanMiddleware('analytics'));
-  }
-} catch {}
+if (process.env.OTEL_ENABLED === '1') {
+  app.use('/api/v1/sessions', createRouteSpanMiddleware('sessions'));
+  app.use('/api/v1/analytics', createRouteSpanMiddleware('analytics'));
+}
 
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/sessions', sessionRoutes);
@@ -503,7 +543,7 @@ app.use(errorLoggingHandler);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('🔧 DEBUG: Error middleware triggered:', {
+  logger.error('🔧 DEBUG: Error middleware triggered:', {
     error: err,
     message: err.message,
     stack: err.stack,
@@ -519,7 +559,7 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
     ...(isDevelopment && { stack: err.stack }),
   };
   
-  console.error('🔧 DEBUG: Sending error response:', response);
+  logger.error('🔧 DEBUG: Sending error response:', response);
   res.status(err.status || 500).json(response);
 });
 
@@ -532,9 +572,13 @@ try {
   if (secs > 0 && process.env.NODE_ENV !== 'test' && canDb) {
     const interval = setInterval(() => {
       transcriptPersistenceService.flushAll().catch((e) => {
-        console.warn('Transcript periodic flush failed:', e instanceof Error ? e.message : String(e));
+        logger.warn('Transcript periodic flush failed:', e instanceof Error ? e.message : String(e));
       });
     }, secs * 1000);
     (interval as any).unref?.();
   }
-} catch {}
+} catch (error) {
+  logger.warn('Transcript batch flush scheduler failed to initialize', {
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
