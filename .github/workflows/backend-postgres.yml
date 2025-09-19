@@ -37,6 +37,14 @@ jobs:
       - name: Move shared package alongside backend
         run: mv classwaves-shared ../classwaves-shared
 
+      - name: Install shared package dependencies
+        working-directory: ../classwaves-shared
+        run: npm ci
+
+      - name: Build shared package
+        working-directory: ../classwaves-shared
+        run: npm run build
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
