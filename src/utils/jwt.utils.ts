@@ -1,30 +1,14 @@
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
 import { Teacher, School } from '../types/auth.types';
+import { JWTConfigService } from '../config/jwt.config';
 
-// Load RSA keys for JWT signing
-const privateKeyPath = path.join(process.cwd(), 'keys', 'private.pem');
-const publicKeyPath = path.join(process.cwd(), 'keys', 'public.pem');
-
-let PRIVATE_KEY: string;
-let PUBLIC_KEY: string;
-
-try {
-  PRIVATE_KEY = fs.readFileSync(privateKeyPath, 'utf8');
-  PUBLIC_KEY = fs.readFileSync(publicKeyPath, 'utf8');
-} catch (error) {
-  console.warn('RSA keys not found, falling back to HS256 with secret');
-  // Fallback for development/testing
-  PRIVATE_KEY = '';
-  PUBLIC_KEY = '';
-}
-
-const JWT_SECRET = process.env.JWT_SECRET || 'classwaves-jwt-secret';
+// JWT configuration constants
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const REFRESH_TOKEN_EXPIRES_IN = '30d';
-const USE_RS256 = PRIVATE_KEY && PUBLIC_KEY;
+
+// Initialize JWT config service (loads keys once at startup)
+const jwtConfig = JWTConfigService.getInstance();
 
 export interface JWTPayload {
   userId: string;
@@ -47,10 +31,10 @@ export function generateAccessToken(teacher: Teacher, school: School, sessionId:
 
   const signOptions: jwt.SignOptions = {
     expiresIn: JWT_EXPIRES_IN,
-    algorithm: USE_RS256 ? 'RS256' : 'HS256',
+    algorithm: jwtConfig.getAlgorithm(),
   } as jwt.SignOptions;
 
-  const signingKey = USE_RS256 ? PRIVATE_KEY : JWT_SECRET;
+  const signingKey = jwtConfig.getSigningKey();
   return jwt.sign(payload, signingKey, signOptions);
 }
 
@@ -66,17 +50,17 @@ export function generateRefreshToken(teacher: Teacher, school: School, sessionId
 
   const signOptions: jwt.SignOptions = {
     expiresIn: REFRESH_TOKEN_EXPIRES_IN,
-    algorithm: USE_RS256 ? 'RS256' : 'HS256',
+    algorithm: jwtConfig.getAlgorithm(),
   } as jwt.SignOptions;
 
-  const signingKey = USE_RS256 ? PRIVATE_KEY : JWT_SECRET;
+  const signingKey = jwtConfig.getSigningKey();
   return jwt.sign(payload, signingKey, signOptions);
 }
 
 export function verifyToken(token: string): JWTPayload {
-  const verifyKey = USE_RS256 ? PUBLIC_KEY : JWT_SECRET;
+  const verifyKey = jwtConfig.getVerificationKey();
   return jwt.verify(token, verifyKey, {
-    algorithms: USE_RS256 ? ['RS256'] : ['HS256']
+    algorithms: [jwtConfig.getAlgorithm()]
   }) as JWTPayload;
 }
 
@@ -92,13 +76,13 @@ export function generateGroupAccessToken(groupId: string, sessionId: string): st
   };
 
   const signOptions: jwt.SignOptions = {
-    algorithm: 'RS256',
+    algorithm: jwtConfig.getAlgorithm(),
     expiresIn: '4h',
     issuer: 'classwaves',
     audience: 'classwaves-kiosk',
   };
 
-  return jwt.sign(payload, PRIVATE_KEY, signOptions);
+  return jwt.sign(payload, jwtConfig.getSigningKey(), signOptions);
 }
 
 export function getExpiresInSeconds(): number {
@@ -137,9 +121,9 @@ function getRefreshExpiresInSeconds(): number {
 }
 
 export function getPublicKey(): string | null {
-  return USE_RS256 ? PUBLIC_KEY : null;
+  return jwtConfig.getPublicKey();
 }
 
 export function getAlgorithm(): string {
-  return USE_RS256 ? 'RS256' : 'HS256';
+  return jwtConfig.getAlgorithm();
 }

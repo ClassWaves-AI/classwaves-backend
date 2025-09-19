@@ -2,19 +2,20 @@ import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
 
 async function setupTestEnvironment() {
   try {
-    console.log('🚀 Setting up test environment...\n');
+    logger.debug('🚀 Setting up test environment...\n');
     
     // Connect to databricks
     await databricksService.connect();
     
     // 1. Check/Create test school
-    console.log('1️⃣ Checking test school...');
+    logger.debug('1️⃣ Checking test school...');
     const schoolCheck = await databricksService.query(
       `SELECT id, name FROM ${databricksConfig.catalog}.users.schools WHERE domain = 'test.edu' LIMIT 1`
     );
@@ -22,7 +23,7 @@ async function setupTestEnvironment() {
     let schoolId: string;
     if (schoolCheck && schoolCheck.length > 0) {
       schoolId = schoolCheck[0].id;
-      console.log('✅ Test school exists:', schoolCheck[0].name);
+      logger.debug('✅ Test school exists:', schoolCheck[0].name);
     } else {
       // Create school
       schoolId = crypto.randomUUID();
@@ -45,11 +46,11 @@ async function setupTestEnvironment() {
           365
         ]
       );
-      console.log('✅ Created test school');
+      logger.debug('✅ Created test school');
     }
     
     // 2. Create test teacher
-    console.log('\n2️⃣ Creating test teacher...');
+    logger.debug('\n2️⃣ Creating test teacher...');
     const teacherId = crypto.randomUUID();
     
     // Delete existing test teacher if exists
@@ -71,10 +72,10 @@ async function setupTestEnvironment() {
         schoolId
       ]
     );
-    console.log('✅ Created test teacher: test@test.edu');
+    logger.debug('✅ Created test teacher: test@test.edu');
     
     // 3. Create active test session
-    console.log('\n3️⃣ Creating test session...');
+    logger.debug('\n3️⃣ Creating test session...');
     const sessionId = 'TEST123'; // Use session ID as the join code
     const accessCode = 'TEST123';
     
@@ -86,12 +87,11 @@ async function setupTestEnvironment() {
     // Create new test session
     await databricksService.query(
       `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
-       (id, title, description, status, teacher_id, school_id,
-        max_students, target_group_size, auto_group_enabled, 
+       (id, title, description, status, teacher_id, school_id, access_code,
+        target_group_size, auto_group_enabled, 
         recording_enabled, transcription_enabled, ai_analysis_enabled,
         ferpa_compliant, coppa_compliant, recording_consent_obtained,
-        planned_duration_minutes, total_groups, total_students, 
-        participation_rate, engagement_score, created_at, updated_at)
+        planned_duration_minutes, total_groups, total_students, engagement_score, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
         sessionId,
@@ -100,7 +100,7 @@ async function setupTestEnvironment() {
         'active', // Set as active so students can join immediately
         teacherId,
         schoolId,
-        30, // max_students
+        accessCode, // access_code
         4,  // target_group_size
         true, // auto_group_enabled
         true, // recording_enabled
@@ -112,13 +112,12 @@ async function setupTestEnvironment() {
         45,   // planned_duration_minutes
         0,    // total_groups
         0,    // total_students
-        0.0,  // participation_rate
         0.0   // engagement_score
       ]
     );
     
     // 4. Create a test group
-    console.log('\n4️⃣ Creating test group...');
+    logger.debug('\n4️⃣ Creating test group...');
     const groupId = crypto.randomUUID();
     
     await databricksService.query(
@@ -137,20 +136,20 @@ async function setupTestEnvironment() {
       ]
     );
     
-    console.log('\n✅ Test environment setup complete!\n');
-    console.log('📋 Test Credentials:');
-    console.log('===================');
-    console.log('Teacher Login: test@test.edu');
-    console.log('Session Code: TEST123');
-    console.log('\n🔗 URLs:');
-    console.log('Teacher Dashboard: http://localhost:3002/auth/login');
-    console.log('Student Join: http://localhost:3003/join/TEST123');
-    console.log('\n💡 Next Steps:');
-    console.log('1. Login as teacher at the dashboard URL');
-    console.log('2. Open student app and join with code TEST123');
+    logger.debug('\n✅ Test environment setup complete!\n');
+    logger.debug('📋 Test Credentials:');
+    logger.debug('===================');
+    logger.debug('Teacher Login: test@test.edu');
+    logger.debug('Session Code: TEST123');
+    logger.debug('\n🔗 URLs:');
+    logger.debug('Teacher Dashboard: http://localhost:3002/auth/login');
+    logger.debug('Student Join: http://localhost:3003/join/TEST123');
+    logger.debug('\n💡 Next Steps:');
+    logger.debug('1. Login as teacher at the dashboard URL');
+    logger.debug('2. Open student app and join with code TEST123');
     
   } catch (error) {
-    console.error('❌ Error setting up test environment:', error);
+    logger.error('❌ Error setting up test environment:', error);
     process.exit(1);
   } finally {
     await databricksService.disconnect();

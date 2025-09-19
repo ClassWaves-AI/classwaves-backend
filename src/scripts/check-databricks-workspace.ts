@@ -1,5 +1,6 @@
 import https from 'https';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -7,9 +8,9 @@ async function checkDatabricksWorkspace() {
   const token = process.env.DATABRICKS_TOKEN || '';
   const host = process.env.DATABRICKS_HOST?.replace(/^https?:\/\//, '') || '';
   
-  console.log('Checking Databricks workspace configuration...\n');
-  console.log('Host:', host);
-  console.log('Token prefix:', token.substring(0, 10) + '...\n');
+  logger.debug('Checking Databricks workspace configuration...\n');
+  logger.debug('Host:', host);
+  logger.debug('Token prefix:', token.substring(0, 10) + '...\n');
   
   // Make a direct API call to list warehouses
   const options = {
@@ -31,23 +32,23 @@ async function checkDatabricksWorkspace() {
       });
       
       res.on('end', () => {
-        console.log('Response Status:', res.statusCode);
-        console.log('Response Headers:', res.headers);
+        logger.debug('Response Status:', res.statusCode);
+        logger.debug('Response Headers:', res.headers);
         
         if (res.statusCode === 200) {
           try {
             const warehouses = JSON.parse(data);
-            console.log('\nWarehouses found:');
+            logger.debug('\nWarehouses found:');
             
             if (warehouses.warehouses && warehouses.warehouses.length > 0) {
               warehouses.warehouses.forEach((wh: any) => {
-                console.log(`\nWarehouse: ${wh.name}`);
-                console.log(`- ID: ${wh.id}`);
-                console.log(`- State: ${wh.state}`);
-                console.log(`- Type: ${wh.warehouse_type}`);
-                console.log(`- Cluster Size: ${wh.cluster_size}`);
-                console.log(`- JDBC URL: ${wh.jdbc_url || 'N/A'}`);
-                console.log(`- HTTP Path: ${wh.odbc_params?.path || 'N/A'}`);
+                logger.debug(`\nWarehouse: ${wh.name}`);
+                logger.debug(`- ID: ${wh.id}`);
+                logger.debug(`- State: ${wh.state}`);
+                logger.debug(`- Type: ${wh.warehouse_type}`);
+                logger.debug(`- Cluster Size: ${wh.cluster_size}`);
+                logger.debug(`- JDBC URL: ${wh.jdbc_url || 'N/A'}`);
+                logger.debug(`- HTTP Path: ${wh.odbc_params?.path || 'N/A'}`);
               });
               
               // Look for our warehouse
@@ -57,31 +58,31 @@ async function checkDatabricksWorkspace() {
               );
               
               if (ourWarehouse) {
-                console.log(`\n✅ Found matching warehouse!`);
-                console.log(`Use this ID: ${ourWarehouse.id}`);
+                logger.debug(`\n✅ Found matching warehouse!`);
+                logger.debug(`Use this ID: ${ourWarehouse.id}`);
                 if (ourWarehouse.odbc_params?.path) {
-                  console.log(`HTTP Path: ${ourWarehouse.odbc_params.path}`);
+                  logger.debug(`HTTP Path: ${ourWarehouse.odbc_params.path}`);
                 }
               }
             } else {
-              console.log('No warehouses found in the workspace');
+              logger.debug('No warehouses found in the workspace');
             }
             
             resolve(warehouses);
           } catch (e) {
-            console.error('Error parsing response:', e);
-            console.log('Raw response:', data);
+            logger.error('Error parsing response:', e);
+            logger.debug('Raw response:', data);
             reject(e);
           }
         } else {
-          console.log('Error response:', data);
+          logger.debug('Error response:', data);
           reject(new Error(`HTTP ${res.statusCode}: ${data}`));
         }
       });
     });
     
     req.on('error', (e) => {
-      console.error('Request error:', e);
+      logger.error('Request error:', e);
       reject(e);
     });
     

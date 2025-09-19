@@ -3,13 +3,14 @@ import { join } from 'path';
 import { databricksService } from '../services/databricks.service';
 import { generateAccessToken, generateSessionId } from '../utils/jwt.utils';
 import { redisService } from '../services/redis.service';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function debugGroupCreation() {
   try {
-    console.log('🔍 Debugging Group Creation Issue...');
+    logger.debug('🔍 Debugging Group Creation Issue...');
     
     // Connect to services
     await databricksService.connect();
@@ -24,11 +25,11 @@ async function debugGroupCreation() {
     `);
     
     if (!superAdmin) {
-      console.error('❌ Super admin not found');
+      logger.error('❌ Super admin not found');
       return;
     }
     
-    console.log('✅ Found super admin:', superAdmin.email);
+    logger.debug('✅ Found super admin:', superAdmin.email);
     
     // Generate access token for testing
     const teacher = {
@@ -79,10 +80,10 @@ async function debugGroupCreation() {
       userAgent: 'debug-script'
     }, 7200);
     
-    console.log('✅ Generated access token and stored session');
+    logger.debug('✅ Generated access token and stored session');
     
     // First, create a test session
-    console.log('\n🔧 Creating test session...');
+    logger.debug('\n🔧 Creating test session...');
     
     const sessionBaseUrl = 'http://localhost:3000/api/v1/sessions';
     const headers = {
@@ -107,16 +108,16 @@ async function debugGroupCreation() {
     
     if (!createSessionResponse.ok) {
       const error = await createSessionResponse.text();
-      console.error('❌ Failed to create test session:', createSessionResponse.status, error);
+      logger.error('❌ Failed to create test session:', createSessionResponse.status, error);
       return;
     }
     
     const sessionData = await createSessionResponse.json() as any;
     const testSessionId = sessionData.data?.session?.id;
-    console.log('✅ Created test session:', testSessionId);
+    logger.debug('✅ Created test session:', testSessionId);
     
     // Now try to create a group and see the error
-    console.log('\n🧪 Testing group creation...');
+    logger.debug('\n🧪 Testing group creation...');
     
     const groupUrl = `http://localhost:3000/api/v1/sessions/${testSessionId}/groups`;
     const createGroupPayload = {
@@ -124,9 +125,9 @@ async function debugGroupCreation() {
       maxMembers: 4
     };
     
-    console.log('Making request to:', groupUrl);
-    console.log('Payload:', JSON.stringify(createGroupPayload, null, 2));
-    console.log('Headers:', JSON.stringify(headers, null, 2));
+    logger.debug('Making request to:', groupUrl);
+    logger.debug('Payload:', JSON.stringify(createGroupPayload, null, 2));
+    logger.debug('Headers:', JSON.stringify(headers, null, 2));
     
     const createGroupResponse = await fetch(groupUrl, {
       method: 'POST',
@@ -134,24 +135,24 @@ async function debugGroupCreation() {
       body: JSON.stringify(createGroupPayload)
     });
     
-    console.log('Response status:', createGroupResponse.status);
-    console.log('Response headers:', Object.fromEntries(createGroupResponse.headers.entries()));
+    logger.debug('Response status:', createGroupResponse.status);
+    logger.debug('Response headers:', Object.fromEntries(createGroupResponse.headers.entries()));
     
     const responseText = await createGroupResponse.text();
-    console.log('Response body:', responseText);
+    logger.debug('Response body:', responseText);
     
     if (createGroupResponse.ok) {
-      console.log('✅ Group creation successful!');
+      logger.debug('✅ Group creation successful!');
     } else {
-      console.log('❌ Group creation failed - check server logs for detailed error');
+      logger.debug('❌ Group creation failed - check server logs for detailed error');
     }
     
     // Cleanup
-    console.log('\n🧹 Cleaning up...');
+    logger.debug('\n🧹 Cleaning up...');
     await fetch(`${sessionBaseUrl}/${testSessionId}`, { method: 'DELETE', headers });
     
   } catch (error) {
-    console.error('❌ Error in debug script:', error);
+    logger.error('❌ Error in debug script:', error);
   } finally {
     await databricksService.disconnect();
   }

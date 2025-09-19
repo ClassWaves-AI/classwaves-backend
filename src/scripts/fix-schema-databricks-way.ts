@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function fixSchemaDatabricksWay() {
   try {
-    console.log('🔧 Fixing schema the Databricks Delta way...');
+    logger.debug('🔧 Fixing schema the Databricks Delta way...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -23,8 +24,8 @@ async function fixSchemaDatabricksWay() {
     
     // Function to execute SQL statement
     async function executeSQL(sql: string, description: string): Promise<boolean> {
-      console.log(`\n📝 ${description}...`);
-      console.log(`SQL: ${sql}`);
+      logger.debug(`\n📝 ${description}...`);
+      logger.debug(`SQL: ${sql}`);
       
       const response = await fetch(`${host}/api/2.0/sql/statements`, {
         method: 'POST',
@@ -38,27 +39,27 @@ async function fixSchemaDatabricksWay() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ HTTP Error - ${description}:`, response.status, error);
+        logger.error(`❌ HTTP Error - ${description}:`, response.status, error);
         return false;
       }
       
       const result = await response.json() as any;
       
       if (result.status?.state === 'FAILED') {
-        console.error(`❌ SQL Failed - ${description}:`, result.status.error);
+        logger.error(`❌ SQL Failed - ${description}:`, result.status.error);
         return false;
       }
       
       if (result.status?.state === 'SUCCEEDED') {
-        console.log(`✅ ${description} succeeded`);
+        logger.debug(`✅ ${description} succeeded`);
         return true;
       }
       
-      console.warn(`⚠️ Unexpected state for ${description}:`, result.status?.state);
+      logger.warn(`⚠️ Unexpected state for ${description}:`, result.status?.state);
       return false;
     }
     
-    console.log('\n=== STEP 1: Add columns without constraints ===');
+    logger.debug('\n=== STEP 1: Add columns without constraints ===');
     
     // Step 1: Add columns without NOT NULL or DEFAULT
     const addColumnCommands = [
@@ -76,7 +77,7 @@ async function fixSchemaDatabricksWay() {
       await executeSQL(command.sql, command.description);
     }
     
-    console.log('\n=== STEP 2: Update existing rows with default values ===');
+    logger.debug('\n=== STEP 2: Update existing rows with default values ===');
     
     // Step 2: Update existing rows to have default values
     const updateCommands = [
@@ -94,7 +95,7 @@ async function fixSchemaDatabricksWay() {
       await executeSQL(command.sql, command.description);
     }
     
-    console.log('\n=== STEP 3: Verify schema ===');
+    logger.debug('\n=== STEP 3: Verify schema ===');
     
     // Step 3: Verify the columns were added
     await executeSQL(
@@ -107,10 +108,10 @@ async function fixSchemaDatabricksWay() {
       'Verify is_group_leader column in participants'
     );
     
-    console.log('\n✅ Schema should now be fixed for Databricks Delta tables!');
+    logger.debug('\n✅ Schema should now be fixed for Databricks Delta tables!');
     
   } catch (error) {
-    console.error('❌ Error fixing schema:', error);
+    logger.error('❌ Error fixing schema:', error);
   }
 }
 

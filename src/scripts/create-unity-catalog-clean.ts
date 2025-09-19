@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -25,7 +26,7 @@ class UnityCatalogCreator {
   }
 
   async executeStatement(statement: string): Promise<{ success: boolean; result?: any; error?: string }> {
-    console.log(`Executing: ${statement.substring(0, 100)}...`);
+    logger.debug(`Executing: ${statement.substring(0, 100)}...`);
     
     try {
       const response = await axios.post(
@@ -40,11 +41,11 @@ class UnityCatalogCreator {
 
       // Check immediate status
       if (response.data.status?.state === 'SUCCEEDED') {
-        console.log('✅ Success');
+        logger.debug('✅ Success');
         return { success: true, result: response.data.result };
       } else if (response.data.status?.state === 'FAILED') {
         const error = response.data.status?.error?.message || 'Unknown error';
-        console.log(`❌ Failed: ${error}`);
+        logger.debug(`❌ Failed: ${error}`);
         return { success: false, error };
       }
 
@@ -63,34 +64,34 @@ class UnityCatalogCreator {
         const state = statusResponse.data.status?.state;
         
         if (state === 'SUCCEEDED') {
-          console.log('✅ Success');
+          logger.debug('✅ Success');
           return { success: true, result: statusResponse.data.result };
         } else if (state === 'FAILED') {
           const error = statusResponse.data.status?.error?.message || 'Unknown error';
-          console.log(`❌ Failed: ${error}`);
+          logger.debug(`❌ Failed: ${error}`);
           return { success: false, error };
         }
         
         attempts++;
       }
 
-      console.log('❌ Timeout');
+      logger.debug('❌ Timeout');
       return { success: false, error: 'Timeout waiting for statement completion' };
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.message;
-      console.log(`❌ Error: ${errorMsg}`);
+      logger.debug(`❌ Error: ${errorMsg}`);
       return { success: false, error: errorMsg };
     }
   }
 
   async createStructure() {
-    console.log('🚀 Creating Unity Catalog Structure for ClassWaves\n');
-    console.log(`📍 Catalog: ${this.catalog}`);
-    console.log(`🏢 Host: ${this.host}`);
-    console.log(`📦 Warehouse: ${this.warehouseId}\n`);
+    logger.debug('🚀 Creating Unity Catalog Structure for ClassWaves\n');
+    logger.debug(`📍 Catalog: ${this.catalog}`);
+    logger.debug(`🏢 Host: ${this.host}`);
+    logger.debug(`📦 Warehouse: ${this.warehouseId}\n`);
 
     // Step 1: Create schemas
-    console.log('Step 1: Creating schemas in classwaves catalog\n');
+    logger.debug('Step 1: Creating schemas in classwaves catalog\n');
     
     const schemas = [
       'users',
@@ -111,7 +112,7 @@ class UnityCatalogCreator {
     }
 
     // Step 2: Create tables
-    console.log('\nStep 2: Creating tables\n');
+    logger.debug('\nStep 2: Creating tables\n');
 
     const tables = [
       // Users schema
@@ -181,6 +182,7 @@ class UnityCatalogCreator {
           auto_group_enabled BOOLEAN NOT NULL,
           teacher_id STRING NOT NULL,
           school_id STRING NOT NULL,
+          access_code STRING,
           recording_enabled BOOLEAN NOT NULL,
           transcription_enabled BOOLEAN NOT NULL,
           ai_analysis_enabled BOOLEAN NOT NULL,
@@ -190,8 +192,7 @@ class UnityCatalogCreator {
           data_retention_date TIMESTAMP,
           total_groups INT NOT NULL,
           total_students INT NOT NULL,
-          participation_rate DECIMAL(5,2) NOT NULL,
-          engagement_score DECIMAL(5,2) NOT NULL,
+          engagement_score DECIMAL(5,2) DEFAULT 0.0,
           created_at TIMESTAMP NOT NULL,
           updated_at TIMESTAMP NOT NULL
         ) USING DELTA`
@@ -288,7 +289,7 @@ class UnityCatalogCreator {
     }
 
     // Step 3: Insert demo data
-    console.log('\nStep 3: Inserting demo data\n');
+    logger.debug('\nStep 3: Inserting demo data\n');
 
     const demoData = [
       `INSERT INTO ${this.catalog}.users.schools (
@@ -317,7 +318,7 @@ class UnityCatalogCreator {
     }
 
     // Step 4: Verify
-    console.log('\nStep 4: Verifying structure\n');
+    logger.debug('\nStep 4: Verifying structure\n');
 
     const verifyResult = await this.executeStatement(
       `SELECT COUNT(*) FROM ${this.catalog}.users.schools`
@@ -325,10 +326,10 @@ class UnityCatalogCreator {
     
     if (verifyResult.success && verifyResult.result) {
       const count = verifyResult.result.data_array[0][0];
-      console.log(`\nDemo data verified: ${count} schools in database`);
+      logger.debug(`\nDemo data verified: ${count} schools in database`);
     }
 
-    console.log('\n✨ Unity Catalog structure created successfully!');
+    logger.debug('\n✨ Unity Catalog structure created successfully!');
   }
 }
 
@@ -339,7 +340,7 @@ async function main() {
     await creator.createStructure();
     process.exit(0);
   } catch (error) {
-    console.error('❌ Failed:', error);
+    logger.error('❌ Failed:', error);
     process.exit(1);
   }
 }

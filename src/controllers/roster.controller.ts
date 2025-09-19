@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
 import { AuthRequest } from '../types/auth.types';
-import { databricksService } from '../services/databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { v4 as uuidv4 } from 'uuid';
+import { composeDisplayName } from '../utils/name.utils';
+import { logger } from '../utils/logger';
 
 /**
  * GET /api/v1/roster
@@ -9,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
  */
 export async function listStudents(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('📋 Roster: List Students endpoint called');
+  logger.debug('📋 Roster: List Students endpoint called');
   
   try {
     const teacher = authReq.user!;
@@ -21,55 +23,14 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
     const gradeLevel = req.query.gradeLevel as string;
     const status = req.query.status as string;
 
-    // Build query with optional filters
-    let whereClause = 'WHERE s.school_id = ?';
-    const queryParams: any[] = [school.id];
-
-    if (gradeLevel) {
-      whereClause += ' AND s.grade_level = ?';
-      queryParams.push(gradeLevel);
-    }
-
-    if (status) {
-      whereClause += ' AND s.status = ?';
-      queryParams.push(status);
-    }
-
-    // Get students for this school
-    const students = await databricksService.query(`
-      SELECT 
-        s.id,
-        s.display_name as name,
-        s.email,
-        s.grade_level,
-        s.status,
-        s.has_parental_consent,
-        s.consent_date,
-        s.parent_email,
-        s.data_sharing_consent,
-        s.audio_recording_consent,
-        s.created_at,
-        s.updated_at,
-        sch.name as school_name
-      FROM classwaves.users.students s
-      JOIN classwaves.users.schools sch ON s.school_id = sch.id
-      ${whereClause}
-      ORDER BY s.display_name ASC
-      LIMIT ${limit} OFFSET ${offset}
-    `, queryParams);
-
-    // Get total count for pagination
-    const countResult = await databricksService.queryOne(`
-      SELECT COUNT(*) as total 
-      FROM classwaves.users.students s
-      ${whereClause}
-    `, queryParams);
-
-    const total = countResult?.total || 0;
+    const rosterRepo = getCompositionRoot().getRosterRepository();
+    const studentsRaw = await rosterRepo.listStudentsBySchool(school.id, { gradeLevel, status }, limit, offset);
+    const total = await rosterRepo.countStudentsBySchool(school.id, { gradeLevel, status });
     const totalPages = Math.ceil(total / limit);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_roster_accessed',
@@ -77,29 +38,64 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
       resourceType: 'student',
       resourceId: 'roster',
       schoolId: school.id,
-      description: `Teacher ${teacher.email} accessed student roster`,
+      description: `teacher:${teacher.id} accessed student roster`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest'
+    }).catch(() => {});
+
+    // Transform students to match frontend interface
+    const transformedStudents = studentsRaw.map(student => {
+      // Split display name into first/last name
+      const nameParts = (student.display_name || '').split(' ');
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ') || '';
+      
+      // Determine consent status (legacy heuristic remains)
+      let consentStatus = 'none';
+      if (student.has_parental_consent) {
+        consentStatus = 'granted';
+      } else if (student.parent_email) {
+        consentStatus = 'required';
+      }
+      
+      return {
+        id: student.id,
+        firstName,
+        lastName,
+        gradeLevel: student.grade_level || '',
+        studentId: student.id, // Use ID as studentId for now
+        parentEmail: student.parent_email,
+        status: student.status,
+        consentStatus,
+        consentDate: student.consent_date,
+        // Prefer explicit teacher verification; otherwise infer from parent email presence
+        isUnderConsentAge: student.teacher_verified_age === true ? false : Boolean(student.parent_email),
+        // New flags for UI transparency
+        emailConsentGiven: Boolean(student.email_consent === true),
+        teacherVerifiedAge: Boolean(student.teacher_verified_age === true),
+        coppaCompliant: Boolean(student.coppa_compliant === true),
+        // Surface additional consent toggles for accurate UI defaults
+        dataConsentGiven: Boolean(student.data_sharing_consent === true),
+        audioConsentGiven: Boolean(student.audio_recording_consent === true),
+        createdAt: student.created_at,
+        updatedAt: student.updated_at,
+      };
     });
 
     return res.json({
       success: true,
-      data: {
-        students,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages,
-          hasNext: page < totalPages,
-          hasPrev: page > 1
-        }
-      }
+      data: transformedStudents,
+      total,
+      page,
+      limit,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1
     });
 
   } catch (error) {
-    console.error('❌ Error listing students:', error);
+    logger.error('❌ Error listing students:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -114,59 +110,45 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
  */
 export async function createStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
-  console.log('👶 Roster: Create Student endpoint called');
+  logger.debug('👶 Roster: Create Student endpoint called');
   
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
     
     const {
-      name,
-      email,
+      firstName,
+      lastName,
+      preferredName,
       gradeLevel,
       parentEmail,
-      birthDate,
+      isUnderConsentAge = false,
+      hasParentalConsent = false,
       dataConsentGiven = false,
       audioConsentGiven = false
     } = req.body;
-
-    // Calculate age for COPPA compliance
-    let age: number | null = null;
-    let requiresParentalConsent = false;
     
-    if (birthDate) {
-      const birth = new Date(birthDate);
-      const today = new Date();
-      age = today.getFullYear() - birth.getFullYear();
-      const monthDiff = today.getMonth() - birth.getMonth();
-      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
-        age--;
-      }
-      
-      if (age < 13) {
-        requiresParentalConsent = true;
-        if (!parentEmail) {
-          return res.status(400).json({
-            success: false,
-            error: 'COPPA_COMPLIANCE_REQUIRED',
-            message: 'Parent email is required for students under 13',
-            requiresParentalConsent: true
-          });
-        }
-      }
+    const name = composeDisplayName({ given: firstName, family: lastName, preferred: preferredName });
+
+    // Simplified COPPA compliance logic
+    if (isUnderConsentAge && !hasParentalConsent) {
+      return res.status(400).json({
+        success: false,
+        error: 'PARENTAL_CONSENT_REQUIRED',
+        message: 'Parental consent is required for students under 13',
+        requiresParentalConsent: true
+      });
     }
 
     // Check if student already exists
-    const existingStudent = await databricksService.queryOne(`
-      SELECT id FROM classwaves.users.students 
-      WHERE school_id = ? AND (email = ? OR display_name = ?)
-    `, [school.id, email, name]);
+    const rosterRepoExist = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoExist.findStudentByNameInSchool(school.id, name);
 
     if (existingStudent) {
       return res.status(409).json({
         success: false,
         error: 'STUDENT_EXISTS',
-        message: 'A student with this name or email already exists in the roster'
+        message: 'A student with this name already exists in the roster'
       });
     }
 
@@ -174,41 +156,55 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     const studentId = uuidv4();
     const now = new Date().toISOString();
 
-    await databricksService.query(`
-      INSERT INTO classwaves.users.students (
-        id, display_name, school_id, email, grade_level, status,
-        has_parental_consent, consent_date, parent_email,
-        data_sharing_consent, audio_recording_consent,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      studentId,
-      name,
-      school.id,
-      email || null,
-      gradeLevel || null,
-      'active',
-      requiresParentalConsent ? false : true, // Require consent for under-13
-      requiresParentalConsent ? null : now,
-      parentEmail || null,
-      dataConsentGiven,
-      audioConsentGiven,
-      now,
-      now
-    ]);
+    const rosterRepo = getCompositionRoot().getRosterRepository();
+    await rosterRepo.insertStudent({
+      id: studentId,
+      display_name: name,
+      school_id: school.id,
+      email: null,
+      grade_level: gradeLevel || null,
+      status: 'active',
+      has_parental_consent: hasParentalConsent,
+      consent_date: hasParentalConsent ? now : null,
+      parent_email: parentEmail || null,
+      data_sharing_consent: dataConsentGiven,
+      audio_recording_consent: audioConsentGiven,
+      created_at: now,
+      updated_at: now,
+    });
+
+    // Align new consent fields with initial creation state
+    try {
+      const newFields: Record<string, any> = {};
+      if (isUnderConsentAge === false) {
+        newFields.teacher_verified_age = true;
+        newFields.coppa_compliant = true;
+      }
+      if (hasParentalConsent === true) {
+        newFields.email_consent = true;
+        newFields.coppa_compliant = true;
+      }
+      if (Object.keys(newFields).length) {
+        newFields.updated_at = now;
+        await rosterRepo.updateStudentFields(studentId, newFields);
+      }
+    } catch (consentUpdateError) {
+      logger.debug('Roster: optional consent metadata update skipped', consentUpdateError instanceof Error ? consentUpdateError.message : consentUpdateError);
+    }
+
+    // Best effort: store structured names if columns exist
+    try {
+      await rosterRepo.updateStudentNames(studentId, { given_name: firstName ?? null, family_name: lastName ?? null, preferred_name: preferredName ?? null, updated_at: now });
+    } catch (nameUpdateError) {
+      logger.debug('Roster: structured name update failed', nameUpdateError instanceof Error ? nameUpdateError.message : nameUpdateError);
+    }
 
     // Get the created student
-    const createdStudent = await databricksService.queryOne(`
-      SELECT 
-        s.*,
-        sch.name as school_name
-      FROM classwaves.users.students s
-      JOIN classwaves.users.schools sch ON s.school_id = sch.id
-      WHERE s.id = ?
-    `, [studentId]);
+    const createdStudent = await rosterRepo.getStudentWithSchool(studentId);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_created',
@@ -216,27 +212,52 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} added student: ${name}${requiresParentalConsent ? ' (requires parental consent)' : ''}`,
+      description: `teacher:${teacher.id} added student`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
+
+    // Check if student was created successfully
+    if (!createdStudent) {
+      return res.status(500).json({
+        success: false,
+        error: 'STUDENT_CREATION_FAILED',
+        message: 'Student was created but could not be retrieved'
+      });
+    }
+
+    // Transform created student to match frontend interface  
+    let consentStatus = 'none';
+    if (createdStudent.has_parental_consent) {
+      consentStatus = 'granted';
+    } else if (createdStudent.parent_email) {
+      consentStatus = 'required';
+    }
+    
+    const transformedStudent = {
+      id: createdStudent.id,
+      firstName, // Use the firstName from request body
+      lastName,  // Use the lastName from request body
+      gradeLevel: createdStudent.grade_level || '',
+      studentId: createdStudent.id,
+      parentEmail: createdStudent.parent_email,
+      status: createdStudent.status,
+      consentStatus,
+      consentDate: createdStudent.consent_date,
+      isUnderConsentAge, // Use the value from request body
+      createdAt: createdStudent.created_at,
+      updatedAt: createdStudent.updated_at,
+    };
 
     return res.status(201).json({
       success: true,
-      data: {
-        student: createdStudent,
-        coppaInfo: {
-          requiresParentalConsent,
-          estimatedAge: age,
-          parentalConsentStatus: requiresParentalConsent ? 'required' : 'not_required'
-        }
-      }
+      data: transformedStudent
     });
 
   } catch (error) {
-    console.error('❌ Error creating student:', error);
+    logger.error('❌ Error creating student:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -252,16 +273,15 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
 export async function updateStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`🔄 Roster: Update Student ${studentId} endpoint called`);
+  logger.debug(`🔄 Roster: Update Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoUpdate = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoUpdate.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -273,21 +293,37 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 
     const {
       name,
+      firstName,
+      lastName,
+      preferredName,
       email,
       gradeLevel,
       parentEmail,
       status,
       dataConsentGiven,
-      audioConsentGiven
+      audioConsentGiven,
+      emailConsentGiven,
+      teacherVerifiedAge,
+      coppaCompliant,
+      // Back-compat aliases from older UI
+      isUnderConsentAge,
+      hasParentalConsent
     } = req.body;
 
     // Build update query dynamically
     const updateFields: string[] = [];
     const updateValues: any[] = [];
 
+    // Name precedence: if explicit name provided, use it; otherwise combine split/preferred
     if (name !== undefined) {
       updateFields.push('display_name = ?');
-      updateValues.push(name);
+      updateValues.push((name as string).trim());
+    } else if (firstName !== undefined || lastName !== undefined || preferredName !== undefined) {
+      const combined = composeDisplayName({ given: firstName, family: lastName, preferred: preferredName });
+      if (combined) {
+        updateFields.push('display_name = ?');
+        updateValues.push(combined);
+      }
     }
     if (email !== undefined) {
       updateFields.push('email = ?');
@@ -313,6 +349,48 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       updateFields.push('audio_recording_consent = ?');
       updateValues.push(audioConsentGiven);
     }
+    if (emailConsentGiven !== undefined) {
+      updateFields.push('email_consent = ?');
+      updateValues.push(emailConsentGiven);
+    }
+    if (teacherVerifiedAge !== undefined) {
+      updateFields.push('teacher_verified_age = ?');
+      updateValues.push(teacherVerifiedAge);
+      // If teacher verifies age (>=13), mark COPPA compliant
+      if (teacherVerifiedAge === true) {
+        updateFields.push('coppa_compliant = ?');
+        updateValues.push(true);
+      }
+    }
+    if (coppaCompliant !== undefined) {
+      updateFields.push('coppa_compliant = ?');
+      updateValues.push(coppaCompliant);
+    }
+    // Back-compat support: if UI sends these fields, map to new schema
+    if (isUnderConsentAge !== undefined) {
+      // If not under consent age => teacher verified age
+      if (isUnderConsentAge === false) {
+        updateFields.push('teacher_verified_age = ?');
+        updateValues.push(true);
+        updateFields.push('coppa_compliant = ?');
+        updateValues.push(true);
+      } else {
+        // Under 13 -> ensure teacher_verified_age is false
+        updateFields.push('teacher_verified_age = ?');
+        updateValues.push(false);
+      }
+    }
+    if (hasParentalConsent !== undefined) {
+      // Mirror legacy parental consent to new consent fields where appropriate
+      updateFields.push('has_parental_consent = ?');
+      updateValues.push(hasParentalConsent);
+      updateFields.push('consent_date = ?');
+      updateValues.push(hasParentalConsent ? new Date().toISOString() : null);
+      updateFields.push('coppa_compliant = ?');
+      updateValues.push(!!hasParentalConsent);
+      updateFields.push('email_consent = ?');
+      updateValues.push(!!hasParentalConsent);
+    }
 
     if (updateFields.length === 0) {
       return res.status(400).json({
@@ -329,24 +407,28 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     // Add student ID for WHERE clause
     updateValues.push(studentId);
 
-    await databricksService.query(`
-      UPDATE classwaves.users.students 
-      SET ${updateFields.join(', ')}
-      WHERE id = ?
-    `, updateValues);
+    // Debug: log which columns are being updated (no values)
+    logger.debug('🛠️ Roster Update Columns:', updateFields.map(f => f.split('=')[0].trim()));
+
+    // Build field map for repository update
+    const fieldsMap = Object.fromEntries(updateFields.map((f, i) => [f.replace(' = ?', ''), updateValues[i]]));
+    await rosterRepoUpdate.updateStudentFields(studentId, fieldsMap);
+
+    // Best effort: also persist structured names if provided and columns exist
+    if (firstName !== undefined || lastName !== undefined || preferredName !== undefined) {
+      try {
+        await rosterRepoUpdate.updateStudentNames(studentId, { given_name: firstName ?? null, family_name: lastName ?? null, preferred_name: preferredName ?? null, updated_at: new Date().toISOString() });
+      } catch (structuredNameError) {
+        logger.debug('Roster: structured name update skipped during edit', structuredNameError instanceof Error ? structuredNameError.message : structuredNameError);
+      }
+    }
 
     // Get the updated student
-    const updatedStudent = await databricksService.queryOne(`
-      SELECT 
-        s.*,
-        sch.name as school_name
-      FROM classwaves.users.students s
-      JOIN classwaves.users.schools sch ON s.school_id = sch.id
-      WHERE s.id = ?
-    `, [studentId]);
+    const updatedStudent = await rosterRepoUpdate.getStudentWithSchool(studentId);
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_updated',
@@ -354,12 +436,12 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} updated student: ${updatedStudent.display_name}`,
+      description: `teacher:${teacher.id} updated student`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'legitimate_interest',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -369,7 +451,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
     });
 
   } catch (error) {
-    console.error('❌ Error updating student:', error);
+    logger.error('❌ Error updating student:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -385,16 +467,15 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 export async function deleteStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`🗑️ Roster: Delete Student ${studentId} endpoint called`);
+  logger.debug(`🗑️ Roster: Delete Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoDel = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoDel.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -405,22 +486,15 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
     }
 
     // Check if student is in any active groups (FERPA compliance)
-    const groupMembership = await databricksService.queryOne(`
-      SELECT COUNT(*) as group_count 
-      FROM classwaves.sessions.student_groups 
-      WHERE JSON_ARRAY_CONTAINS(student_ids, ?)
-    `, [studentId]);
+    const groupCount = await rosterRepoDel.countStudentGroupMembership(studentId);
 
-    if (groupMembership?.group_count > 0) {
+    if (groupCount > 0) {
       // For FERPA compliance, deactivate rather than delete if student has group data
-      await databricksService.query(`
-        UPDATE classwaves.users.students 
-        SET status = 'deactivated', updated_at = ?
-        WHERE id = ?
-      `, [new Date().toISOString(), studentId]);
+      await rosterRepoDel.setStudentDeactivated(studentId);
 
-      // Log audit event
-      await databricksService.recordAuditLog({
+      // Log audit event (async)
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'student_deactivated',
@@ -428,12 +502,12 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         resourceType: 'student',
         resourceId: studentId,
         schoolId: school.id,
-        description: `Teacher ${teacher.email} deactivated student: ${existingStudent.display_name} (has session data - FERPA protected)`,
+        description: `teacher:${teacher.id} deactivated student (FERPA protected)`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'ferpa',
         affectedStudentIds: [studentId]
-      });
+      }).catch(() => {});
 
       return res.json({
         success: true,
@@ -442,12 +516,11 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
       });
     } else {
       // Safe to delete if no session participation
-      await databricksService.query(`
-        DELETE FROM classwaves.users.students WHERE id = ?
-      `, [studentId]);
+      await rosterRepoDel.deleteStudent(studentId);
 
-      // Log audit event
-      await databricksService.recordAuditLog({
+      // Log audit event (async)
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
         actorId: teacher.id,
         actorType: 'teacher',
         eventType: 'student_deleted',
@@ -455,12 +528,12 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
         resourceType: 'student',
         resourceId: studentId,
         schoolId: school.id,
-        description: `Teacher ${teacher.email} removed student: ${existingStudent.display_name} (no session data)`,
+        description: `teacher:${teacher.id} removed student (no session data)`,
         ipAddress: req.ip,
         userAgent: req.headers['user-agent'],
         complianceBasis: 'legitimate_interest',
         affectedStudentIds: [studentId]
-      });
+      }).catch(() => {});
 
       return res.json({
         success: true,
@@ -470,7 +543,7 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
     }
 
   } catch (error) {
-    console.error('❌ Error deleting student:', error);
+    logger.error('❌ Error deleting student:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -486,17 +559,16 @@ export async function deleteStudent(req: Request, res: Response): Promise<Respon
 export async function ageVerifyStudent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`🎂 Roster: Age Verify Student ${studentId} endpoint called`);
+  logger.debug(`🎂 Roster: Age Verify Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
-    const { birthDate, parentEmail } = req.body;
+  const { birthDate, parentEmail } = req.body;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoAge = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoAge.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -530,29 +602,23 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
     }
 
     // Update student with age verification info
-    const updateData: any = {
+    const updateData: Record<string, unknown> = {
       parent_email: parentEmail || null,
       updated_at: new Date().toISOString()
     };
 
-    // If over 13, can automatically grant consent
+    // If 13 or older: teacher-verifies age and mark COPPA compliant
     if (!requiresParentalConsent) {
-      updateData.has_parental_consent = true;
-      updateData.consent_date = new Date().toISOString();
+      updateData.teacher_verified_age = true;
+      updateData.coppa_compliant = true;
+      // Do not auto-grant email_consent here; allow explicit toggle on edit modal
     }
 
-    const updateFields = Object.keys(updateData);
-    const updateValues = Object.values(updateData);
-    const setClause = updateFields.map(field => `${field} = ?`).join(', ');
+    await rosterRepoAge.updateStudentFields(studentId, updateData);
 
-    await databricksService.query(`
-      UPDATE classwaves.users.students 
-      SET ${setClause}
-      WHERE id = ?
-    `, [...updateValues, studentId]);
-
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'student_age_verified',
@@ -560,12 +626,12 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} verified age for student: ${existingStudent.display_name} (age: ${age}, COPPA: ${requiresParentalConsent ? 'required' : 'not required'})`,
+      description: `teacher:${teacher.id} verified student age (age:${age})`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'coppa',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -580,7 +646,7 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
     });
 
   } catch (error) {
-    console.error('❌ Error verifying student age:', error);
+    logger.error('❌ Error verifying student age:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
@@ -596,17 +662,16 @@ export async function ageVerifyStudent(req: Request, res: Response): Promise<Res
 export async function requestParentalConsent(req: Request, res: Response): Promise<Response> {
   const authReq = req as AuthRequest;
   const studentId = req.params.id;
-  console.log(`👨‍👩‍👧‍👦 Roster: Parental Consent for Student ${studentId} endpoint called`);
+  logger.debug(`👨‍👩‍👧‍👦 Roster: Parental Consent for Student ${studentId} endpoint called`);
   
   try {
     const teacher = authReq.user!;
     const school = authReq.school!;
-    const { consentGiven = false, parentSignature, consentDate } = req.body;
+    const { consentGiven = false, consentDate } = req.body;
 
     // Check if student exists and belongs to teacher's school
-    const existingStudent = await databricksService.queryOne(`
-      SELECT * FROM classwaves.users.students WHERE id = ? AND school_id = ?
-    `, [studentId, school.id]);
+    const rosterRepoConsent = getCompositionRoot().getRosterRepository();
+    const existingStudent = await rosterRepoConsent.findStudentInSchool(studentId, school.id);
 
     if (!existingStudent) {
       return res.status(404).json({
@@ -626,14 +691,21 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
 
     // Update consent status
     const now = new Date().toISOString();
-    await databricksService.query(`
-      UPDATE classwaves.users.students 
-      SET has_parental_consent = ?, consent_date = ?, updated_at = ?
-      WHERE id = ?
-    `, [consentGiven, consentDate || now, now, studentId]);
+    await rosterRepoConsent.updateParentalConsent(studentId, consentGiven, consentDate || now);
+    // Align new schema with parental consent decision
+    try {
+      await rosterRepoConsent.updateStudentFields(studentId, {
+        coppa_compliant: !!consentGiven,
+        email_consent: !!consentGiven,
+        updated_at: now,
+      });
+    } catch (consentSyncError) {
+      logger.debug('Roster: parental consent sync skipped', consentSyncError instanceof Error ? consentSyncError.message : consentSyncError);
+    }
 
-    // Log audit event
-    await databricksService.recordAuditLog({
+    // Log audit event (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
       actorId: teacher.id,
       actorType: 'teacher',
       eventType: 'parental_consent_updated',
@@ -641,12 +713,12 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
       resourceType: 'student',
       resourceId: studentId,
       schoolId: school.id,
-      description: `Teacher ${teacher.email} updated parental consent for student: ${existingStudent.display_name} (consent: ${consentGiven ? 'granted' : 'denied'})`,
+      description: `teacher:${teacher.id} updated parental consent (consent:${consentGiven ? 'granted' : 'denied'})`,
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
       complianceBasis: 'coppa',
       affectedStudentIds: [studentId]
-    });
+    }).catch(() => {});
 
     return res.json({
       success: true,
@@ -659,11 +731,60 @@ export async function requestParentalConsent(req: Request, res: Response): Promi
     });
 
   } catch (error) {
-    console.error('❌ Error updating parental consent:', error);
+    logger.error('❌ Error updating parental consent:', error);
     return res.status(500).json({
       success: false,
       error: 'INTERNAL_ERROR',
       message: 'Failed to update parental consent'
+    });
+  }
+}
+
+/**
+ * GET /api/v1/roster/overview
+ * Get roster metrics overview for teacher's school
+ */
+export async function getRosterOverview(req: Request, res: Response): Promise<Response> {
+  const authReq = req as AuthRequest;
+  logger.debug('📊 Roster: Get Overview endpoint called');
+  
+  try {
+    const teacher = authReq.user!;
+    const school = authReq.school!;
+
+    // Get comprehensive metrics in a single query for efficiency
+    const rosterRepoOverview = getCompositionRoot().getRosterRepository();
+    const metrics = await rosterRepoOverview.getRosterOverviewMetrics(school.id);
+
+    const overview = metrics;
+
+    // Log audit event for data access (async)
+    const { auditLogPort } = await import('../utils/audit.port.instance');
+    auditLogPort.enqueue({
+      actorId: teacher.id,
+      actorType: 'teacher',
+      eventType: 'roster_overview_accessed',
+      eventCategory: 'data_access',
+      resourceType: 'student',
+      resourceId: 'overview',
+      schoolId: school.id,
+      description: `teacher:${teacher.id} accessed roster overview metrics`,
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      complianceBasis: 'legitimate_interest'
+    }).catch(() => {});
+
+    return res.json({
+      success: true,
+      data: overview
+    });
+
+  } catch (error) {
+    logger.error('❌ Error fetching roster overview:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'INTERNAL_ERROR',
+      message: 'Failed to fetch roster overview'
     });
   }
 }

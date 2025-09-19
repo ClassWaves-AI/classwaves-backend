@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -15,7 +16,7 @@ async function verifyCatalog() {
     }
   };
 
-  console.log('🔍 Verifying Unity Catalog structure via REST API...\n');
+  logger.debug('🔍 Verifying Unity Catalog structure via REST API...\n');
 
   async function executeStatement(statement: string): Promise<any> {
     try {
@@ -33,7 +34,7 @@ async function verifyCatalog() {
       if (response.data.status?.state === 'SUCCEEDED') {
         return response.data.result;
       } else if (response.data.status?.state === 'FAILED') {
-        console.error('Query failed:', response.data.status?.error?.message);
+        logger.error('Query failed:', response.data.status?.error?.message);
         return null;
       }
 
@@ -54,43 +55,43 @@ async function verifyCatalog() {
         if (state === 'SUCCEEDED') {
           return statusResponse.data.result;
         } else if (state === 'FAILED') {
-          console.error('Query failed:', statusResponse.data.status?.error?.message);
+          logger.error('Query failed:', statusResponse.data.status?.error?.message);
           return null;
         }
         
         attempts++;
       }
 
-      console.error('Query timeout');
+      logger.error('Query timeout');
       return null;
     } catch (error: any) {
-      console.error('API Error:', error.response?.data?.message || error.message);
+      logger.error('API Error:', error.response?.data?.message || error.message);
       return null;
     }
   }
 
   // 1. Check catalogs
-  console.log('📚 Checking catalogs...');
+  logger.debug('📚 Checking catalogs...');
   const catalogsResult = await executeStatement('SHOW CATALOGS');
   if (catalogsResult) {
     const catalogs = catalogsResult.data_array.map((row: any[]) => row[0]);
-    console.log('Available catalogs:', catalogs);
-    console.log(`✅ 'classwaves' catalog exists: ${catalogs.includes('classwaves')}\n`);
+    logger.debug('Available catalogs:', catalogs);
+    logger.debug(`✅ 'classwaves' catalog exists: ${catalogs.includes('classwaves')}\n`);
   }
 
   // 2. Set catalog context
-  console.log('📂 Setting catalog context to classwaves...');
+  logger.debug('📂 Setting catalog context to classwaves...');
   await executeStatement('USE CATALOG classwaves');
 
   // 3. Check schemas
-  console.log('📁 Checking schemas in classwaves catalog...');
+  logger.debug('📁 Checking schemas in classwaves catalog...');
   const schemasResult = await executeStatement('SHOW SCHEMAS IN classwaves');
   if (schemasResult) {
     const schemas = schemasResult.data_array
       .map((row: any[]) => row[1] || row[0])
       .filter((s: string) => s !== 'information_schema');
     
-    console.log('Found schemas:', schemas);
+    logger.debug('Found schemas:', schemas);
     
     const expectedSchemas = [
       'users', 'sessions', 'analytics', 'compliance', 
@@ -98,15 +99,15 @@ async function verifyCatalog() {
       'audio', 'notifications'
     ];
     
-    console.log('\nSchema verification:');
+    logger.debug('\nSchema verification:');
     for (const schema of expectedSchemas) {
       const exists = schemas.includes(schema);
-      console.log(`  ${schema}: ${exists ? '✅' : '❌'}`);
+      logger.debug(`  ${schema}: ${exists ? '✅' : '❌'}`);
     }
   }
 
   // 4. Check specific tables
-  console.log('\n📋 Checking key tables...');
+  logger.debug('\n📋 Checking key tables...');
   const tableChecks = [
     { schema: 'users', table: 'schools' },
     { schema: 'users', table: 'teachers' },
@@ -123,14 +124,14 @@ async function verifyCatalog() {
     
     if (result) {
       const columnCount = result.data_array.length;
-      console.log(`  ✅ classwaves.${schema}.${table} - ${columnCount} columns`);
+      logger.debug(`  ✅ classwaves.${schema}.${table} - ${columnCount} columns`);
     } else {
-      console.log(`  ❌ classwaves.${schema}.${table} - not found`);
+      logger.debug(`  ❌ classwaves.${schema}.${table} - not found`);
     }
   }
 
   // 5. Check for data
-  console.log('\n📊 Checking for demo data...');
+  logger.debug('\n📊 Checking for demo data...');
   const dataChecks = [
     { table: 'users.schools', name: 'Demo schools' },
     { table: 'users.teachers', name: 'Demo teachers' },
@@ -144,11 +145,11 @@ async function verifyCatalog() {
     
     if (result && result.data_array.length > 0) {
       const count = result.data_array[0][0];
-      console.log(`  ${name}: ${count} records`);
+      logger.debug(`  ${name}: ${count} records`);
     }
   }
 
-  console.log('\n✨ Verification complete!');
+  logger.debug('\n✨ Verification complete!');
 }
 
 verifyCatalog().catch(console.error);

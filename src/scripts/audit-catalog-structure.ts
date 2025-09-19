@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -187,6 +188,16 @@ class CatalogAuditor {
       },
       {
         schema: 'ai_insights',
+        table: 'group_summaries',
+        requiredColumns: ['id', 'session_id', 'group_id', 'summary_json', 'analysis_timestamp', 'created_at']
+      },
+      {
+        schema: 'ai_insights',
+        table: 'session_summaries',
+        requiredColumns: ['id', 'session_id', 'summary_json', 'analysis_timestamp', 'created_at']
+      },
+      {
+        schema: 'ai_insights',
         table: 'intervention_suggestions',
         requiredColumns: ['id', 'session_id', 'teacher_id', 'intervention_type', 
                          'suggested_action']
@@ -305,11 +316,11 @@ class CatalogAuditor {
   }
 
   async performAudit() {
-    console.log('🔍 ClassWaves Unity Catalog Audit Report\n');
-    console.log('=' .repeat(70));
-    console.log(`Catalog: ${this.catalog}`);
-    console.log(`Timestamp: ${new Date().toISOString()}`);
-    console.log('=' .repeat(70) + '\n');
+    logger.debug('🔍 ClassWaves Unity Catalog Audit Report\n');
+    logger.debug('=' .repeat(70));
+    logger.debug(`Catalog: ${this.catalog}`);
+    logger.debug(`Timestamp: ${new Date().toISOString()}`);
+    logger.debug('=' .repeat(70) + '\n');
 
     // Set catalog context
     await this.executeStatement(`USE CATALOG ${this.catalog}`);
@@ -319,7 +330,7 @@ class CatalogAuditor {
     const expectedSchemas = [...new Set(expectedTables.map(t => t.schema))];
 
     // Check schemas
-    console.log('📁 Schema Verification:\n');
+    logger.debug('📁 Schema Verification:\n');
     const schemasResult = await this.executeStatement('SHOW SCHEMAS');
     const existingSchemas = schemasResult 
       ? schemasResult.data_array
@@ -329,11 +340,11 @@ class CatalogAuditor {
 
     for (const schema of expectedSchemas) {
       const exists = existingSchemas.includes(schema);
-      console.log(`  ${schema}: ${exists ? '✅' : '❌'}`);
+      logger.debug(`  ${schema}: ${exists ? '✅' : '❌'}`);
     }
 
     // Audit each table
-    console.log('\n📋 Table Audit Results:\n');
+    logger.debug('\n📋 Table Audit Results:\n');
     
     const auditResults: AuditResult[] = [];
     let successCount = 0;
@@ -346,13 +357,13 @@ class CatalogAuditor {
       auditResults.push(result);
       
       if (!result.exists) {
-        console.log('❌ MISSING');
+        logger.debug('❌ MISSING');
         errorCount++;
       } else if (result.issues.length > 0) {
-        console.log('⚠️  WARNING');
+        logger.debug('⚠️  WARNING');
         warningCount++;
       } else {
-        console.log('✅ OK');
+        logger.debug('✅ OK');
         successCount++;
       }
       
@@ -360,56 +371,56 @@ class CatalogAuditor {
     }
 
     // Detailed results
-    console.log('\n' + '=' .repeat(70));
-    console.log('DETAILED FINDINGS:');
-    console.log('=' .repeat(70) + '\n');
+    logger.debug('\n' + '=' .repeat(70));
+    logger.debug('DETAILED FINDINGS:');
+    logger.debug('=' .repeat(70) + '\n');
 
     // Missing tables
     const missingTables = auditResults.filter(r => !r.exists);
     if (missingTables.length > 0) {
-      console.log('❌ Missing Tables:');
+      logger.debug('❌ Missing Tables:');
       missingTables.forEach(r => {
-        console.log(`   - ${r.schema}.${r.table}`);
+        logger.debug(`   - ${r.schema}.${r.table}`);
       });
-      console.log('');
+      logger.debug('');
     }
 
     // Tables with issues
     const tablesWithIssues = auditResults.filter(r => r.exists && r.issues.length > 0);
     if (tablesWithIssues.length > 0) {
-      console.log('⚠️  Tables with Issues:');
+      logger.debug('⚠️  Tables with Issues:');
       tablesWithIssues.forEach(r => {
-        console.log(`   - ${r.schema}.${r.table}:`);
-        r.issues.forEach(issue => console.log(`     • ${issue}`));
+        logger.debug(`   - ${r.schema}.${r.table}:`);
+        r.issues.forEach(issue => logger.debug(`     • ${issue}`));
       });
-      console.log('');
+      logger.debug('');
     }
 
     // Tables with data
     const tablesWithData = auditResults.filter(r => r.exists && (r.rowCount || 0) > 0);
     if (tablesWithData.length > 0) {
-      console.log('📊 Tables with Data:');
+      logger.debug('📊 Tables with Data:');
       tablesWithData.forEach(r => {
-        console.log(`   - ${r.schema}.${r.table}: ${r.rowCount} rows`);
+        logger.debug(`   - ${r.schema}.${r.table}: ${r.rowCount} rows`);
       });
-      console.log('');
+      logger.debug('');
     }
 
     // Summary
-    console.log('=' .repeat(70));
-    console.log('AUDIT SUMMARY:');
-    console.log('=' .repeat(70));
-    console.log(`Total Expected Tables: ${expectedTables.length}`);
-    console.log(`✅ Passed: ${successCount}`);
-    console.log(`⚠️  Warnings: ${warningCount}`);
-    console.log(`❌ Failed: ${errorCount}`);
-    console.log(`📊 Tables with Data: ${tablesWithData.length}`);
+    logger.debug('=' .repeat(70));
+    logger.debug('AUDIT SUMMARY:');
+    logger.debug('=' .repeat(70));
+    logger.debug(`Total Expected Tables: ${expectedTables.length}`);
+    logger.debug(`✅ Passed: ${successCount}`);
+    logger.debug(`⚠️  Warnings: ${warningCount}`);
+    logger.debug(`❌ Failed: ${errorCount}`);
+    logger.debug(`📊 Tables with Data: ${tablesWithData.length}`);
     
     const overallStatus = errorCount === 0 ? 
       (warningCount === 0 ? '✅ PASSED' : '⚠️  PASSED WITH WARNINGS') : 
       '❌ FAILED';
     
-    console.log(`\nOverall Status: ${overallStatus}`);
+    logger.debug(`\nOverall Status: ${overallStatus}`);
 
     // Save audit report
     const report = {
@@ -437,7 +448,7 @@ class CatalogAuditor {
     const reportFile = path.join(reportPath, 'catalog-audit-report.json');
     fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
     
-    console.log(`\n📄 Detailed report saved to: ${reportFile}`);
+    logger.debug(`\n📄 Detailed report saved to: ${reportFile}`);
   }
 }
 
@@ -448,7 +459,7 @@ async function main() {
     await auditor.performAudit();
     process.exit(0);
   } catch (error) {
-    console.error('❌ Audit failed:', error);
+    logger.error('❌ Audit failed:', error);
     process.exit(1);
   }
 }

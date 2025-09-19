@@ -2,9 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import * as crypto from 'crypto';
 import { redisService } from '../services/redis.service';
 import { AuthRequest } from '../types/auth.types';
+import { CacheTTLPolicy, ttlWithJitter } from '../services/cache-ttl.policy';
+import { cachePort } from '../utils/cache.port.instance';
+import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
 
 const CSRF_TOKEN_LENGTH = 32;
-const CSRF_TOKEN_EXPIRY = 3600; // 1 hour
+const CSRF_TOKEN_EXPIRY = CacheTTLPolicy.csrf; // policy-driven
 const CSRF_HEADER_NAME = 'X-CSRF-Token';
 const CSRF_COOKIE_NAME = 'csrf-token';
 
@@ -18,14 +21,24 @@ export function generateCSRFToken(): string {
 
 // Store CSRF token in Redis
 async function storeCSRFToken(sessionId: string, token: string): Promise<void> {
-  const key = `csrf:${sessionId}`;
-  await redisService.getClient().setex(key, CSRF_TOKEN_EXPIRY, token);
+  const legacy = `csrf:${sessionId}`;
+  const prefixed = makeKey('csrf', sessionId);
+  const ttl = ttlWithJitter(CacheTTLPolicy.csrf);
+  if (isPrefixEnabled()) {
+    await cachePort.set(prefixed, token, ttl);
+    if (isDualWriteEnabled()) await cachePort.set(legacy, token, ttl);
+  } else {
+    await cachePort.set(legacy, token, ttl);
+  }
 }
 
 // Validate CSRF token from Redis
 async function validateCSRFToken(sessionId: string, token: string): Promise<boolean> {
-  const key = `csrf:${sessionId}`;
-  const storedToken = await redisService.getClient().get(key);
+  const legacy = `csrf:${sessionId}`;
+  const prefixed = makeKey('csrf', sessionId);
+  const storedToken = isPrefixEnabled()
+    ? (await cachePort.get(prefixed)) ?? (await cachePort.get(legacy))
+    : await cachePort.get(legacy);
   
   if (!storedToken || !token) {
     return false;
@@ -60,7 +73,7 @@ export async function csrfTokenGenerator(req: Request, res: Response, next: Next
     res.cookie(CSRF_COOKIE_NAME, token, {
       httpOnly: false,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
       maxAge: CSRF_TOKEN_EXPIRY * 1000
     });
   }
@@ -110,14 +123,23 @@ export async function csrfProtection(req: Request, res: Response, next: NextFunc
 
 // Helper function to get CSRF token for a session
 export async function getCSRFToken(sessionId: string): Promise<string | null> {
-  const key = `csrf:${sessionId}`;
-  return await redisService.getClient().get(key);
+  const legacy = `csrf:${sessionId}`;
+  const prefixed = makeKey('csrf', sessionId);
+  return isPrefixEnabled()
+    ? (await cachePort.get(prefixed)) ?? (await cachePort.get(legacy))
+    : await cachePort.get(legacy);
 }
 
 // Helper function to invalidate CSRF token
 export async function invalidateCSRFToken(sessionId: string): Promise<void> {
-  const key = `csrf:${sessionId}`;
-  await redisService.getClient().del(key);
+  const legacy = `csrf:${sessionId}`;
+  const prefixed = makeKey('csrf', sessionId);
+  if (isPrefixEnabled()) {
+    await cachePort.del(prefixed);
+    if (isDualWriteEnabled()) await cachePort.del(legacy);
+  } else {
+    await cachePort.del(legacy);
+  }
 }
 
 // Middleware factory for selective CSRF protection

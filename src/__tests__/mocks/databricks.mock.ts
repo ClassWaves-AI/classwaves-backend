@@ -77,6 +77,7 @@ export const mockDatabricksService = {
   recordAuditLog: jest.fn().mockResolvedValue(true),
   // Missing methods referenced in tests
   insert: jest.fn().mockResolvedValue(undefined),
+  upsert: jest.fn().mockResolvedValue(true),
   update: jest.fn().mockResolvedValue(undefined),
   delete: jest.fn().mockResolvedValue(true),
   generateId: jest.fn().mockReturnValue('mock-generated-id'),

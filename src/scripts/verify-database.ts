@@ -1,20 +1,21 @@
 import { databricksService } from '../services/databricks.service';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function verifyDatabase() {
-  console.log('🔍 Verifying ClassWaves database setup...\n');
+  logger.debug('🔍 Verifying ClassWaves database setup...\n');
   
   try {
     await databricksService.connect();
-    console.log('✅ Connected to Databricks\n');
+    logger.debug('✅ Connected to Databricks\n');
     
     // Check catalog
-    console.log('📚 Checking catalog...');
+    logger.debug('📚 Checking catalog...');
     const catalogs = await databricksService.query("SHOW CATALOGS LIKE 'classwaves'");
     if (catalogs && catalogs.length > 0) {
-      console.log('✅ Catalog "classwaves" exists\n');
+      logger.debug('✅ Catalog "classwaves" exists\n');
     }
     
     // Use catalog and schema
@@ -22,30 +23,30 @@ async function verifyDatabase() {
     await databricksService.query('USE SCHEMA main');
     
     // List all tables
-    console.log('📋 Tables in classwaves.main:');
+    logger.debug('📋 Tables in classwaves.main:');
     const tables = await databricksService.query('SHOW TABLES');
     
     const tableNames = tables.map((t: any) => t.tableName || t.table_name || t.name || Object.values(t)[0]);
     tableNames.forEach((table: string) => {
-      console.log(`   - ${table}`);
+      logger.debug(`   - ${table}`);
     });
     
     // Check row counts for key tables
-    console.log('\n📊 Table row counts:');
+    logger.debug('\n📊 Table row counts:');
     const keyTables = ['schools', 'teachers', 'sessions', 'groups', 'student_participants'];
     
     for (const table of keyTables) {
       try {
         const result = await databricksService.query(`SELECT COUNT(*) as count FROM ${table}`);
         const count = result[0]?.count || 0;
-        console.log(`   - ${table}: ${count} rows`);
+        logger.debug(`   - ${table}: ${count} rows`);
       } catch (error) {
-        console.log(`   - ${table}: Error checking`);
+        logger.debug(`   - ${table}: Error checking`);
       }
     }
     
     // Check demo data
-    console.log('\n🧪 Checking demo data:');
+    logger.debug('\n🧪 Checking demo data:');
     
     const demoSchool = await databricksService.queryOne(
       'SELECT * FROM schools WHERE domain = ?',
@@ -53,9 +54,9 @@ async function verifyDatabase() {
     );
     
     if (demoSchool) {
-      console.log('✅ Demo school found:');
-      console.log(`   - Name: ${demoSchool.name}`);
-      console.log(`   - Subscription: ${demoSchool.subscription_tier} (${demoSchool.subscription_status})`);
+      logger.debug('✅ Demo school found:');
+      logger.debug(`   - Name: ${demoSchool.name}`);
+      logger.debug(`   - Subscription: ${demoSchool.subscription_tier} (${demoSchool.subscription_status})`);
     }
     
     const demoTeacher = await databricksService.queryOne(
@@ -64,19 +65,19 @@ async function verifyDatabase() {
     );
     
     if (demoTeacher) {
-      console.log('\n✅ Demo teacher found:');
-      console.log(`   - Name: ${demoTeacher.name}`);
-      console.log(`   - Role: ${demoTeacher.role}`);
-      console.log(`   - Status: ${demoTeacher.status}`);
+      logger.debug('\n✅ Demo teacher found:');
+      logger.debug(`   - Name: ${demoTeacher.name}`);
+      logger.debug(`   - Role: ${demoTeacher.role}`);
+      logger.debug(`   - Status: ${demoTeacher.status}`);
     }
     
-    console.log('\n✨ Database verification complete!');
+    logger.debug('\n✨ Database verification complete!');
     
   } catch (error) {
-    console.error('❌ Error during verification:', error);
+    logger.error('❌ Error during verification:', error);
   } finally {
     await databricksService.disconnect();
-    console.log('\n👋 Disconnected from Databricks');
+    logger.debug('\n👋 Disconnected from Databricks');
   }
 }
 

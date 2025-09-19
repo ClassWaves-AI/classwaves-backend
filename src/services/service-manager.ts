@@ -1,155 +1,207 @@
 /**
- * Service Manager - Enterprise Service Lifecycle Management
- * 
- * Implements industry-standard dependency injection and service initialization
- * following the patterns from our rebuild documentation.
+ * Service Manager for ClassWaves Backend
+ * Manages initialization and health of all services
  */
 
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
-import { initializeRateLimiters } from '../middleware/rate-limit.middleware';
+import { emailService } from './email.service';
+import { logger } from '../utils/logger';
 
 interface ServiceStatus {
   name: string;
-  status: 'pending' | 'connecting' | 'connected' | 'failed';
-  error?: Error;
-  startTime?: Date;
+  status: 'healthy' | 'unhealthy' | 'initializing';
+  lastCheck: Date;
+  error?: string;
   connectedTime?: Date;
 }
 
 class ServiceManager {
   private services: Map<string, ServiceStatus> = new Map();
-  private initialized = false;
 
   /**
-   * Initialize all services in proper dependency order
-   * Following enterprise service lifecycle patterns
+   * Initialize all services
    */
   async initializeServices(): Promise<boolean> {
-    if (this.initialized) {
-      console.log('⚠️  Services already initialized');
-      return true;
-    }
+    logger.debug('🚀 Initializing ClassWaves services...');
+    
+    let allHealthy = true;
 
-    console.log('🔄 Initializing services...');
-
+    // Initialize Redis
     try {
-      // Phase 1: Core Infrastructure Services
-      await this.initializeDatabase();
-      await this.initializeCache();
-      
-      // Phase 2: Application Services (depend on infrastructure)
-      await this.initializeRateLimiters();
-      
-      // Phase 3: Real-time Services (depend on cache and database)
-      // WebSocket service will be initialized separately in server.ts
-
-      this.initialized = true;
-      console.log('✅ All services initialized successfully');
-      this.logServiceStatus();
-      
-      return true;
-    } catch (error) {
-      console.error('❌ Service initialization failed:', error);
-      this.logServiceStatus();
-      return false;
-    }
-  }
-
-  /**
-   * Initialize Databricks database service
-   */
-  private async initializeDatabase(): Promise<void> {
-    const serviceName = 'databricks';
-    this.updateServiceStatus(serviceName, 'connecting');
-
-    try {
-      await databricksService.connect();
-      this.updateServiceStatus(serviceName, 'connected');
-      console.log('✅ Database service initialized');
-    } catch (error) {
-      this.updateServiceStatus(serviceName, 'failed', error as Error);
-      throw new Error(`Database initialization failed: ${error}`);
-    }
-  }
-
-  /**
-   * Initialize Redis cache service with connection validation
-   */
-  private async initializeCache(): Promise<void> {
-    const serviceName = 'redis';
-    this.updateServiceStatus(serviceName, 'connecting');
-
-    try {
-      console.log('🔄 Connecting to Redis...');
-      const redisConnected = await redisService.waitForConnection(10000);
-      
-      if (!redisConnected) {
-        throw new Error('Redis connection timeout after 10 seconds');
+      this.updateServiceStatus('redis', 'initializing');
+      if (!redisService.isConnected()) {
+        // Redis connection handled automatically by ioredis
       }
+      this.updateServiceStatus('redis', 'healthy', undefined, new Date());
+      logger.debug('✅ Redis service initialized');
+    } catch (error) {
+      logger.error('❌ Redis service initialization failed:', error);
+      this.updateServiceStatus('redis', 'unhealthy', error instanceof Error ? error.message : String(error));
+      allHealthy = false;
+    }
 
-      // Verify connection with ping
-      const pingSuccess = await redisService.ping();
-      if (!pingSuccess) {
-        throw new Error('Redis ping test failed');
+    // Initialize Databricks (skip in test environment unless explicitly enabled)
+    if ((process.env.NODE_ENV !== 'test' || process.env.DATABRICKS_ENABLED === 'true') && process.env.DATABRICKS_ENABLED !== 'false') {
+      try {
+        this.updateServiceStatus('databricks', 'initializing');
+        await databricksService.connect();
+        this.updateServiceStatus('databricks', 'healthy', undefined, new Date());
+        logger.debug('✅ Databricks service initialized');
+      } catch (error) {
+        logger.error('❌ Databricks service initialization failed:', error);
+        this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
+        allHealthy = false;
       }
-
-      this.updateServiceStatus(serviceName, 'connected');
-      console.log('✅ Redis cache service initialized');
-    } catch (error) {
-      this.updateServiceStatus(serviceName, 'failed', error as Error);
-      console.error('❌ Redis connection failed - sessions will use in-memory fallback');
-      console.error('   Please ensure Redis is running:');
-      console.error('   docker-compose up -d redis');
-      
-      // Don't throw - allow graceful degradation for development
-      // throw new Error(`Cache initialization failed: ${error}`);
+    } else {
+      if (process.env.NODE_ENV === 'test' && process.env.DATABRICKS_ENABLED === 'true') {
+        this.updateServiceStatus('databricks', 'unhealthy', 'Failed to initialize in test mode');
+        logger.debug('❌ Databricks service failed to initialize in test mode');
+      } else {
+        this.updateServiceStatus('databricks', 'healthy', 'Skipped in test environment');
+        logger.debug('⚠️ Databricks service skipped (test environment)');
+      }
     }
-  }
 
-  /**
-   * Initialize rate limiters with Redis dependency
-   */
-  private async initializeRateLimiters(): Promise<void> {
-    const serviceName = 'rateLimiters';
-    this.updateServiceStatus(serviceName, 'connecting');
-
+    // Initialize Email Service
     try {
-      await initializeRateLimiters();
-      this.updateServiceStatus(serviceName, 'connected');
-      console.log('✅ Rate limiters initialized');
+      this.updateServiceStatus('email', 'initializing');
+      await emailService.initialize();
+      this.updateServiceStatus('email', 'healthy', undefined, new Date());
+      logger.debug('✅ Email service initialized');
     } catch (error) {
-      this.updateServiceStatus(serviceName, 'failed', error as Error);
-      console.warn('⚠️  Rate limiters failed to initialize, using memory fallback');
-      // Don't throw - rate limiters have built-in fallback
+      logger.error('❌ Email service initialization failed:', error);
+      this.updateServiceStatus('email', 'unhealthy', error instanceof Error ? error.message : String(error));
+      
+      // Allow degraded mode for development
+      if (process.env.NODE_ENV !== 'production') {
+        logger.warn('⚠️ Running without email service in development mode');
+      } else {
+        allHealthy = false;
+      }
     }
+
+    if (allHealthy) {
+      logger.debug('🎉 All services initialized successfully');
+    } else {
+      logger.warn('⚠️ Some services failed to initialize - check logs above');
+    }
+
+    return allHealthy;
   }
 
   /**
-   * Update service status tracking
+   * Get current status of all services
+   */
+  getServiceStatus(): ServiceStatus[] {
+    return Array.from(this.services.values());
+  }
+
+  /**
+   * Get specific service status
+   */
+  getStatus(serviceName: string): ServiceStatus | undefined {
+    return this.services.get(serviceName);
+  }
+
+  /**
+   * Update service status
    */
   private updateServiceStatus(
     name: string, 
-    status: ServiceStatus['status'], 
-    error?: Error
+    status: 'healthy' | 'unhealthy' | 'initializing',
+    error?: string,
+    connectedTime?: Date
   ): void {
-    const existing = this.services.get(name);
-    const now = new Date();
-
     this.services.set(name, {
       name,
       status,
+      lastCheck: new Date(),
       error,
-      startTime: existing?.startTime || now,
-      connectedTime: status === 'connected' ? now : existing?.connectedTime
+      connectedTime
     });
   }
 
   /**
-   * Get current service statuses
+   * Health check for all services
    */
-  getServiceStatus(): ServiceStatus[] {
-    return Array.from(this.services.values());
+  async performHealthCheck(): Promise<{ healthy: boolean; details: ServiceStatus[] }> {
+    logger.debug('🔍 Performing service health check...');
+
+    // Check Redis
+    try {
+      const isRedisHealthy = redisService.isConnected();
+      this.updateServiceStatus('redis', isRedisHealthy ? 'healthy' : 'unhealthy');
+    } catch (error) {
+      this.updateServiceStatus('redis', 'unhealthy', error instanceof Error ? error.message : String(error));
+    }
+
+    // Check Databricks (simple query)
+    try {
+      await databricksService.query('SELECT 1 as health_check');
+      this.updateServiceStatus('databricks', 'healthy');
+    } catch (error) {
+      this.updateServiceStatus('databricks', 'unhealthy', error instanceof Error ? error.message : String(error));
+    }
+
+    // Check Email service
+    try {
+      const emailHealth = await emailService.getHealthStatus();
+      this.updateServiceStatus('email', emailHealth.status === 'degraded' ? 'unhealthy' : emailHealth.status, JSON.stringify(emailHealth.details));
+    } catch (error) {
+      this.updateServiceStatus('email', 'unhealthy', error instanceof Error ? error.message : String(error));
+    }
+
+    const statuses = this.getServiceStatus();
+    const healthy = statuses.every(s => s.status === 'healthy');
+
+    logger.debug(`🏥 Health check complete. Overall status: ${healthy ? 'HEALTHY' : 'UNHEALTHY'}`);
+    
+    return { healthy, details: statuses };
+  }
+
+  /**
+   * Graceful shutdown of all services
+   */
+  async shutdown(): Promise<void> {
+    logger.debug('🛑 Shutting down services...');
+
+    try {
+      await redisService.disconnect();
+      logger.debug('✅ Redis disconnected');
+    } catch (error) {
+      logger.error('❌ Redis disconnect failed:', error);
+    }
+
+    try {
+      await databricksService.disconnect();
+      logger.debug('✅ Databricks disconnected');
+    } catch (error) {
+      logger.error('❌ Databricks disconnect failed:', error);
+    }
+
+    logger.debug('🏁 Service shutdown complete');
+  }
+
+  /**
+   * Get email service instance
+   */
+  getEmailService() {
+    return emailService;
+  }
+
+  /**
+   * Get Redis service instance
+   */
+  getRedisService(): any {
+    return redisService;
+  }
+
+  /**
+   * Get Databricks service instance
+   */
+  getDatabricksService(): any {
+    return databricksService;
   }
 
   /**
@@ -157,59 +209,9 @@ class ServiceManager {
    */
   isHealthy(): boolean {
     const statuses = this.getServiceStatus();
-    const criticalServices = ['databricks']; // Redis is optional for graceful degradation
-    
-    return criticalServices.every(serviceName => {
-      const service = statuses.find(s => s.name === serviceName);
-      return service?.status === 'connected';
-    });
-  }
-
-  /**
-   * Log service initialization summary
-   */
-  private logServiceStatus(): void {
-    console.log('\n📊 Service Status Summary:');
-    this.getServiceStatus().forEach(service => {
-      const icon = service.status === 'connected' ? '✅' : 
-                  service.status === 'failed' ? '❌' : '🔄';
-      const duration = service.connectedTime && service.startTime ? 
-        `(${service.connectedTime.getTime() - service.startTime.getTime()}ms)` : '';
-      
-      console.log(`   ${icon} ${service.name}: ${service.status} ${duration}`);
-      if (service.error) {
-        console.log(`      Error: ${service.error.message}`);
-      }
-    });
-    console.log('');
-  }
-
-  /**
-   * Graceful shutdown of all services
-   */
-  async shutdown(): Promise<void> {
-    console.log('🔄 Shutting down services...');
-    
-    try {
-      // Close Redis connection
-      if (redisService.isConnected()) {
-        await redisService.disconnect();
-        console.log('✅ Redis disconnected');
-      }
-
-      // Databricks service cleanup if needed
-      // Add other service cleanups here
-
-      this.initialized = false;
-      console.log('✅ All services shut down successfully');
-    } catch (error) {
-      console.error('❌ Error during service shutdown:', error);
-    }
+    return statuses.every(s => s.status === 'healthy');
   }
 }
 
 // Export singleton instance
 export const serviceManager = new ServiceManager();
-
-// Export for health checks
-export { ServiceStatus };

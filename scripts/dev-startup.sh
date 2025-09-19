@@ -31,6 +31,49 @@ check_docker() {
     return 0
 }
 
+# Function to check if Postgres (local dev) is healthy via Docker
+check_postgres() {
+    if ! check_docker; then
+        return 1
+    fi
+    local status
+    status=$(docker inspect -f '{{.State.Health.Status}}' classwaves-postgres 2>/dev/null || true)
+    if [ "$status" = "healthy" ]; then
+        echo "✅ Postgres is healthy"
+        return 0
+    fi
+    echo "❌ Postgres is not healthy (status=${status:-absent})"
+    return 1
+}
+
+# Function to start Postgres with Docker Compose
+start_postgres() {
+    echo "🐳 Starting Postgres with Docker Compose..."
+    cd "$(dirname "$0")/../.." # repo root
+    if command -v docker-compose >/dev/null 2>&1; then
+      docker-compose up -d postgres || true
+    else
+      docker compose up -d postgres || true
+    fi
+    echo "⏳ Waiting for Postgres to be healthy..."
+    local count=0
+    while true; do
+        local status
+        status=$(docker inspect -f '{{.State.Health.Status}}' classwaves-postgres 2>/dev/null || true)
+        if [ "$status" = "healthy" ]; then
+            echo "✅ Postgres is ready!"
+            break
+        fi
+        sleep 1
+        count=$((count + 1))
+        if [ $count -gt 60 ]; then
+            echo "❌ Postgres failed to become healthy within 60 seconds"
+            exit 1
+        fi
+        echo "   Waiting... (${count}s)"
+    done
+}
+
 # Function to start Redis with Docker Compose
 start_redis() {
     echo "🐳 Starting Redis with Docker Compose..."
@@ -83,6 +126,12 @@ start_backend() {
     cd "$(dirname "$0")/.."
     
     # Start the development server
+    # Ensure local dev uses Postgres provider by default (may be overridden by user env)
+    export DB_PROVIDER=${DB_PROVIDER:-postgres}
+    export DATABASE_URL=${DATABASE_URL:-postgres://classwaves:classwaves@localhost:5433/classwaves_dev}
+    export DB_SSL=${DB_SSL:-0}
+    echo "🧭 DB Provider: $DB_PROVIDER"
+    echo "🔌 DATABASE_URL: ${DATABASE_URL}"
     nodemon --exitcrash --signal SIGINT --exec ts-node src/server.ts
 }
 
@@ -95,6 +144,10 @@ main() {
     
     # Check if Docker is running and try to ensure Redis if missing
     if check_docker; then
+      # Ensure Postgres is up for local dev DB
+      if ! check_postgres; then
+          start_postgres
+      fi
       if ! check_redis; then
           start_redis
           sleep 2  # Give Redis a moment to fully initialize

@@ -1,5 +1,6 @@
 import { DBSQLClient } from '@databricks/sql';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -14,18 +15,17 @@ async function minimalTest() {
     `/sql/1.0/endpoints/${warehouseId}`
   ];
   
-  console.log('Warehouse ID:', warehouseId);
+  logger.debug('Warehouse ID:', warehouseId);
   
-  console.log('Configuration:');
-  console.log('Server Hostname:', serverHostname);
-  console.log('Token (first 10 chars):', token.substring(0, 10) + '...');
-  console.log('Token format check:');
-  console.log('- Starts with "dapi":', token.startsWith('dapi'));
-  console.log('- Length:', token.length);
-  console.log();
+  logger.debug('Configuration:');
+  logger.debug('Server Hostname:', serverHostname);
+  logger.debug('Token (first 10 chars):', token.substring(0, 10) + '...');
+  logger.debug('Token format check:');
+  logger.debug('- Starts with "dapi":', token.startsWith('dapi'));
+  logger.debug('- Length:', token.length);
 
   for (const httpPath of paths) {
-    console.log(`\nTrying path: ${httpPath}`);
+    logger.debug(`\nTrying path: ${httpPath}`);
     
     const client = new DBSQLClient();
 
@@ -37,10 +37,10 @@ async function minimalTest() {
 
     try {
       await client.connect(connectOptions);
-    console.log('✅ Client connected successfully');
+    logger.debug('✅ Client connected successfully');
     
     const session = await client.openSession();
-    console.log('✅ Session opened successfully');
+    logger.debug('✅ Session opened successfully');
     
     // Try the simplest possible query
     const queryOperation = await session.executeStatement(
@@ -54,23 +54,23 @@ async function minimalTest() {
     const result = await queryOperation.fetchAll();
     await queryOperation.close();
 
-    console.log('✅ Query executed successfully');
-    console.log('Result:', result);
+    logger.debug('✅ Query executed successfully');
+    logger.debug('Result:', result);
 
       await session.close();
       await client.close();
       
-      console.log('✅ All operations completed successfully');
+      logger.debug('✅ All operations completed successfully');
       return; // Success, exit the loop
     } catch (e: any) {
-      console.error('❌ Error:', e.message);
+      logger.error('❌ Error:', e.message);
       if (e.response) {
-        console.error('Response status:', e.response.status);
-        console.error('Response statusText:', e.response.statusText);
+        logger.error('Response status:', e.response.status);
+        logger.error('Response statusText:', e.response.statusText);
         if (e.response.headers) {
           const errorMsg = e.response.headers.get('x-thriftserver-error-message');
           if (errorMsg) {
-            console.error('Error message:', errorMsg);
+            logger.error('Error message:', errorMsg);
           }
         }
       }

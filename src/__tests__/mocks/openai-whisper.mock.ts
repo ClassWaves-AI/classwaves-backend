@@ -51,7 +51,7 @@ export function mockOpenAIWhisperServiceFactory(
   return {
     transcribeBuffer,
     setApiKey: jest.fn(),
-    verifyCredentials: jest.fn().mockResolvedValue(true),
+    verifyCredentials: jest.fn(() => Promise.resolve(true)),
   };
 }
 

@@ -1,10 +1,15 @@
-import { Server as HTTPServer } from 'http';
+import { Server as HTTPServer } from 'http'
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { verifyToken } from '../utils/jwt.utils';
 import { redisService } from './redis.service';
 import { databricksService } from './databricks.service';
+import { databricksConfig } from '../config/databricks.config';
 import { inMemoryAudioProcessor } from './audio/InMemoryAudioProcessor';
+import { aiAnalysisBufferService } from './ai-analysis-buffer.service';
+import { teacherPromptService } from './teacher-prompt.service';
+import { alertPrioritizationService } from './alert-prioritization.service';
+import { guidanceSystemHealthService } from './guidance-system-health.service';
 import { AuthRequest } from '../types/auth.types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -29,7 +34,19 @@ interface SocketData {
   sessionId: string;
   schoolId: string;
   role: string;
+  // Defense-in-depth: track sessions already joined by this socket to make joins idempotent
+  joinedSessions?: Set<string>;
+  joinedSessionInfo?: Record<string, { groupId: string | null; groupName: string | null }>;
+  pendingJoins?: Set<string>;
 }
+
+import { logger } from '../utils/logger';
+import type {
+  WsGroupStatusUpdatePayload,
+  WsAudioStreamLifecyclePayload,
+  WsStudentSessionJoinPayload,
+  WsAudioErrorEvent,
+} from '@classwaves/shared';
 
 interface ClientToServerEvents {
   joinSession: (sessionCode: string) => void;
@@ -37,17 +54,31 @@ interface ClientToServerEvents {
   sendMessage: (data: { sessionCode: string; message: string }) => void;
   updatePresence: (data: { sessionCode: string; status: string }) => void;
   'group:join': (data: { groupId: string; sessionId: string }) => void;
-  'group:status_update': (data: { groupId: string; isReady: boolean }) => void;
+  'group:status_update': (data: WsGroupStatusUpdatePayload) => void
   
   // Audio processing events
-  'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void;
-  'audio:stream:start': (data: { groupId: string }) => void;
-  'audio:stream:end': (data: { groupId: string }) => void;
-
-  // Teacher dashboard session control (to match frontend client)
+  'audio:chunk': (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => void
+  'audio:stream:start': (data: WsAudioStreamLifecyclePayload) => void
+  'audio:stream:end': (data: WsAudioStreamLifecyclePayload) => void
+  
+  // Teacher dashboard session control
   'session:join': (data: { session_id?: string; sessionId?: string }) => void;
   'session:leave': (data: { session_id?: string; sessionId?: string }) => void;
-  'session:update_status': (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => void;
+  
+  // Group leader readiness
+  'group:leader_ready': (data: { sessionId: string; groupId: string; ready: boolean }) => void;
+  
+  // Student session control
+  'student:session:join': (data: WsStudentSessionJoinPayload) => void
+  
+  // REMOVED: 'session:update_status' - duplicates REST API logic
+  // Session status updates should only go through REST endpoints to ensure
+  // proper business logic, validation, and analytics recording
+
+  // Delivery confirmation events
+  'teacher:alert:delivery:confirm': (data: { alertId: string; deliveryId: string; sessionId: string }) => void;
+  'teacher:batch:delivery:confirm': (data: { batchId: string; deliveryId: string; sessionId: string }) => void;
+  'teacher:insight:delivery:confirm': (data: { insightId: string; insightType: 'tier1' | 'tier2'; sessionId: string }) => void;
 }
 
 interface ServerToClientEvents {
@@ -56,6 +87,7 @@ interface ServerToClientEvents {
   'group:left': (data: { groupId: string }) => void;
   'group:status_changed': (data: { groupId: string; status: string; isReady?: boolean }) => void;
   'session:status_changed': (data: { sessionId: string; status: string }) => void;
+  'student:session:joined': (data: { sessionId: string; groupId: string | null; groupName: string | null }) => void;
   
   // Group-centric real-time events
   'transcription:group:new': (data: { 
@@ -76,10 +108,54 @@ interface ServerToClientEvents {
     timestamp: string;
   }) => void;
 
+  // AI Analysis Insights - New events for Phase B
+  'group:tier1:insight': (data: {
+    groupId: string;
+    sessionId: string;
+    insights: any;
+    timestamp: string;
+  }) => void;
+
+  'group:tier2:insight': (data: {
+    sessionId: string;
+    insights: any;
+    timestamp: string;
+  }) => void;
+
+  // Teacher Guidance System - Alert and Prompt Events
+  'teacher:alert:immediate': (data: {
+    alert: {
+      id: string;
+      prompt: any;
+      priority: number;
+      deliveryTime: string;
+    };
+  }) => void;
+
+  'teacher:alert:batch': (data: {
+    batchId: string;
+    batchType: 'urgent' | 'regular' | 'low_priority';
+    alerts: Array<{
+      id: string;
+      prompt: any;
+      priority: number;
+      contextFactors: any;
+    }>;
+    totalAlerts: number;
+    deliveryTime: string;
+  }) => void;
+
+  'teacher:prompt:acknowledged': (data: { promptId: string; timestamp: string }) => void;
+  'teacher:prompt:used': (data: { promptId: string; timestamp: string }) => void;
+  'teacher:prompt:dismissed': (data: { promptId: string; timestamp: string }) => void;
+
+  // Analytics events
+  'analytics:finalized': (data: { sessionId: string; timestamp: string }) => void;
+
   // Audio streaming events  
-  'audio:stream:start': (data: { groupId: string }) => void;
-  'audio:stream:end': (data: { groupId: string }) => void;
-  'audio:error': (data: { groupId: string; error: string }) => void;
+  'audio:stream:start': (data: WsAudioStreamLifecyclePayload) => void
+  'audio:stream:end': (data: WsAudioStreamLifecyclePayload) => void
+  'audio:error': (data: WsAudioErrorEvent) => void
   
   'error': (data: { code: string; message: string }) => void;
   
@@ -98,7 +174,7 @@ export class WebSocketService {
       cors: {
         origin: process.env.NODE_ENV === 'production'
           ? ['https://classwaves.com', 'https://app.classwaves.com']
-          : ['http://localhost:3001'], // Frontend runs on 3001
+          : ['http://localhost:3001', 'http://localhost:3003'], // Frontend on 3001, Student Portal on 3003
         credentials: true,
       },
       transports: ['websocket', 'polling'],
@@ -106,24 +182,26 @@ export class WebSocketService {
       pingInterval: 25000,
     });
 
-    // Diagnostic: server-level connection state
-    this.io.engine.on('connection_error', (err: any) => {
-      console.warn('⚠️  Engine.io connection error:', {
-        code: (err as any)?.code,
-        message: (err as any)?.message,
-        req: {
-          headers: (err as any)?.req?.headers,
-          url: (err as any)?.req?.url,
-        },
+    // Diagnostic: server-level connection state (guarded for test environments)
+    if ((this.io as any)?.engine?.on) {
+      this.io.engine.on('connection_error', (err: any) => {
+        logger.warn('⚠️  Engine.io connection error:', {
+          code: (err as any)?.code,
+          message: (err as any)?.message,
+          req: {
+            headers: (err as any)?.req?.headers,
+            url: (err as any)?.req?.url,
+          },
+        });
       });
-    });
 
-    this.io.engine.on('heartbeat', (transport: any) => {
-      // Low-cost heartbeat log to correlate timeouts (opt-in)
-      if (process.env.WS_DEBUG === '1') {
-        console.log('💓 WS heartbeat', transport?.name);
-      }
-    });
+      this.io.engine.on('heartbeat', (transport: any) => {
+        // Low-cost heartbeat log to correlate timeouts (opt-in)
+        if (process.env.WS_DEBUG === '1') {
+          logger.debug('💓 WS heartbeat', transport?.name);
+        }
+      });
+    }
 
     this.setupRedisAdapter();
     this.setupMiddleware();
@@ -146,13 +224,13 @@ export class WebSocketService {
         }
         
         this.io.adapter(createAdapter(pubClient, subClient));
-        console.log('✅ WebSocket Redis adapter configured with pub/sub clients');
+        logger.debug('✅ WebSocket Redis adapter configured with pub/sub clients');
       } else {
-        console.warn('⚠️  WebSocket using in-memory adapter (Redis not connected)');
+        logger.warn('⚠️  WebSocket using in-memory adapter (Redis not connected)');
       }
     } catch (error) {
-      console.error('Failed to setup Redis adapter:', error);
-      console.warn('⚠️  Falling back to in-memory WebSocket adapter');
+      logger.error('Failed to setup Redis adapter:', error);
+      logger.warn('⚠️  Falling back to in-memory WebSocket adapter');
     }
   }
 
@@ -169,10 +247,24 @@ export class WebSocketService {
         // Verify JWT token
         const payload = verifyToken(token);
         
-        // Verify session exists in Redis
-        const sessionData = await redisService.getSession(payload.sessionId);
-        if (!sessionData) {
-          return next(new Error('Session expired'));
+        // Verify session exists for teacher/admin/super_admin; students don't maintain secure sessions
+        let sessionOk = false;
+        if (payload.role === 'teacher' || payload.role === 'admin' || payload.role === 'super_admin') {
+          const sessionData = await redisService.getSession(payload.sessionId);
+          if (sessionData) {
+            sessionOk = true;
+          } else {
+            try {
+              const { SecureSessionService } = await import('./secure-session.service');
+              const secure = await SecureSessionService.getSecureSession(payload.sessionId as string);
+              sessionOk = !!secure;
+            } catch {
+              sessionOk = false;
+            }
+          }
+          if (!sessionOk) {
+            return next(new Error('Session expired'));
+          }
         }
 
         // Attach user data to socket
@@ -192,8 +284,12 @@ export class WebSocketService {
 
   private setupEventHandlers() {
     this.io.on('connection', (socket) => {
-      console.log(`User ${socket.data.userId} connected via WebSocket`);
+      logger.debug(`🔧 DEBUG: User ${socket.data.userId} connected via WebSocket with role ${socket.data.role}`);
       this.connectedUsers.set(socket.data.userId, socket);
+      // Initialize per-socket tracking structures
+      socket.data.joinedSessions = socket.data.joinedSessions || new Set<string>();
+      socket.data.joinedSessionInfo = socket.data.joinedSessionInfo || {};
+      socket.data.pendingJoins = socket.data.pendingJoins || new Set<string>();
 
       // Replace participant-based joinSession with group-based joinGroup
       // Session-level join for teacher dashboard
@@ -205,21 +301,47 @@ export class WebSocketService {
             return;
           }
 
-          // Verify session belongs to authenticated teacher
-          const session = await databricksService.queryOne(
-            `SELECT id, status FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
-            [sessionId, socket.data.userId]
-          );
+          // Idempotency for teacher joins as well (prevents repeated DB verification and joins)
+          if (socket.data.joinedSessions?.has(sessionId)) {
+            // Echo current status for UI sync without DB hit
+            try {
+              const { getCompositionRoot } = await import('../app/composition-root');
+              const repo = getCompositionRoot()?.getSessionRepository();
+              const session = repo ? await repo.getOwnedSessionBasic(sessionId, socket.data.userId) : null;
+              if (session) socket.emit('session:status_changed', { sessionId, status: session.status });
+            } catch { /* intentionally ignored: best effort cleanup */ }
+            return;
+          }
+          if (socket.data.pendingJoins?.has(sessionId)) return;
+          socket.data.pendingJoins?.add(sessionId);
+
+          // Verify session belongs to authenticated teacher (via repository when available)
+          let session: any = null;
+          try {
+            const { getCompositionRoot } = await import('../app/composition-root');
+            const repo = getCompositionRoot()?.getSessionRepository();
+            session = repo ? await repo.getOwnedSessionBasic(sessionId, socket.data.userId) : null;
+          } catch { /* intentionally ignored: best effort cleanup */ }
+          if (!session) {
+            session = await databricksService.queryOne(
+              `SELECT id, status FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+              [sessionId, socket.data.userId]
+            );
+          }
           if (!session) {
             socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
+            socket.data.pendingJoins?.delete(sessionId);
             return;
           }
 
           await socket.join(`session:${sessionId}`);
           // Optionally echo current status so UI can sync
           socket.emit('session:status_changed', { sessionId, status: session.status });
+          socket.data.joinedSessions?.add(sessionId);
+          socket.data.pendingJoins?.delete(sessionId);
         } catch (err) {
           socket.emit('error', { code: 'SESSION_JOIN_FAILED', message: 'Failed to join session' });
+          try { socket.data.pendingJoins?.clear(); } catch { /* intentionally ignored: best effort cleanup */ }
         }
       });
 
@@ -229,125 +351,165 @@ export class WebSocketService {
           if (!sessionId) return;
           await socket.leave(`session:${sessionId}`);
           socket.emit('sessionLeft', { sessionCode: sessionId });
+
+          // If this was a student join, also leave the group room and clear tracking
+          try {
+            const info = socket.data.joinedSessionInfo?.[sessionId];
+            if (info?.groupId) {
+              await socket.leave(`group:${info.groupId}`);
+            }
+          } catch { /* intentionally ignored: best effort cleanup */ }
+          if (socket.data.joinedSessions?.has(sessionId)) {
+            socket.data.joinedSessions.delete(sessionId);
+          }
+          if (socket.data.joinedSessionInfo && sessionId in socket.data.joinedSessionInfo) {
+            delete socket.data.joinedSessionInfo[sessionId];
+          }
+          socket.data.pendingJoins?.delete(sessionId);
         } catch (err) {
           socket.emit('error', { code: 'SESSION_LEAVE_FAILED', message: 'Failed to leave session' });
         }
       });
 
-      socket.on('session:update_status', async (data: { session_id?: string; sessionId?: string; status: 'waiting' | 'created' | 'active' | 'paused' | 'ended' | 'archived' }) => {
+      // Student-specific session join handler
+      // Students need to join session rooms to receive group status updates
+      socket.on('student:session:join', async (data: { sessionId: string }) => {
         try {
-          const sessionId = (data?.session_id || data?.sessionId || '').trim();
-          let status = data?.status;
-          if (!sessionId || !status) {
-            socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'session_id and status are required' });
+          const { sessionId } = data;
+          if (!sessionId) {
+            socket.emit('error', { code: 'INVALID_PAYLOAD', message: 'sessionId is required' });
             return;
           }
 
-          // Map client 'waiting' to DB 'created'
-          if (status === 'waiting') status = 'created';
-          const allowed: Record<string, true> = { created: true, active: true, paused: true, ended: true, archived: true } as const;
-          if (!allowed[status]) {
-            socket.emit('error', { code: 'INVALID_STATUS', message: `Unsupported status: ${status}` });
+          // Idempotency guard: ignore duplicate joins from the same socket for the same session
+          if (socket.data.joinedSessions?.has(sessionId)) {
+            const info = socket.data.joinedSessionInfo?.[sessionId] || { groupId: null, groupName: null };
+            socket.emit('student:session:joined', {
+              sessionId,
+              groupId: info.groupId,
+              groupName: info.groupName,
+            });
             return;
           }
+          if (socket.data.pendingJoins?.has(sessionId)) return;
+          socket.data.pendingJoins?.add(sessionId);
 
-          // Verify ownership
-          const owned = await databricksService.queryOne(
-            `SELECT id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+          // Verify student is a participant in this session
+          const participant = await databricksService.queryOne(
+            `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
+             FROM ${databricksConfig.catalog}.sessions.participants p 
+             LEFT JOIN ${databricksConfig.catalog}.sessions.student_groups sg ON p.group_id = sg.id
+             WHERE p.session_id = ? AND p.student_id = ?`,
             [sessionId, socket.data.userId]
           );
-          if (!owned) {
-            socket.emit('error', { code: 'SESSION_NOT_FOUND', message: 'Session not found or not owned by user' });
+          
+          if (!participant) {
+            socket.emit('error', { 
+              code: 'SESSION_ACCESS_DENIED', 
+              message: 'Student not enrolled in this session' 
+            });
+            socket.data.pendingJoins?.delete(sessionId);
             return;
           }
 
-          await databricksService.updateSessionStatus(sessionId, status as any);
-          // Broadcast to session room
-          this.io.to(`session:${sessionId}`).emit('session:status_changed', { sessionId, status });
-        } catch (err) {
-          socket.emit('error', { code: 'STATUS_UPDATE_FAILED', message: 'Failed to update session status' });
+          // Join session room to receive group status updates
+          await socket.join(`session:${sessionId}`);
+          
+          // Also join group-specific room if assigned
+          if (participant.group_id) {
+            await socket.join(`group:${participant.group_id}`);
+          }
+
+          socket.emit('student:session:joined', { 
+            sessionId,
+            groupId: participant.group_id,
+            groupName: participant.group_name
+          });
+
+          // Record successful join for idempotency
+          socket.data.joinedSessions?.add(sessionId);
+          if (socket.data.joinedSessionInfo) {
+            socket.data.joinedSessionInfo[sessionId] = {
+              groupId: participant.group_id ?? null,
+              groupName: participant.group_name ?? null,
+            };
+          }
+          
+          logger.debug(`Student ${socket.data.userId} joined session ${sessionId} and group ${participant.group_id}`);
+          socket.data.pendingJoins?.delete(sessionId);
+        } catch (error) {
+          logger.error('Student session join error:', error);
+          socket.emit('error', { 
+            code: 'STUDENT_SESSION_JOIN_FAILED', 
+            message: 'Failed to join session as student' 
+          });
+          try { socket.data.pendingJoins?.clear(); } catch { /* intentionally ignored: best effort cleanup */ }
         }
       });
 
-      // Replace participant-based joinSession with group-based joinGroup
-      socket.on('group:join', async (data: { groupId: string; sessionId: string }) => {
+      // Phase 5: Handle group leader ready signal
+      // Groups are pre-configured in declarative workflow
+      socket.on('group:leader_ready', async (data: { sessionId: string; groupId: string; ready: boolean }) => {
         try {
-          // Verify group exists and session is active
+          // Validate that student is the designated leader for this group
           const group = await databricksService.queryOne(`
-            SELECT sg.*, cs.status as session_status
-            FROM classwaves.sessions.student_groups sg
-            JOIN classwaves.sessions.classroom_sessions cs ON sg.session_id = cs.id
-            WHERE sg.id = ? AND cs.id = ?
+            SELECT leader_id, session_id, name 
+            FROM ${databricksConfig.catalog}.sessions.student_groups 
+            WHERE id = ? AND session_id = ?
           `, [data.groupId, data.sessionId]);
           
-          if (!group || group.session_status !== 'active') {
+          if (!group) {
             socket.emit('error', {
-              code: 'GROUP_JOIN_FAILED',
-              message: 'Group not found or session not active',
+              code: 'GROUP_NOT_FOUND',
+              message: 'Group not found',
             });
             return;
           }
-          
-          await socket.join(`session:${data.sessionId}`);
-          await socket.join(`group:${data.groupId}`);
-          
-          socket.emit('group:joined', { 
-            groupId: data.groupId, 
-            sessionId: data.sessionId,
-            groupInfo: group 
-          });
-          
-          // Notify teacher dashboard
-          socket.to(`session:${data.sessionId}`).emit('group:status_changed', {
-            groupId: data.groupId,
-            status: 'connected'
-          });
-        } catch (error) {
-          socket.emit('error', {
-            code: 'GROUP_JOIN_FAILED',
-            message: 'Failed to join group session',
-          });
-        }
-      });
 
-      // Handle group status updates from kiosk
-      socket.on('group:status_update', async (data: { groupId: string; isReady: boolean }) => {
-        try {
-          // Update group status in database
+          // Note: Group leader validation will be added in future iterations
+          // Currently accepting any readiness signal for MVP flexibility
+          
+          // Update group readiness status
           await databricksService.update('student_groups', data.groupId, {
-            is_ready: data.isReady,
-            updated_at: new Date(),
+            is_ready: data.ready,
           });
           
-          // Get session ID for this group
-          const group = await databricksService.queryOne(`
-            SELECT session_id FROM classwaves.sessions.student_groups WHERE id = ?
-          `, [data.groupId]);
-          
-          if (group) {
-            // Broadcast to teacher dashboard
-            this.io.to(`session:${group.session_id}`).emit('group:status_changed', {
-              groupId: data.groupId,
-              status: data.isReady ? 'ready' : 'waiting',
-              isReady: data.isReady
-            });
+          // Record analytics for leader readiness
+          if (data.ready) {
+            await recordLeaderReady(data.sessionId, data.groupId, group.leader_id);
           }
+          
+          // Broadcast group status change to teacher clients
+          const broadcastEvent = {
+            groupId: data.groupId,
+            sessionId: data.sessionId,
+            status: data.ready ? 'ready' : 'waiting',
+            isReady: data.ready,
+          }
+          
+          logger.debug(`🎯 [WEBSOCKET DEBUG] Broadcasting group:status_changed to session:${data.sessionId}`);
+          logger.debug(`🎯 [WEBSOCKET DEBUG] Broadcast payload:`, broadcastEvent);
+          
+          this.io.to(`session:${data.sessionId}`).emit('group:status_changed', broadcastEvent);
+          
+          logger.debug(`🎯 Group ${group.name} leader marked ${data.ready ? 'ready' : 'not ready'} in session ${data.sessionId}`);
         } catch (error) {
+          logger.error('Error handling group leader ready:', error);
           socket.emit('error', {
-            code: 'STATUS_UPDATE_FAILED',
-            message: 'Failed to update group status',
+            code: 'LEADER_READY_FAILED',
+            message: 'Failed to update leader readiness',
           });
         }
       });
 
       // Handle audio chunk processing (windowed)
-      socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; format: string; timestamp: number }) => {
+      socket.on('audio:chunk', async (data: { groupId: string; audioData: Buffer; format?: string; mimeType?: string; timestamp: number }) => {
         try {
           // Backpressure diagnostics: drop too-large payloads to prevent disconnects
           const approxSize = (data as any)?.audioData?.length || 0;
           if (approxSize > 1024 * 1024 * 2) { // >2MB
-            console.warn(`⚠️  Dropping oversized audio chunk (~${approxSize} bytes) for group ${data.groupId}`);
-            socket.emit('audio:error', { groupId: data.groupId, error: 'Payload too large' });
+            logger.warn(`⚠️  Dropping oversized audio chunk (~${approxSize} bytes) for group ${data.groupId}`);
+            socket.emit('audio:error', { groupId: data.groupId, error: 'PAYLOAD_TOO_LARGE' });
             return;
           }
 
@@ -358,21 +520,22 @@ export class WebSocketService {
             // Increment metric via processor (reusing the drop counter by simulating 1 dropped chunk)
             // We cannot directly access the private counter; instead, trigger backpressure handling which increments it
             try { await (inMemoryAudioProcessor as any).handleBackPressure?.(data.groupId); } catch { /* ignore */ }
-            console.warn(`⚠️  Socket backpressure: rejecting audio chunk for group ${data.groupId} (bytes=${windowInfo.bytes}, chunks=${windowInfo.chunks})`);
-            socket.emit('audio:error', { groupId: data.groupId, error: 'Backpressure: please slow down' });
+            logger.warn(`⚠️  Socket backpressure: rejecting audio chunk for group ${data.groupId} (bytes=${windowInfo.bytes}, chunks=${windowInfo.chunks})`);
+            socket.emit('audio:error', { groupId: data.groupId, error: 'BACKPRESSURE' });
             return;
           }
 
-          // Coerce payload and validate mime
+          // Coerce payload and validate mime (support both 'mimeType' and legacy 'format')
           const audioBuffer = coerceToBuffer(data.audioData);
-          validateMimeType(data.format);
-          console.log(`🎤 Processing audio chunk for group ${data.groupId}, format: ${data.format}, size: ${audioBuffer.length} bytes`);
+          const resolvedMime = (data as any).mimeType || (data as any).format;
+          validateMimeType(resolvedMime);
+          logger.debug(`🎤 Processing audio chunk for group ${data.groupId}, format: ${resolvedMime}, size: ${audioBuffer.length} bytes`);
           
           // Process audio with InMemoryAudioProcessor (zero-disk guarantee, windowed)
           const result = await inMemoryAudioProcessor.ingestGroupAudioChunk(
             data.groupId,
             audioBuffer,
-            data.format,
+            resolvedMime,
             socket.data.sessionId,
             socket.data.schoolId
           );
@@ -406,14 +569,30 @@ export class WebSocketService {
               timestamp: new Date(result.timestamp)
             });
             
-            console.log(`✅ Window submitted for group ${data.groupId}: "${result.text.substring(0, 50)}..."`);
+            // ✅ AI ANALYSIS INTEGRATION: Buffer transcription for AI analysis
+            try {
+              await aiAnalysisBufferService.bufferTranscription(
+                data.groupId,
+                socket.data.sessionId,
+                result.text
+              );
+              
+              // Check if we should trigger analysis
+              await this.checkAndTriggerAIAnalysis(data.groupId, socket.data.sessionId, socket.data.userId);
+            } catch (error) {
+              logger.error(`⚠️ AI buffering failed for group ${data.groupId}:`, error);
+              // Don't fail the main transcription flow
+            }
+            
+            logger.debug(`✅ Window submitted for group ${data.groupId}: "${result.text.substring(0, 50)}..."`);
           }
           
         } catch (error) {
-          console.error(`❌ Audio processing failed for group ${data.groupId}:`, error);
-          socket.emit('audio:error', { 
-            groupId: data.groupId, 
-            error: error instanceof Error ? error.message : 'Audio processing failed'
+          logger.error(`❌ Audio processing failed for group ${data.groupId}:`, error);
+          socket.emit('audio:error', {
+            groupId: data.groupId,
+            error: 'AUDIO_PROCESSING_FAILED',
+            message: error instanceof Error ? error.message : 'Audio processing failed',
           });
         }
       });
@@ -421,14 +600,14 @@ export class WebSocketService {
       // Handle audio stream lifecycle - start
       socket.on('audio:stream:start', async (data: { groupId: string }) => {
         try {
-          console.log(`🎤 Audio stream started for group ${data.groupId}`);
+          logger.debug(`🎤 Audio stream started for group ${data.groupId}`);
           
           // Join group room for audio streaming
           await socket.join(`group:${data.groupId}:audio`);
           
           // Notify teacher dashboard that group is recording
           this.io.to(`session:${socket.data.sessionId}`).emit('audio:stream:start', {
-            groupId: data.groupId
+            groupId: data.groupId,
           });
           
           // Update group status to recording
@@ -438,10 +617,11 @@ export class WebSocketService {
           });
           
         } catch (error) {
-          console.error(`❌ Failed to start audio stream for group ${data.groupId}:`, error);
+          logger.error(`❌ Failed to start audio stream for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
-            error: 'Failed to start audio stream'
+            error: 'AUDIO_PROCESSING_FAILED',
+            message: 'Failed to start audio stream',
           });
         }
       });
@@ -449,14 +629,14 @@ export class WebSocketService {
       // Handle audio stream lifecycle - end
       socket.on('audio:stream:end', async (data: { groupId: string }) => {
         try {
-          console.log(`🎤 Audio stream ended for group ${data.groupId}`);
+          logger.debug(`🎤 Audio stream ended for group ${data.groupId}`);
           
           // Leave group audio room
           await socket.leave(`group:${data.groupId}:audio`);
           
           // Notify teacher dashboard that group stopped recording
           this.io.to(`session:${socket.data.sessionId}`).emit('audio:stream:end', {
-            groupId: data.groupId
+            groupId: data.groupId,
           });
           
           // Update group status
@@ -466,10 +646,11 @@ export class WebSocketService {
           });
           
         } catch (error) {
-          console.error(`❌ Failed to end audio stream for group ${data.groupId}:`, error);
+          logger.error(`❌ Failed to end audio stream for group ${data.groupId}:`, error);
           socket.emit('audio:error', {
             groupId: data.groupId,
-            error: 'Failed to end audio stream'
+            error: 'AUDIO_PROCESSING_FAILED',
+            message: 'Failed to end audio stream',
           });
         }
       });
@@ -521,9 +702,85 @@ export class WebSocketService {
         });
       });
 
+      // ============================================================================
+      // Delivery Confirmation Handlers
+      // ============================================================================
+
+      // Handle alert delivery confirmation
+      socket.on('teacher:alert:delivery:confirm', async (data: { alertId: string; deliveryId: string; sessionId: string }) => {
+        try {
+          // Verify session ownership
+          const session = await databricksService.queryOne(
+            `SELECT id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [data.sessionId, socket.data.userId]
+          );
+
+          if (session) {
+            await alertPrioritizationService.confirmAlertDelivery(data.alertId, data.deliveryId, data.sessionId);
+            logger.debug(`✅ Alert delivery confirmed by teacher: ${data.alertId}`);
+          }
+        } catch (error) {
+          logger.error(`❌ Failed to confirm alert delivery:`, error);
+          socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm alert delivery' });
+        }
+      });
+
+      // Handle batch delivery confirmation
+      socket.on('teacher:batch:delivery:confirm', async (data: { batchId: string; deliveryId: string; sessionId: string }) => {
+        try {
+          // Verify session ownership
+          const session = await databricksService.queryOne(
+            `SELECT id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [data.sessionId, socket.data.userId]
+          );
+
+          if (session) {
+            await alertPrioritizationService.confirmBatchDelivery(data.batchId, data.deliveryId, data.sessionId);
+            logger.debug(`✅ Batch delivery confirmed by teacher: ${data.batchId}`);
+          }
+        } catch (error) {
+          logger.error(`❌ Failed to confirm batch delivery:`, error);
+          socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm batch delivery' });
+        }
+      });
+
+      // Handle AI insight delivery confirmation
+      socket.on('teacher:insight:delivery:confirm', async (data: { insightId: string; insightType: 'tier1' | 'tier2'; sessionId: string }) => {
+        try {
+          // Verify session ownership
+          const session = await databricksService.queryOne(
+            `SELECT id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`,
+            [data.sessionId, socket.data.userId]
+          );
+
+          if (session) {
+            // Log insight delivery confirmation (async)
+            const { auditLogPort } = await import('../utils/audit.port.instance');
+            auditLogPort.enqueue({
+              actorId: socket.data.userId,
+              actorType: 'teacher',
+              eventType: 'ai_insight_delivery_confirmed',
+              eventCategory: 'session',
+              resourceType: 'ai_insight',
+              resourceId: data.insightId,
+              schoolId: socket.data.schoolId,
+              description: `teacher confirmed receipt of ${data.insightType} ai insight`,
+              sessionId: data.sessionId,
+              complianceBasis: 'legitimate_interest',
+              dataAccessed: `${data.insightType}_insight_delivery_confirmation`
+            }).catch(() => {});
+
+            logger.debug(`✅ AI insight delivery confirmed by teacher: ${data.insightId} (${data.insightType})`);
+          }
+        } catch (error) {
+          logger.error(`❌ Failed to confirm insight delivery:`, error);
+          socket.emit('error', { code: 'CONFIRMATION_FAILED', message: 'Failed to confirm insight delivery' });
+        }
+      });
+
       // Handle disconnect
       socket.on('disconnect', () => {
-        console.log(`User ${socket.data.userId} disconnected`);
+        logger.debug(`User ${socket.data.userId} disconnected`);
         this.connectedUsers.delete(socket.data.userId);
         
         // Notify all rooms the user was in
@@ -556,7 +813,7 @@ export class WebSocketService {
     if (!room) return [];
 
     const participants: string[] = [];
-    for (const socketId of room) {
+    for (const socketId of Array.from(room)) {
       const socket = this.io.sockets.sockets.get(socketId);
       if (socket?.data.userId) {
         participants.push(socket.data.userId);
@@ -583,6 +840,212 @@ export class WebSocketService {
     this.io.to(`group:${groupId}`).emit(event, data);
   }
 
+  // ============================================================================
+  // AI Analysis Integration Methods
+  // ============================================================================
+
+  /**
+   * Check if AI analysis should be triggered and execute if ready
+   */
+  private async checkAndTriggerAIAnalysis(groupId: string, sessionId: string, teacherId: string): Promise<void> {
+    try {
+      // Get buffered transcripts for analysis
+      const tier1Transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier1', groupId, sessionId);
+      const tier2Transcripts = await aiAnalysisBufferService.getBufferedTranscripts('tier2', groupId, sessionId);
+
+      // Check Tier 1 analysis (30s window)
+      if (tier1Transcripts.length >= 3 && this.shouldTriggerTier1Analysis(tier1Transcripts)) {
+        await this.triggerTier1Analysis(groupId, sessionId, teacherId, tier1Transcripts);
+      }
+
+      // Check Tier 2 analysis (3min window)  
+      if (tier2Transcripts.length >= 8 && this.shouldTriggerTier2Analysis(tier2Transcripts)) {
+        await this.triggerTier2Analysis(sessionId, teacherId, tier2Transcripts);
+      }
+
+    } catch (error) {
+      logger.error(`❌ AI analysis check failed for group ${groupId}:`, error);
+    }
+  }
+
+  /**
+   * Determine if Tier 1 analysis should be triggered
+   */
+  private shouldTriggerTier1Analysis(transcripts: string[]): boolean {
+    // Simple heuristic: trigger every 30 seconds with minimum content
+    const combinedLength = transcripts.join(' ').length;
+    return combinedLength > 100; // Minimum content threshold
+  }
+
+  /**
+   * Determine if Tier 2 analysis should be triggered
+   */
+  private shouldTriggerTier2Analysis(transcripts: string[]): boolean {
+    // Simple heuristic: trigger every 3 minutes with substantial content
+    const combinedLength = transcripts.join(' ').length;
+    return combinedLength > 500; // Substantial content threshold
+  }
+
+  /**
+   * Trigger Tier 1 AI analysis and broadcast insights
+   */
+  private async triggerTier1Analysis(groupId: string, sessionId: string, teacherId: string, transcripts: string[]): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      logger.debug(`🧠 Triggering Tier 1 analysis for group ${groupId}`);
+
+      // Import AI analysis controller dynamically to avoid circular dependencies
+      const { databricksAIService } = await import('./databricks-ai.service');
+
+      // Perform Tier 1 analysis
+      const insights = await databricksAIService.analyzeTier1(transcripts, {
+        groupId,
+        sessionId,
+        focusAreas: ['topical_cohesion', 'conceptual_density'],
+        windowSize: 30,
+        includeMetadata: true
+      });
+
+      // Broadcast insights to teacher dashboard
+      this.emitToSession(sessionId, 'group:tier1:insight', {
+        groupId,
+        sessionId,
+        insights,
+        timestamp: insights.analysisTimestamp
+      });
+
+      // Generate teacher prompts from insights
+      await this.generateTeacherPromptsFromInsights(insights, sessionId, groupId, teacherId);
+
+      // Mark buffer as analyzed
+      await aiAnalysisBufferService.markBufferAnalyzed('tier1', groupId, sessionId);
+
+      // ✅ HEALTH MONITORING: Record successful AI analysis
+      const duration = Date.now() - startTime;
+      guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier1_analysis', duration);
+
+      logger.debug(`✅ Tier 1 analysis completed and broadcasted for group ${groupId}`);
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error(`❌ Tier 1 analysis failed for group ${groupId}:`, error);
+      
+      // ✅ HEALTH MONITORING: Record failed AI analysis
+      guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier1_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+
+  /**
+   * Trigger Tier 2 AI analysis and broadcast insights  
+   */
+  private async triggerTier2Analysis(sessionId: string, teacherId: string, transcripts: string[]): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      logger.debug(`🧠 Triggering Tier 2 analysis for session ${sessionId}`);
+
+      // Import AI analysis controller dynamically
+      const { databricksAIService } = await import('./databricks-ai.service');
+
+      // Perform Tier 2 analysis
+      const insights = await databricksAIService.analyzeTier2(transcripts, {
+        sessionId,
+        groupIds: [], // Will be populated by the analysis
+        analysisDepth: 'standard',
+        includeComparative: true,
+        includeMetadata: true
+      });
+
+      // Broadcast insights to teacher dashboard
+      this.emitToSession(sessionId, 'group:tier2:insight', {
+        sessionId,
+        insights,
+        timestamp: insights.analysisTimestamp
+      });
+
+      // Generate teacher prompts from deeper insights
+      await this.generateTeacherPromptsFromInsights(insights, sessionId, undefined, teacherId);
+
+      // ✅ HEALTH MONITORING: Record successful AI analysis
+      const duration = Date.now() - startTime;
+      guidanceSystemHealthService.recordSuccess('aiAnalysis', 'tier2_analysis', duration);
+
+      logger.debug(`✅ Tier 2 analysis completed and broadcasted for session ${sessionId}`);
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error(`❌ Tier 2 analysis failed for session ${sessionId}:`, error);
+      
+      // ✅ HEALTH MONITORING: Record failed AI analysis
+      guidanceSystemHealthService.recordFailure('aiAnalysis', 'tier2_analysis', duration, error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+
+  /**
+   * Generate teacher prompts from AI insights and deliver via alert system
+   */
+  private async generateTeacherPromptsFromInsights(
+    insights: any, 
+    sessionId: string, 
+    groupId: string | undefined, 
+    teacherId: string
+  ): Promise<void> {
+    const startTime = Date.now();
+    
+    try {
+      // Generate contextual teacher prompts
+      const prompts = await teacherPromptService.generatePrompts(insights, {
+        sessionId,
+        groupId: groupId || 'session-level',
+        teacherId,
+        sessionPhase: 'development', // TODO: Get actual phase from session state
+        subject: 'general', // TODO: Get from session data
+        learningObjectives: [], // TODO: Get from session data
+        groupSize: 4, // TODO: Get from actual group data
+        sessionDuration: 60 // TODO: Get from session data
+      });
+
+      // Prioritize and deliver prompts via alert system
+      let successfulDeliveries = 0;
+      for (const prompt of prompts) {
+        try {
+          await alertPrioritizationService.prioritizeAlert(prompt, {
+            sessionId,
+            teacherId,
+            sessionPhase: 'development',
+            currentAlertCount: 0, // TODO: Track actual count
+            teacherEngagementScore: 0.7 // TODO: Calculate from user activity
+          });
+          successfulDeliveries++;
+        } catch (deliveryError) {
+          logger.error(`❌ Failed to deliver prompt ${prompt.id}:`, deliveryError);
+          
+          // ✅ HEALTH MONITORING: Record alert delivery failure
+          guidanceSystemHealthService.recordFailure('alertDelivery', 'prompt_delivery', Date.now() - startTime, deliveryError instanceof Error ? deliveryError.message : 'Unknown delivery error');
+        }
+      }
+
+      // ✅ HEALTH MONITORING: Record successful prompt generation
+      const duration = Date.now() - startTime;
+      guidanceSystemHealthService.recordSuccess('promptGeneration', 'prompt_generation', duration);
+      
+      // ✅ HEALTH MONITORING: Record alert delivery success rate
+      if (successfulDeliveries > 0) {
+        guidanceSystemHealthService.recordSuccess('alertDelivery', 'prompt_delivery', duration);
+      }
+
+      logger.debug(`📝 Generated ${prompts.length} teacher prompts from AI insights (${successfulDeliveries} delivered)`);
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error(`❌ Teacher prompt generation failed:`, error);
+      
+      // ✅ HEALTH MONITORING: Record prompt generation failure
+      guidanceSystemHealthService.recordFailure('promptGeneration', 'prompt_generation', duration, error instanceof Error ? error.message : 'Unknown error');
+    }
+  }
+
   // Get IO instance for advanced usage
   public getIO() {
     return this.io;
@@ -592,14 +1055,78 @@ export class WebSocketService {
 let wsService: WebSocketService | null = null;
 
 export function initializeWebSocket(httpServer: HTTPServer): WebSocketService {
+  logger.debug('🔧 DEBUG: Initializing WebSocket service...');
   if (!wsService) {
     wsService = new WebSocketService(httpServer);
+    logger.debug('🔧 DEBUG: WebSocket service created successfully');
   }
   return wsService;
 }
 
 export function getWebSocketService(): WebSocketService | null {
   return wsService;
+}
+
+/**
+ * Helper: Record leader ready analytics event
+ */
+async function recordLeaderReady(sessionId: string, groupId: string, leaderId: string): Promise<void> {
+  const { logAnalyticsOperation } = await import('../utils/analytics-logger');
+  
+  try {
+    const readyAt = new Date();
+    
+    // Update group_analytics with leader ready timestamp
+    await logAnalyticsOperation(
+      'leader_ready_analytics',
+      'group_analytics',
+      () => databricksService.upsert('group_analytics', 
+        { group_id: groupId },
+        {
+          leader_ready_at: readyAt,
+          calculation_timestamp: readyAt,
+        }
+      ),
+      {
+        sessionId,
+        recordCount: 1,
+        metadata: {
+          groupId,
+          leaderId,
+          readyTimestamp: readyAt.toISOString(),
+          operation: 'upsert'
+        },
+        sampleRate: 0.5, // Sample 50% of leader ready events
+      }
+    );
+
+    // NEW: Enhanced session events logging using analytics query router
+    try {
+      // Get teacher ID for proper event attribution
+      const session = await databricksService.queryOne(
+        `SELECT teacher_id FROM ${databricksConfig.catalog}.sessions.classroom_sessions WHERE id = ?`,
+        [sessionId]
+      );
+      
+      const { analyticsQueryRouterService } = await import('./analytics-query-router.service');
+      await analyticsQueryRouterService.logSessionEvent(
+        sessionId,
+        session?.teacher_id || 'system',
+        'leader_ready',
+        {
+          groupId,
+          leaderId,
+          timestamp: readyAt.toISOString(),
+          source: 'websocket_service'
+        }
+      );
+    } catch (error) {
+      logger.error('Failed to log leader ready event via analytics router:', error);
+    }
+  } catch (error) {
+    logger.error('Failed to record leader ready analytics:', error);
+    // Don't throw - analytics failure shouldn't block readiness update
+  }
 }
 
 // Export a proxy object that can be used before initialization
@@ -611,12 +1138,24 @@ export const websocketService = {
     if (!wsService) return;
     wsService.getIO().socketsJoin(`session:${sessionId}`);
   },
+  emitToSession(sessionId: string, event: string, data: any) {
+    if (!wsService) return;
+    wsService.getIO().to(`session:${sessionId}`).emit(event as any, data);
+  },
+  on(event: string, callback: (...args: any[]) => void) {
+    if (!wsService) return;
+    wsService.getIO().on(event as any, callback);
+  },
+  emit(event: string, data: any) {
+    if (!wsService) return;
+    wsService.getIO().emit(event as any, data);
+  },
   notifySessionUpdate(sessionId: string, payload: any) {
     if (!wsService) return;
-    wsService.emitToSession(sessionId, 'session:status_changed', payload);
+    this.emitToSession(sessionId, 'session:status_changed', payload);
   },
   endSession(sessionId: string) {
     if (!wsService) return;
-    wsService.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
+    this.emitToSession(sessionId, 'session:status_changed', { sessionId, status: 'ended' });
   }
 };

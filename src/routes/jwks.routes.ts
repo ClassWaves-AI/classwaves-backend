@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as crypto from 'crypto';
 import { getPublicKey, getAlgorithm } from '../utils/jwt.utils';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -36,7 +37,7 @@ router.get('/.well-known/jwks.json', (req, res) => {
       keys: [jwk],
     });
   } catch (error) {
-    console.error('Error generating JWKS:', error);
+    logger.error('Error generating JWKS:', error);
     res.status(500).json({
       error: 'INTERNAL_ERROR',
       message: 'Failed to generate JWKS',

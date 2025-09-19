@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function addIsGroupLeaderColumn() {
   try {
-    console.log('🔧 Adding is_group_leader column to participants table...');
+    logger.debug('🔧 Adding is_group_leader column to participants table...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -34,21 +35,21 @@ async function addIsGroupLeaderColumn() {
     
     if (!response.ok) {
       const error = await response.text();
-      console.error('❌ HTTP Error:', response.status, error);
+      logger.error('❌ HTTP Error:', response.status, error);
       return;
     }
     
     const result = await response.json() as any;
     
     if (result.result?.status?.sqlState || result.status?.statusCode === 'ERROR') {
-      console.error('❌ SQL Error:', result.result?.status || result.status);
+      logger.error('❌ SQL Error:', result.result?.status || result.status);
       return;
     }
     
-    console.log('✅ Successfully added is_group_leader column to participants table');
+    logger.debug('✅ Successfully added is_group_leader column to participants table');
     
   } catch (error) {
-    console.error('❌ Error adding is_group_leader column:', error);
+    logger.error('❌ Error adding is_group_leader column:', error);
   }
 }
 

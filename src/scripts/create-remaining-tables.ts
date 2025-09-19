@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -25,7 +26,7 @@ class RemainingTablesCreator {
   }
 
   async executeStatement(statement: string): Promise<{ success: boolean; error?: string }> {
-    console.log(`Executing: ${statement.substring(0, 80)}...`);
+    logger.debug(`Executing: ${statement.substring(0, 80)}...`);
     
     try {
       const response = await axios.post(
@@ -39,11 +40,11 @@ class RemainingTablesCreator {
       );
 
       if (response.data.status?.state === 'SUCCEEDED') {
-        console.log('✅ Success');
+        logger.debug('✅ Success');
         return { success: true };
       } else if (response.data.status?.state === 'FAILED') {
         const error = response.data.status?.error?.message || 'Unknown error';
-        console.log(`❌ Failed: ${error}`);
+        logger.debug(`❌ Failed: ${error}`);
         return { success: false, error };
       }
 
@@ -61,28 +62,28 @@ class RemainingTablesCreator {
         const state = statusResponse.data.status?.state;
         
         if (state === 'SUCCEEDED') {
-          console.log('✅ Success');
+          logger.debug('✅ Success');
           return { success: true };
         } else if (state === 'FAILED') {
           const error = statusResponse.data.status?.error?.message || 'Unknown error';
-          console.log(`❌ Failed: ${error}`);
+          logger.debug(`❌ Failed: ${error}`);
           return { success: false, error };
         }
         
         attempts++;
       }
 
-      console.log('❌ Timeout');
+      logger.debug('❌ Timeout');
       return { success: false, error: 'Timeout' };
     } catch (error: any) {
       const errorMsg = error.response?.data?.message || error.message;
-      console.log(`❌ Error: ${errorMsg}`);
+      logger.debug(`❌ Error: ${errorMsg}`);
       return { success: false, error: errorMsg };
     }
   }
 
   async createRemainingTables() {
-    console.log('🚀 Creating remaining tables in ClassWaves Unity Catalog\n');
+    logger.debug('🚀 Creating remaining tables in ClassWaves Unity Catalog\n');
 
     const tables = [
       // ANALYTICS SCHEMA - Educational metrics and insights
@@ -513,7 +514,7 @@ class RemainingTablesCreator {
       }
     ];
 
-    console.log(`Creating ${tables.length} tables across schemas...\n`);
+    logger.debug(`Creating ${tables.length} tables across schemas...\n`);
 
     const results = {
       successful: 0,
@@ -522,7 +523,7 @@ class RemainingTablesCreator {
     };
 
     for (const table of tables) {
-      console.log(`\n📋 Creating ${table.schema}.${table.name}`);
+      logger.debug(`\n📋 Creating ${table.schema}.${table.name}`);
       const result = await this.executeStatement(table.ddl);
       
       if (result.success) {
@@ -537,20 +538,20 @@ class RemainingTablesCreator {
     }
 
     // Summary
-    console.log('\n' + '='.repeat(50));
-    console.log('SUMMARY');
-    console.log('='.repeat(50));
-    console.log(`✅ Successful: ${results.successful} tables`);
-    console.log(`❌ Failed: ${results.failed} tables`);
+    logger.debug('\n' + '='.repeat(50));
+    logger.debug('SUMMARY');
+    logger.debug('='.repeat(50));
+    logger.debug(`✅ Successful: ${results.successful} tables`);
+    logger.debug(`❌ Failed: ${results.failed} tables`);
     
     if (results.errors.length > 0) {
-      console.log('\nErrors:');
-      results.errors.forEach(err => console.log(`  - ${err}`));
+      logger.debug('\nErrors:');
+      results.errors.forEach(err => logger.debug(`  - ${err}`));
     }
 
     // Insert demo district data
     if (results.successful > 0) {
-      console.log('\n📊 Inserting demo district data...');
+      logger.debug('\n📊 Inserting demo district data...');
       await this.executeStatement(`
         INSERT INTO ${this.catalog}.admin.districts (
           id, name, state, region, subscription_tier, is_active,
@@ -562,7 +563,7 @@ class RemainingTablesCreator {
       `);
     }
 
-    console.log('\n✨ Table creation completed!');
+    logger.debug('\n✨ Table creation completed!');
   }
 }
 
@@ -573,7 +574,7 @@ async function main() {
     await creator.createRemainingTables();
     process.exit(0);
   } catch (error) {
-    console.error('❌ Failed:', error);
+    logger.error('❌ Failed:', error);
     process.exit(1);
   }
 }

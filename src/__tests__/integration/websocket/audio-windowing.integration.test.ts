@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { createServer } from 'http';
-import { initializeWebSocket } from '../../../services/websocket.service';
+import { initializeWebSocket } from '../../../services/websocket';
 import { inMemoryAudioProcessor } from '../../../services/audio/InMemoryAudioProcessor';
 import { openAIWhisperService } from '../../../services/openai-whisper.service';
 
@@ -100,5 +100,4 @@ describe('WebSocket audio:chunk -> window boundary -> single Whisper call -> tra
     whisperSpy.mockRestore();
   });
 });
-
 

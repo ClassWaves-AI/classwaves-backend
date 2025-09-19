@@ -1,34 +1,61 @@
 import { Router } from 'express';
-import { 
+import {
   listSchools,
   createSchool,
   updateSchool,
   listTeachers,
-  updateTeacher
+  updateTeacher,
+  getPromptDeliverySLI,
+  verifyInvite,
+  acceptInvite,
+  inviteTeacher,
+  listDistricts,
+  getDistrictByIdHandler,
+  createDistrict,
+  updateDistrict,
 } from '../controllers/admin.controller';
-import { authenticate, requireRole } from '../middleware/auth.middleware';
+import { authenticate, requireRole, requireSuperAdmin } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validation.middleware';
-import { 
+import {
   createSchoolSchema,
   updateSchoolSchema,
-  updateTeacherSchema 
+  updateTeacherSchema,
+  inviteTeacherSchema,
 } from '../utils/validation.schemas';
+import { createUserRateLimiter } from '../middleware/rate-limit.middleware';
 
 const router = Router();
 
-// All admin routes require authentication
+// Public invite verification/acceptance (no authentication), but rate-limited
+router.get('/invites/:token/verify', createUserRateLimiter('invite-verify', 10, 60), verifyInvite);
+router.post('/invites/accept', createUserRateLimiter('invite-accept', 5, 60), validate(require('../utils/validation.schemas').acceptInviteSchema), acceptInvite);
+
+// All other admin routes require authentication
 router.use(authenticate);
 
-// Super admin only routes
-router.use(requireRole(['super_admin']));
+// School management endpoints (super_admin only)
+router.get('/schools', requireRole(['super_admin']), listSchools);
+router.post('/schools', requireRole(['super_admin']), validate(createSchoolSchema), createSchool);
+router.put('/schools/:id', requireRole(['super_admin']), validate(updateSchoolSchema), updateSchool);
 
-// School management endpoints
-router.get('/schools', listSchools);
-router.post('/schools', validate(createSchoolSchema), createSchool);
-router.put('/schools/:id', validate(updateSchoolSchema), updateSchool);
+// Teacher management endpoints
+router.get('/teachers', requireRole(['admin', 'super_admin']), listTeachers);
+router.put('/teachers/:id', requireRole(['admin', 'super_admin']), validate(updateTeacherSchema), updateTeacher);
+router.post(
+  '/teachers/invite',
+  requireRole(['admin', 'super_admin']),
+  createUserRateLimiter('admin-invite', 5, 3600),
+  validate(inviteTeacherSchema),
+  inviteTeacher
+);
 
-// Teacher management endpoints (school-specific)
-router.get('/teachers', listTeachers);
-router.put('/teachers/:id', validate(updateTeacherSchema), updateTeacher);
+// Observability SLIs (prompt delivery) — super_admin only
+router.get('/slis/prompt-delivery', requireRole(['super_admin']), getPromptDeliverySLI);
+
+// Districts (super_admin only)
+router.get('/districts', requireSuperAdmin(), listDistricts);
+router.get('/districts/:id', requireSuperAdmin(), getDistrictByIdHandler);
+router.post('/districts', requireSuperAdmin(), createUserRateLimiter('admin-districts', 3, 60), validate(require('../utils/validation.schemas').createDistrictSchema), createDistrict);
+router.put('/districts/:id', requireSuperAdmin(), createUserRateLimiter('admin-districts', 3, 60), validate(require('../utils/validation.schemas').updateDistrictSchema), updateDistrict);
 
 export default router;

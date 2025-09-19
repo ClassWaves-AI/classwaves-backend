@@ -10,8 +10,10 @@ import {
   getSessionAnalytics
 } from '../../../controllers/session.controller';
 import { databricksService } from '../../../services/databricks.service';
-import { websocketService } from '../../../services/websocket.service';
+import { websocketService } from '../../../services/websocket';
 import { redisService } from '../../../services/redis.service';
+import { RetryService } from '../../../services/retry.service';
+import { queryCacheService } from '../../../services/query-cache.service';
 import { 
   createMockRequest, 
   createMockResponse, 
@@ -23,8 +25,23 @@ import { AuthRequest } from '../../../types/auth.types';
 
 // Mock all services
 jest.mock('../../../services/databricks.service');
-jest.mock('../../../services/websocket.service');
+jest.mock('../../../utils/audit.port.instance', () => ({
+  auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
+}));
+jest.mock('../../../services/websocket');
+// Mock namespaced WebSocket service to capture emits from controller
+const emitToSessionMock = jest.fn();
+jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
+  getNamespacedWebSocketService: () => ({
+    getSessionsService: () => ({
+      emitToSession: emitToSessionMock,
+    })
+  })
+}));
 jest.mock('../../../services/redis.service');
+jest.mock('../../../utils/analytics-logger');
+jest.mock('../../../services/retry.service');
+jest.mock('../../../services/query-cache.service');
 
 describe('Session Controller', () => {
   let mockReq: Partial<Request>;
@@ -42,16 +59,23 @@ describe('Session Controller', () => {
     jest.clearAllMocks();
   });
 
-  describe('createSession', () => {
-    it('should create a new session successfully', async () => {
+  describe('Declarative Session Creation', () => {
+    it('should create session with pre-configured groups', async () => {
       const sessionData = {
         topic: 'Math - Fractions Unit',
         goal: 'Students will understand fraction operations',
+        subject: 'Mathematics',
         plannedDuration: 45,
-        maxStudents: 30,
-        targetGroupSize: 4,
-        autoGroupEnabled: true,
-        settings: { recordingEnabled: true, transcriptionEnabled: true, aiAnalysisEnabled: true },
+        groupPlan: {
+          numberOfGroups: 3,
+          groupSize: 4,
+          groups: [
+            { name: 'Group A', leaderId: 'student-1', memberIds: ['student-2', 'student-3'] },
+            { name: 'Group B', leaderId: 'student-4', memberIds: ['student-5', 'student-6'] },
+            { name: 'Group C', leaderId: 'student-7', memberIds: ['student-8', 'student-9'] }
+          ]
+        },
+        aiConfig: { hidden: true, defaultsApplied: true }
       };
 
       mockReq = createAuthenticatedRequest(mockTeacher, {
@@ -59,27 +83,116 @@ describe('Session Controller', () => {
       });
 
       const mockSessionId = 'session-456';
-      const mockAccessCode = 'ABC123';
+      const mockGroupIds = ['group-1', 'group-2', 'group-3'];
       
-      (databricksService.createSession as jest.Mock).mockResolvedValueOnce({
-        sessionId: mockSessionId,
-        accessCode: mockAccessCode,
-        createdAt: new Date(),
-      });
+      // Mock database operations
+      (databricksService.generateId as jest.Mock)
+        .mockReturnValueOnce(mockSessionId)
+        .mockReturnValueOnce(mockGroupIds[0])
+        .mockReturnValueOnce(mockGroupIds[1])
+        .mockReturnValueOnce(mockGroupIds[2]);
+      
+      (databricksService.insert as jest.Mock).mockResolvedValue(true);
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
 
-      // Service call may be bypassed in test auto-mocks; assert success envelope only
-      expect(websocketService.createSessionRoom).not.toHaveBeenCalled();
       expect(mockRes.status).toHaveBeenCalledWith(201);
-      expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({
+            session: expect.objectContaining({
+              id: mockSessionId,
+              topic: sessionData.topic,
+              groupsDetailed: expect.arrayContaining([
+                expect.objectContaining({ name: 'Group A', leaderId: 'student-1' })
+              ])
+            })
+          })
+        })
+      );
     });
 
-    it('should validate required fields', async () => {
+    it('should track group membership with student_group_members table', async () => {
+      const sessionData = {
+        topic: 'Membership Tracking Test',
+        goal: 'Test group membership functionality',
+        subject: 'Computer Science',
+        plannedDuration: 45,
+        groupPlan: {
+          numberOfGroups: 2,
+          groupSize: 3,
+          groups: [
+            { name: 'Dev Team', leaderId: 'leader-1', memberIds: ['dev-1', 'dev-2'] },
+            { name: 'QA Team', leaderId: 'leader-2', memberIds: ['qa-1', 'qa-2', 'qa-3'] }
+          ]
+        },
+        aiConfig: { hidden: true, defaultsApplied: true }
+      };
+
+      mockReq = createAuthenticatedRequest(mockTeacher, { body: sessionData });
+
+      const mockSessionId = 'session-membership-test';
+      const mockGroupIds = ['group-dev', 'group-qa'];
+      
+      (databricksService.generateId as jest.Mock)
+        .mockReturnValueOnce(mockSessionId)
+        .mockReturnValueOnce(mockGroupIds[0])
+        .mockReturnValueOnce(mockGroupIds[1]);
+      
+      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+
+      await createSession(mockReq as AuthRequest, mockRes as Response);
+
+      // Verify student_group_members inserts for Dev Team (3 members: leader + 2 members)
+      expect(databricksService.insert).toHaveBeenCalledWith(
+        'student_group_members',
+        expect.objectContaining({
+          session_id: mockSessionId,
+          group_id: mockGroupIds[0],
+          student_id: 'leader-1'
+        })
+      );
+      
+      expect(databricksService.insert).toHaveBeenCalledWith(
+        'student_group_members',
+        expect.objectContaining({
+          session_id: mockSessionId,
+          group_id: mockGroupIds[0],
+          student_id: 'dev-1'
+        })
+      );
+
+      // Verify student_group_members inserts for QA Team (4 members: leader + 3 members)
+      expect(databricksService.insert).toHaveBeenCalledWith(
+        'student_group_members',
+        expect.objectContaining({
+          session_id: mockSessionId,
+          group_id: mockGroupIds[1],
+          student_id: 'leader-2'
+        })
+      );
+      
+      expect(databricksService.insert).toHaveBeenCalledWith(
+        'student_group_members',
+        expect.objectContaining({
+          session_id: mockSessionId,
+          group_id: mockGroupIds[1],
+          student_id: 'qa-3'
+        })
+      );
+
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+    });
+
+    it('should validate group plan schema', async () => {
       mockReq = createAuthenticatedRequest(mockTeacher, {
         body: {
-          // Missing required fields
+          topic: 'Math Class',
+          goal: 'Learn fractions',
           subject: 'Math',
+          plannedDuration: 45,
+          // Missing groupPlan
         },
       });
 
@@ -88,18 +201,75 @@ describe('Session Controller', () => {
       assertErrorResponse(mockRes, 'VALIDATION_ERROR', 400);
     });
 
-    it('should handle createSession errors gracefully', async () => {
+    it('should handle group member assignment errors', async () => {
+      const sessionData = {
+        topic: 'Math Class',
+        goal: 'Learn fractions',
+        subject: 'Math',
+        plannedDuration: 45,
+        groupPlan: {
+          numberOfGroups: 1,
+          groupSize: 3,
+          groups: [
+            { name: 'Group A', leaderId: 'student-1', memberIds: ['student-2', 'student-3'] }
+          ]
+        }
+      };
+
       mockReq = createAuthenticatedRequest(mockTeacher, {
-        body: {
-          topic: 'Math Class',
-        },
+        body: sessionData,
       });
 
-      (databricksService.createSession as jest.Mock).mockRejectedValueOnce(new Error('Teacher has reached maximum concurrent sessions'));
+      (databricksService.insert as jest.Mock)
+        .mockResolvedValueOnce(true) // session creation
+        .mockRejectedValueOnce(new Error('Student not found')); // group creation fails
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
 
       assertErrorResponse(mockRes, 'SESSION_CREATE_FAILED', 500);
+    });
+
+    it('should record analytics on session configuration', async () => {
+      const sessionData = {
+        topic: 'Analytics Test',
+        goal: 'Test analytics recording',
+        subject: 'Science',
+        plannedDuration: 30,
+        groupPlan: {
+          numberOfGroups: 2,
+          groupSize: 3,
+          groups: [
+            { name: 'Group A', leaderId: 'student-1', memberIds: ['student-2'] },
+            { name: 'Group B', leaderId: 'student-3', memberIds: ['student-4'] }
+          ]
+        }
+      };
+
+      mockReq = createAuthenticatedRequest(mockTeacher, {
+        body: sessionData,
+      });
+
+      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+
+      await createSession(mockReq as AuthRequest, mockRes as Response);
+
+      // Should upsert analytics metrics (updated implementation)
+      expect(databricksService.upsert).toHaveBeenCalledWith(
+        'session_metrics',
+        { session_id: expect.any(String) },
+        expect.objectContaining({
+          planned_groups: 2,
+          average_group_size: 2, // from 4 total members / 2 groups
+        })
+      );
+      
+      expect(databricksService.insert).toHaveBeenCalledWith(
+        'session_events',
+        expect.objectContaining({
+          event_type: 'configured',
+          payload: expect.stringContaining('numberOfGroups')
+        })
+      );
     });
   });
 
@@ -303,6 +473,225 @@ describe('Session Controller', () => {
     });
   });
 
+  describe('Session Gating', () => {
+    it('should return 409 when groups are not ready (SG-BE-01, SG-BE-03)', async () => {
+      const sessionId = 'session-123';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'created',
+        title: 'Test Session'
+      };
+
+      // Mock RetryService.retryDatabaseOperation calls in sequence
+      (RetryService.retryDatabaseOperation as jest.Mock)
+        .mockResolvedValueOnce(mockSession)  // Session lookup
+        .mockResolvedValueOnce({ ready_groups_count: 1 })  // Ready groups count (1 ready)
+        .mockResolvedValueOnce({ total_groups_count: 3 })  // Total groups count (3 total)
+        .mockResolvedValueOnce([  // Not ready groups details
+          { id: 'group-1', name: 'Group A' },
+          { id: 'group-2', name: 'Group B' }
+        ]);
+
+      await startSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(mockRes.status).toHaveBeenCalledWith(409);
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: false,
+        error: {
+          code: 'GROUPS_NOT_READY',
+          message: 'Cannot start session: 2 of 3 groups are not ready',
+          readyCount: 1,
+          totalCount: 3,
+          notReadyGroups: [
+            { id: 'group-1', name: 'Group A' },
+            { id: 'group-2', name: 'Group B' }
+          ]
+        }
+      });
+
+      // Should not update session status when gated
+      expect(databricksService.update).not.toHaveBeenCalled();
+    });
+
+    it('should start session when all groups are ready (SG-BE-01)', async () => {
+      const sessionId = 'session-all-ready';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'created',
+        title: 'All Ready Session',
+        school_id: 'school-123'
+      };
+
+      const mockFullSession = {
+        ...mockSession,
+        status: 'active',
+        groups: []
+      };
+
+      // Mock ALL RetryService calls in sequence
+      (RetryService.retryDatabaseOperation as jest.Mock)
+        .mockResolvedValueOnce(mockSession)  // 1. Session lookup
+        .mockResolvedValueOnce({ ready_groups_count: 2 })  // 2. Ready groups count 
+        .mockResolvedValueOnce({ total_groups_count: 2 })  // 3. Total groups count - all ready!
+        .mockResolvedValueOnce(true)  // 4. Update session to active
+        .mockResolvedValueOnce(mockFullSession);  // 5. Get session with groups
+
+      // Mock other retry methods
+      (RetryService.retryRedisOperation as jest.Mock).mockResolvedValue(true);
+      (RetryService.withRetry as jest.Mock).mockResolvedValue(true);
+
+      // Mock other services
+      (databricksService.update as jest.Mock).mockResolvedValue(true);
+      (databricksService.recordAuditLog as jest.Mock).mockResolvedValue(true);
+      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(true);
+
+      // Mock WebSocket service
+      const mockEmit = jest.fn();
+      const mockTo = jest.fn().mockReturnValue({ emit: mockEmit });
+      (websocketService.io as any) = { to: mockTo };
+      (websocketService.emitToSession as jest.Mock) = jest.fn().mockResolvedValue(true);
+
+      await startSession(mockReq as AuthRequest, mockRes as Response);
+
+      // Verify it returns the success response (default 200 status)
+      expect(mockRes.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          session: mockFullSession,
+          websocketUrl: `wss://ws.classwaves.com/session/${sessionId}`,
+          realtimeToken: 'rt_token_' + sessionId
+        }
+      });
+    });
+  });
+
+  describe('Session Lifecycle', () => {
+    it('should start session when all groups are ready', async () => {
+      const sessionId = 'session-lifecycle-test';
+      mockReq = createAuthenticatedRequest(mockTeacher, {
+        params: { sessionId },
+      });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'created',
+        title: 'Test Session',
+        planned_duration_minutes: 45
+      };
+
+      // Ensure callbacks passed to RetryService are executed
+      (RetryService.retryDatabaseOperation as jest.Mock).mockImplementation(async (op: any) => await op());
+      (RetryService.withRetry as jest.Mock).mockImplementation(async (op: any) => await op());
+
+      // Mock DB responses used inside callbacks
+      (databricksService.queryOne as jest.Mock)
+        .mockResolvedValueOnce(mockSession) // verify-session-ownership
+        .mockResolvedValueOnce({ ready_groups_count: 2 }) // count-ready-groups
+        .mockResolvedValueOnce({ total_groups_count: 2 }); // count-total-groups
+
+      // Mock other required services
+      (databricksService.update as jest.Mock).mockResolvedValue(true);
+      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+      (databricksService.queryOne as jest.Mock).mockResolvedValue(mockSession);
+
+      // Mock websocket service
+      (websocketService.io as any) = { to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
+
+      // Mock query cache service
+      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(true);
+
+      // Add error handling to see what's failing
+      try {
+        await startSession(mockReq as AuthRequest, mockRes as Response);
+      } catch (error) {
+        console.error('startSession error:', error);
+        throw error;
+      }
+
+      expect(databricksService.update).toHaveBeenCalledWith(
+        'classroom_sessions',
+        sessionId,
+        expect.objectContaining({
+          status: 'active',
+          actual_start: expect.any(Date)
+        })
+      );
+
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          data: expect.objectContaining({
+            session: expect.objectContaining({
+              id: sessionId,
+              status: 'active'
+            })
+          })
+        })
+      );
+    });
+
+    it('should update session status correctly', async () => {
+      const sessionId = 'session-123';
+      mockReq = createAuthenticatedRequest(mockTeacher, {
+        params: { sessionId },
+        body: { status: 'paused' }
+      });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'active'
+      };
+
+      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
+      (databricksService.update as jest.Mock).mockResolvedValue(true);
+
+      await updateSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(databricksService.update).toHaveBeenCalledWith(
+        'classroom_sessions',
+        sessionId,
+        expect.objectContaining({ status: 'paused' })
+      );
+    });
+
+    it('should handle session end with duration tracking', async () => {
+      const sessionId = 'session-123';
+      mockReq = createAuthenticatedRequest(mockTeacher, {
+        params: { sessionId },
+      });
+
+      const mockSession = {
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        status: 'active',
+        actual_start: new Date(Date.now() - 30 * 60 * 1000) // 30 minutes ago
+      };
+
+      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
+      (databricksService.update as jest.Mock).mockResolvedValue(true);
+
+      await endSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(databricksService.update).toHaveBeenCalledWith(
+        'classroom_sessions',
+        sessionId,
+        expect.objectContaining({
+          status: 'ended',
+          actual_end: expect.any(Date),
+          actual_duration_minutes: expect.any(Number)
+        })
+      );
+    });
+  });
+
   describe('endSession', () => {
     it('should end session successfully', async () => {
       const sessionId = 'session-123';
@@ -324,11 +713,13 @@ describe('Session Controller', () => {
       (websocketService.endSession as jest.Mock).mockImplementation(() => {});
       (websocketService.notifySessionUpdate as jest.Mock).mockImplementation(() => {});
 
+      // Populate traceId to verify WS payload includes it
+      (mockRes as any).locals = { traceId: 'trace-end-123' };
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
       expect(databricksService.updateSessionStatus).toHaveBeenCalledWith(sessionId, 'ended');
-      expect(websocketService.endSession).toHaveBeenCalledWith(sessionId);
-      expect(websocketService.notifySessionUpdate).toHaveBeenCalledWith(sessionId, expect.objectContaining({ type: 'session_ended' }));
+      // Namespaced sessions emitter should be called with status change to 'ended'
+      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ sessionId, status: 'ended', traceId: 'trace-end-123' }));
 
       expect(mockRes.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -358,6 +749,23 @@ describe('Session Controller', () => {
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
       assertErrorResponse(mockRes, 'SESSION_ALREADY_ENDED', 400);
+    });
+  });
+
+  describe('traceId propagation', () => {
+    it('includes traceId in session:status_changed for pauseSession', async () => {
+      const sessionId = 'session-trace-2';
+      mockReq = createAuthenticatedRequest(mockTeacher, { params: { sessionId } });
+      (mockRes as any) = createMockResponse();
+      (mockRes as any).locals = { traceId: 'trace-pause-xyz' };
+
+      (databricksService.queryOne as jest.Mock)
+        .mockResolvedValueOnce({ id: sessionId, teacher_id: mockTeacher.id, school_id: mockTeacher.school_id, status: 'active' });
+
+      const { pauseSession } = await import('../../../controllers/session.controller');
+      await pauseSession(mockReq as AuthRequest, mockRes as Response);
+
+      expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ status: 'paused', traceId: 'trace-pause-xyz' }));
     });
   });
 

@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function addMissingColumnsProperly() {
   try {
-    console.log('🔧 Adding missing columns properly...');
+    logger.debug('🔧 Adding missing columns properly...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -23,8 +24,8 @@ async function addMissingColumnsProperly() {
     
     // Function to execute SQL statement with detailed error reporting
     async function executeSQL(sql: string, description: string) {
-      console.log(`\n📝 ${description}...`);
-      console.log(`SQL: ${sql}`);
+      logger.debug(`\n📝 ${description}...`);
+      logger.debug(`SQL: ${sql}`);
       
       const response = await fetch(`${host}/api/2.0/sql/statements`, {
         method: 'POST',
@@ -38,7 +39,7 @@ async function addMissingColumnsProperly() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ HTTP Error - ${description}:`, response.status, error);
+        logger.error(`❌ HTTP Error - ${description}:`, response.status, error);
         return false;
       }
       
@@ -46,16 +47,16 @@ async function addMissingColumnsProperly() {
       
       // Check for SQL execution errors
       if (result.result?.status?.sqlState) {
-        console.error(`❌ SQL Error - ${description}:`, result.result.status);
+        logger.error(`❌ SQL Error - ${description}:`, result.result.status);
         return false;
       }
       
       if (result.status?.statusCode === 'ERROR') {
-        console.error(`❌ Execution Error - ${description}:`, result.status);
+        logger.error(`❌ Execution Error - ${description}:`, result.status);
         return false;
       }
       
-      console.log(`✅ ${description} completed successfully`);
+      logger.debug(`✅ ${description} completed successfully`);
       return true;
     }
     
@@ -71,29 +72,29 @@ async function addMissingColumnsProperly() {
       }
     ];
     
-    console.log('\n=== Adding missing columns ===');
+    logger.debug('\n=== Adding missing columns ===');
     
     for (const command of commands) {
       const success = await executeSQL(command.sql, command.description);
       if (!success) {
-        console.log(`⚠️ Failed: ${command.description}`);
+        logger.debug(`⚠️ Failed: ${command.description}`);
         
         // Try to see if column already exists
         const tableName = command.sql.includes('student_groups') ? 'student_groups' : 'participants';
         const catalog = command.sql.includes('student_groups') ? 'classwaves.sessions' : 'classwaves.sessions';
         
-        console.log(`\nChecking if column already exists in ${tableName}...`);
+        logger.debug(`\nChecking if column already exists in ${tableName}...`);
         await executeSQL(`DESCRIBE ${catalog}.${tableName}`, `Check ${tableName} schema`);
       }
     }
     
     // Verify final schemas
-    console.log('\n=== Verifying final schemas ===');
+    logger.debug('\n=== Verifying final schemas ===');
     await executeSQL('DESCRIBE classwaves.sessions.student_groups', 'Verify student_groups final schema');
     await executeSQL('DESCRIBE classwaves.sessions.participants', 'Verify participants final schema');
     
   } catch (error) {
-    console.error('❌ Error adding missing columns:', error);
+    logger.error('❌ Error adding missing columns:', error);
   }
 }
 

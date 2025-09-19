@@ -1,5 +1,6 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
@@ -8,7 +9,7 @@ async function proceduralMigration() {
   let host: string | undefined, token: string | undefined, warehouse: string | undefined;
 
   try {
-    console.log('🚀 Starting procedural Databricks schema migration...');
+    logger.debug('🚀 Starting procedural Databricks schema migration...');
     
     host = process.env.DATABRICKS_HOST;
     token = process.env.DATABRICKS_TOKEN;
@@ -18,7 +19,7 @@ async function proceduralMigration() {
       throw new Error('Missing required Databricks environment variables');
     }
   } catch (error: any) {
-    console.error('❌ Configuration error:', error);
+    logger.error('❌ Configuration error:', error);
     process.exit(1);
   }
 
@@ -42,12 +43,12 @@ async function proceduralMigration() {
 
     if (!response.ok || result.status?.state === 'FAILED') {
       const errorMessage = result.status?.error?.message || await response.text();
-      console.error(`❌ SQL Error executing: "${sql.substring(0, 100)}..."`);
-      console.error(`❌ Details: ${errorMessage}`);
+      logger.error(`❌ SQL Error executing: "${sql.substring(0, 100)}..."`);
+      logger.error(`❌ Details: ${errorMessage}`);
       throw new Error(`SQL execution failed: ${errorMessage}`);
     }
     
-    console.log(`✅ Executed: "${sql.substring(0, 70)}..."`);
+    logger.debug(`✅ Executed: "${sql.substring(0, 70)}..."`);
     return result.result?.data_array || [];
   }
 
@@ -65,18 +66,18 @@ async function proceduralMigration() {
 
   try {
     // === Step 1: Enable Column Mapping ===
-    console.log('\n--- Step 1: Enabling Column Mapping ---');
+    logger.debug('\n--- Step 1: Enabling Column Mapping ---');
     await executeSQL("ALTER TABLE classwaves.sessions.student_groups SET TBLPROPERTIES ('delta.columnMapping.mode' = 'name')");
     await executeSQL("ALTER TABLE classwaves.sessions.classroom_sessions SET TBLPROPERTIES ('delta.columnMapping.mode' = 'name')");
     // Also enable on transcriptions table just in case it's needed
     await executeSQL("ALTER TABLE classwaves.sessions.transcriptions SET TBLPROPERTIES ('delta.columnMapping.mode' = 'name')");
     
     // === Step 2: Drop the 'participants' table ===
-    console.log("\n--- Step 2: Dropping 'participants' table ---");
+    logger.debug("\n--- Step 2: Dropping 'participants' table ---");
     await executeSQL("DROP TABLE IF EXISTS classwaves.sessions.participants");
 
     // === Step 3: Modify 'student_groups' table ===
-    console.log("\n--- Step 3: Modifying 'student_groups' table ---");
+    logger.debug("\n--- Step 3: Modifying 'student_groups' table ---");
     const studentGroupsSchema = await getTableSchema('classwaves', 'sessions', 'student_groups');
     if (studentGroupsSchema.includes('participation_balance')) {
       await executeSQL("ALTER TABLE classwaves.sessions.student_groups DROP COLUMN participation_balance");
@@ -92,7 +93,7 @@ async function proceduralMigration() {
     }
 
     // === Step 4: Modify 'classroom_sessions' table ===
-    console.log("\n--- Step 4: Modifying 'classroom_sessions' table ---");
+    logger.debug("\n--- Step 4: Modifying 'classroom_sessions' table ---");
     const sessionsSchema = await getTableSchema('classwaves', 'sessions', 'classroom_sessions');
     if (sessionsSchema.includes('participation_rate')) {
       await executeSQL("ALTER TABLE classwaves.sessions.classroom_sessions DROP COLUMN participation_rate");
@@ -102,7 +103,7 @@ async function proceduralMigration() {
     }
 
     // === Step 5: Modify 'transcriptions' table ===
-    console.log("\n--- Step 5: Modifying 'transcriptions' table ---");
+    logger.debug("\n--- Step 5: Modifying 'transcriptions' table ---");
     const transcriptionsSchema = await getTableSchema('classwaves', 'sessions', 'transcriptions');
     if (transcriptionsSchema.includes('participant_id')) {
       await executeSQL("ALTER TABLE classwaves.sessions.transcriptions DROP COLUMN participant_id");
@@ -111,14 +112,14 @@ async function proceduralMigration() {
         await executeSQL("ALTER TABLE classwaves.sessions.transcriptions DROP COLUMN student_id");
     }
     
-    console.log('\n✅✅✅ Procedural migration completed successfully! ✅✅✅');
+    logger.debug('\n✅✅✅ Procedural migration completed successfully! ✅✅✅');
     
   } catch (error: unknown) {
-    console.error('\n❌❌❌ A critical error occurred during migration. The process has been halted. ❌❌❌');
+    logger.error('\n❌❌❌ A critical error occurred during migration. The process has been halted. ❌❌❌');
     if (error instanceof Error) {
-        console.error('Error details:', error.message);
+        logger.error('Error details:', error.message);
     } else {
-        console.error('An unknown error occurred:', error);
+        logger.error('An unknown error occurred:', error);
     }
     process.exit(1);
   }

@@ -12,8 +12,11 @@
     "@typescript-eslint/no-explicit-any": "off",
     "@typescript-eslint/explicit-module-boundary-types": "off",
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
-    "no-console": ["warn", { "allow": ["warn", "error"] }]
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "no-useless-catch": "warn",
+    "no-empty": ["error", { "allowEmptyCatch": true }]
   },
+  "overrides": [],
   "env": {
     "es2020": true,
     "node": true

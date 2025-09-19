@@ -1,0 +1,45 @@
+{
+  "timestamp": "2025-08-20T16:10:44.991Z",
+  "version": "1.0.0",
+  "environment": "development",
+  "duration": 4040,
+  "endpoints": [
+    {
+      "path": "/api/v1/health",
+      "method": "GET",
+      "description": "Health check",
+      "priority": "HIGH",
+      "avgResponseTime": 0,
+      "p50ResponseTime": 0,
+      "p95ResponseTime": 0,
+      "p99ResponseTime": 0,
+      "errorRate": 100
+    }
+  ],
+  "redis": {
+    "hitRate": 73.68,
+    "missRate": 26.32,
+    "totalConnections": 530,
+    "usedMemory": 1442912,
+    "evictedKeys": 0,
+    "maxMemory": 0,
+    "memoryUtilization": 0
+  },
+  "database": {
+    "totalQueriesAnalyzed": 0,
+    "avgQueryLatency": 0,
+    "p95QueryLatency": 0,
+    "totalRowsScanned": 0,
+    "totalBytesScanned": 0,
+    "slowestQueries": []
+  },
+  "system": {
+    "memoryUsage": 187
+  },
+  "recommendations": [
+    "🟡 Redis hit rate could be improved - review caching patterns for frequently accessed data",
+    "✅ Phase 1.5 query optimizations should reduce database scanning by ~65%",
+    "✅ Phase 1.6 Redis caching strategy should improve hit rates to 80%+",
+    "💡 Run this baseline again after Phase 2 optimizations to measure improvements"
+  ]
+}

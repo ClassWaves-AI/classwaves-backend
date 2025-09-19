@@ -3,7 +3,7 @@ import {
   googleAuthSchema,
   refreshTokenSchema,
   createSessionSchema,
-  studentConsentSchema,
+  createStudentSchema,
   rateLimitSchema,
   validateEmail,
   validateSchoolDomain,
@@ -105,9 +105,10 @@ describe('Validation Schemas', () => {
       const result = createSessionSchema.safeParse(minimalData);
       expect(result.success).toBe(true);
       expect(result.data?.plannedDuration).toBe(45);
-      expect(result.data?.autoGroupEnabled).toBe(true);
-      expect(result.data?.maxStudents).toBe(30);
-      expect(result.data?.targetGroupSize).toBe(4);
+      // Note: autoGroupEnabled, maxStudents, and targetGroupSize properties have been removed from the schema
+      expect(result.data?.topic).toBeDefined();
+      expect(result.data?.subject).toBeDefined();
+      expect(result.data?.plannedDuration).toBeDefined();
     });
 
     it('should reject too long topic', () => {
@@ -210,58 +211,149 @@ describe('Validation Schemas', () => {
     });
   });
 
-  describe('studentConsentSchema', () => {
-    it('should validate valid consent data', () => {
+  describe('createStudentSchema', () => {
+    it('should validate basic student data', () => {
       const validData = {
-        student_name: 'John Doe',
-        birth_date: '2010-05-15T00:00:00Z',
-        parent_email: 'parent@example.com',
-        parent_name: 'Jane Doe',
-        consent_given: true,
-        consent_timestamp: '2024-01-15T10:00:00Z',
+        firstName: 'John',
+        lastName: 'Doe',
+        gradeLevel: '5th',
       };
 
-      const result = studentConsentSchema.safeParse(validData);
+      const result = createStudentSchema.safeParse(validData);
       expect(result.success).toBe(true);
-      expect(result.data).toEqual(validData);
+      expect(result.data).toMatchObject(validData);
+      expect(result.data?.dataConsentGiven).toBe(false); // default
+      expect(result.data?.audioConsentGiven).toBe(false); // default
     });
 
-    it('should validate without optional timestamp', () => {
+    it('should validate student who is 13 or older (no consent needed)', () => {
       const validData = {
-        student_name: 'John Doe',
-        birth_date: '2010-05-15T00:00:00Z',
-        parent_email: 'parent@example.com',
-        parent_name: 'Jane Doe',
-        consent_given: false,
+        firstName: 'Jane',
+        lastName: 'Smith',
+        gradeLevel: '8th',
+        isUnderConsentAge: false,
       };
 
-      const result = studentConsentSchema.safeParse(validData);
+      const result = createStudentSchema.safeParse(validData);
       expect(result.success).toBe(true);
+      expect(result.data).toMatchObject(validData);
     });
 
-    it('should reject invalid email', () => {
+    it('should validate under-13 student with parental consent', () => {
+      const validData = {
+        firstName: 'Young',
+        lastName: 'Student',
+        gradeLevel: '2nd',
+        isUnderConsentAge: true,
+        hasParentalConsent: true,
+        parentEmail: 'parent@example.com',
+      };
+
+      const result = createStudentSchema.safeParse(validData);
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject(validData);
+    });
+
+    it('should validate under-13 student without consent (but will be rejected by business logic)', () => {
+      // Schema validation passes, but business logic in controller should reject
+      const validData = {
+        firstName: 'Another',
+        lastName: 'Young',
+        gradeLevel: '1st',
+        isUnderConsentAge: true,
+        hasParentalConsent: false,
+      };
+
+      const result = createStudentSchema.safeParse(validData);
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject(validData);
+    });
+
+    it('should enforce first name length limits', () => {
+      const tooLongFirstName = {
+        firstName: 'A'.repeat(51), // Over 50 character limit
+        lastName: 'Doe',
+      };
+
+      const result = createStudentSchema.safeParse(tooLongFirstName);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toBe('First name must be 50 characters or less');
+      }
+    });
+
+    it('should enforce last name length limits', () => {
+      const tooLongLastName = {
+        firstName: 'John',
+        lastName: 'B'.repeat(51), // Over 50 character limit
+      };
+
+      const result = createStudentSchema.safeParse(tooLongLastName);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toBe('Last name must be 50 characters or less');
+      }
+    });
+
+    it('should reject empty first name', () => {
       const invalidData = {
-        student_name: 'John Doe',
-        birth_date: '2010-05-15T00:00:00Z',
-        parent_email: 'not-an-email',
-        parent_name: 'Jane Doe',
-        consent_given: true,
+        firstName: '',
+        lastName: 'Doe',
       };
 
-      const result = studentConsentSchema.safeParse(invalidData);
+      const result = createStudentSchema.safeParse(invalidData);
       expect(result.success).toBe(false);
     });
 
-    it('should enforce name length limits', () => {
-      const tooLongName = {
-        student_name: 'A'.repeat(101),
-        birth_date: '2010-05-15T00:00:00Z',
-        parent_email: 'parent@example.com',
-        parent_name: 'Jane Doe',
-        consent_given: true,
+    it('should reject empty last name', () => {
+      const invalidData = {
+        firstName: 'John',
+        lastName: '',
       };
 
-      const result = studentConsentSchema.safeParse(tooLongName);
+      const result = createStudentSchema.safeParse(invalidData);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject invalid parent email format', () => {
+      const invalidData = {
+        firstName: 'John',
+        lastName: 'Doe',
+        parentEmail: 'not-an-email',
+      };
+
+      const result = createStudentSchema.safeParse(invalidData);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toBe('Invalid parent email format');
+      }
+    });
+
+    it('should validate with all optional fields included', () => {
+      const completeData = {
+        firstName: 'Complete',
+        lastName: 'Student',
+        gradeLevel: '4th',
+        parentEmail: 'parent@school.edu',
+        isUnderConsentAge: true,
+        hasParentalConsent: true,
+        dataConsentGiven: true,
+        audioConsentGiven: true,
+      };
+
+      const result = createStudentSchema.safeParse(completeData);
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual(completeData);
+    });
+
+    it('should enforce grade level length limits', () => {
+      const tooLongGrade = {
+        firstName: 'John',
+        lastName: 'Doe',
+        gradeLevel: 'A'.repeat(21), // Over 20 character limit
+      };
+
+      const result = createStudentSchema.safeParse(tooLongGrade);
       expect(result.success).toBe(false);
     });
   });
@@ -358,25 +450,43 @@ describe('Validation Schemas', () => {
   describe('schema integration', () => {
     it('should handle complex validation scenarios', () => {
       // Test that schemas can be composed
-      const sessionWithConsent = z.object({
+      const sessionWithStudent = z.object({
         session: createSessionSchema,
-        consent: studentConsentSchema,
+        student: createStudentSchema,
       });
 
       const complexData = {
         session: {
           topic: 'Math Class',
+          subject: 'Mathematics',
+          groupPlan: {
+            numberOfGroups: 3,
+            groupSize: 4,
+            groups: [
+              {
+                name: 'Group 1',
+                memberIds: ['student1', 'student2', 'student3', 'student4'],
+              },
+              {
+                name: 'Group 2', 
+                memberIds: ['student5', 'student6', 'student7', 'student8'],
+              },
+              {
+                name: 'Group 3',
+                memberIds: ['student9', 'student10', 'student11', 'student12'],
+              },
+            ],
+          },
         },
-        consent: {
-          student_name: 'John Doe',
-          birth_date: '2015-01-01T00:00:00Z',
-          parent_email: 'parent@school.edu',
-          parent_name: 'Jane Doe',
-          consent_given: true,
+        student: {
+          firstName: 'John',
+          lastName: 'Doe',
+          gradeLevel: '5th',
+          isUnderConsentAge: false,
         },
       };
 
-      const result = sessionWithConsent.safeParse(complexData);
+      const result = sessionWithStudent.safeParse(complexData);
       expect(result.success).toBe(true);
     });
   });

@@ -4,13 +4,14 @@ import { config } from 'dotenv';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function addSuperAdmin() {
   try {
-    console.log('👑 Adding ClassWaves Super Admin...');
+    logger.debug('👑 Adding ClassWaves Super Admin...');
     
     // Connect to Databricks
     await databricksService.connect();
@@ -27,7 +28,7 @@ async function addSuperAdmin() {
     let schoolId: string;
     
     if (existingSchool) {
-      console.log('✅ ClassWaves super admin school already exists');
+      logger.debug('✅ ClassWaves super admin school already exists');
       schoolId = existingSchool.id;
     } else {
       // Create super admin school
@@ -60,9 +61,9 @@ async function addSuperAdmin() {
         ]
       );
       
-      console.log('✅ Super admin school created successfully!');
-      console.log('School ID:', schoolId);
-      console.log('Domain:', domain);
+      logger.debug('✅ Super admin school created successfully!');
+      logger.debug('School ID:', schoolId);
+      logger.debug('Domain:', domain);
     }
     
     // Check if super admin teacher already exists
@@ -72,7 +73,7 @@ async function addSuperAdmin() {
     );
     
     if (existingTeacher) {
-      console.log('✅ Super admin teacher already exists');
+      logger.debug('✅ Super admin teacher already exists');
       
       // Update to ensure super_admin role
       await databricksService.query(
@@ -81,7 +82,7 @@ async function addSuperAdmin() {
          WHERE email = ?`,
         [adminEmail]
       );
-      console.log('✅ Updated teacher to super_admin role');
+      logger.debug('✅ Updated teacher to super_admin role');
     } else {
       // Create super admin teacher (will be populated on first login)
       const teacherId = uuidv4();
@@ -112,18 +113,18 @@ async function addSuperAdmin() {
         ]
       );
       
-      console.log('✅ Super admin teacher created successfully!');
-      console.log('Teacher ID:', teacherId);
+      logger.debug('✅ Super admin teacher created successfully!');
+      logger.debug('Teacher ID:', teacherId);
     }
     
-    console.log('\n🎉 Super admin setup complete!');
-    console.log('You can now log in with:', adminEmail);
-    console.log('Domain:', domain);
-    console.log('Role: super_admin');
-    console.log('Access Level: full');
+    logger.debug('\n🎉 Super admin setup complete!');
+    logger.debug('You can now log in with:', adminEmail);
+    logger.debug('Domain:', domain);
+    logger.debug('Role: super_admin');
+    logger.debug('Access Level: full');
     
   } catch (error) {
-    console.error('❌ Error setting up super admin:', error);
+    logger.error('❌ Error setting up super admin:', error);
     process.exit(1);
   } finally {
     await databricksService.disconnect();

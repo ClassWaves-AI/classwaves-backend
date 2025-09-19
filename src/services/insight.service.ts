@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { redisService } from './redis.service';
+import { logger } from '../utils/logger';
 
 // Assume an NLP service is available for complex text analysis
 // import { nlpService } from './nlp.service'; // Service not implemented yet 
@@ -71,7 +72,7 @@ class InsightService {
 
       return insights;
     } catch (error) {
-      console.error('Group insight analysis error', error);
+      logger.error('Group insight analysis error', error);
       return [];
     }
   }
@@ -102,8 +103,9 @@ class InsightService {
   private async storeInsight(sessionId: string, insight: GroupInsight) {
     const insightKey = `insights:${sessionId}`;
     await redisService.getClient().lpush(insightKey, JSON.stringify(insight));
-    // Set expiry to 24 hours to prevent memory leaks
-    await redisService.getClient().expire(insightKey, 86400);
+    // Set expiry (configurable; default 24 hours) to prevent memory leaks
+    const ttl = parseInt(process.env.INSIGHTS_REDIS_TTL_SECONDS || '86400', 10);
+    await redisService.getClient().expire(insightKey, ttl);
   }
 
   /**
@@ -114,7 +116,7 @@ class InsightService {
       const insightStrings = await redisService.getClient().lrange(`insights:${sessionId}`, 0, limit - 1);
       return insightStrings.map(str => JSON.parse(str));
     } catch (error) {
-      console.error('Failed to get session insights', error);
+      logger.error('Failed to get session insights', error);
       return [];
     }
   }

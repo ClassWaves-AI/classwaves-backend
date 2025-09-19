@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function addIsReadyColumn() {
   try {
-    console.log('🔧 Adding is_ready column to student_groups table...');
+    logger.debug('🔧 Adding is_ready column to student_groups table...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -23,8 +24,8 @@ async function addIsReadyColumn() {
     
     // Function to execute SQL statement
     async function executeSQL(sql: string, description: string) {
-      console.log(`\n📝 ${description}...`);
-      console.log(`SQL: ${sql}`);
+      logger.debug(`\n📝 ${description}...`);
+      logger.debug(`SQL: ${sql}`);
       
       const response = await fetch(`${host}/api/2.0/sql/statements`, {
         method: 'POST',
@@ -38,12 +39,12 @@ async function addIsReadyColumn() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ Failed to ${description}:`, response.status, error);
+        logger.error(`❌ Failed to ${description}:`, response.status, error);
         return false;
       }
       
       const result = await response.json();
-      console.log(`✅ ${description} completed successfully`);
+      logger.debug(`✅ ${description} completed successfully`);
       return true;
     }
     
@@ -56,18 +57,18 @@ async function addIsReadyColumn() {
     const success = await executeSQL(addIsReadySQL, 'Add is_ready column to student_groups');
     
     if (success) {
-      console.log('\n🎉 is_ready column added successfully!');
+      logger.debug('\n🎉 is_ready column added successfully!');
       
       // Verify the column was added
-      console.log('\n🔍 Verifying column was added...');
+      logger.debug('\n🔍 Verifying column was added...');
       const verifySQL = 'DESCRIBE classwaves.sessions.student_groups';
       await executeSQL(verifySQL, 'Verify student_groups schema');
     } else {
-      console.log('\n⚠️ Column might already exist');
+      logger.debug('\n⚠️ Column might already exist');
     }
     
   } catch (error) {
-    console.error('❌ Error adding column:', error);
+    logger.error('❌ Error adding column:', error);
   }
 }
 

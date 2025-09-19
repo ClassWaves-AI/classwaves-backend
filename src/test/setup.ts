@@ -1,7 +1,19 @@
-import 'dotenv/config';
-
 // Set test environment
 process.env.NODE_ENV = 'test';
+// Disable native lz4 to avoid arch/version issues in CI or Node 22
+process.env.LZ4_DISABLE_NATIVE = process.env.LZ4_DISABLE_NATIVE || '1';
+// Default: do not run network-bound tests unless explicitly enabled
+process.env.ENABLE_NETWORK_TESTS = process.env.ENABLE_NETWORK_TESTS || '0';
+
+// Load test-specific environment variables
+import { config } from 'dotenv';
+import {
+  ensureDatabricksMockTables,
+  resetDatabricksMockState,
+  seedGuidanceMetrics,
+  seedSchemaMigrations,
+} from './databricks-mock.fixtures';
+config({ path: '.env.test' });
 
 // Extend Jest matchers
 declare global {
@@ -25,4 +37,11 @@ global.console = {
 // Reset mocks after each test
 afterEach(() => {
   jest.clearAllMocks();
+});
+
+beforeEach(async () => {
+  resetDatabricksMockState();
+  await ensureDatabricksMockTables();
+  seedSchemaMigrations();
+  seedGuidanceMetrics();
 });

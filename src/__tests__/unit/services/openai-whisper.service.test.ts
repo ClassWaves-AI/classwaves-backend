@@ -96,6 +96,8 @@ describe('OpenAIWhisperService', () => {
 
     spy.mockRestore();
   });
+
+  afterAll(async () => {
+    await redisService.disconnect();
+  });
 });
-
-

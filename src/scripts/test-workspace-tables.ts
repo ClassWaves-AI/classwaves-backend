@@ -1,83 +1,84 @@
 import { databricksService } from '../services/databricks.service';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function testWorkspaceTables() {
-  console.log('🔍 Testing workspace.default tables access...\n');
+  logger.debug('🔍 Testing workspace.default tables access...\n');
   
   try {
     await databricksService.connect();
-    console.log('✅ Connected to Databricks\n');
+    logger.debug('✅ Connected to Databricks\n');
     
     // Test direct queries
-    console.log('📋 Testing table access:\n');
+    logger.debug('📋 Testing table access:\n');
     
     // Test schools table
-    console.log('1. Schools table:');
+    logger.debug('1. Schools table:');
     try {
       const schools = await databricksService.query('SELECT COUNT(*) as count FROM schools');
-      console.log(`   ✅ Direct query works: ${schools[0].count} schools`);
+      logger.debug(`   ✅ Direct query works: ${schools[0].count} schools`);
       
       const demoSchool = await databricksService.queryOne(
         "SELECT * FROM schools WHERE domain = ?",
         ['demo.classwaves.com']
       );
       if (demoSchool) {
-        console.log(`   ✅ Demo school found: ${demoSchool.name}`);
+        logger.debug(`   ✅ Demo school found: ${demoSchool.name}`);
       }
     } catch (error: any) {
-      console.log(`   ❌ Error: ${error.message}`);
+      logger.debug(`   ❌ Error: ${error.message}`);
     }
     
     // Test teachers table
-    console.log('\n2. Teachers table:');
+    logger.debug('\n2. Teachers table:');
     try {
       const teachers = await databricksService.query('SELECT COUNT(*) as count FROM teachers');
-      console.log(`   ✅ Direct query works: ${teachers[0].count} teachers`);
+      logger.debug(`   ✅ Direct query works: ${teachers[0].count} teachers`);
       
       const demoTeacher = await databricksService.queryOne(
         "SELECT * FROM teachers WHERE email = ?",
         ['teacher@demo.classwaves.com']
       );
       if (demoTeacher) {
-        console.log(`   ✅ Demo teacher found: ${demoTeacher.name}`);
+        logger.debug(`   ✅ Demo teacher found: ${demoTeacher.name}`);
       }
     } catch (error: any) {
-      console.log(`   ❌ Error: ${error.message}`);
+      logger.debug(`   ❌ Error: ${error.message}`);
     }
     
     // Test service methods
-    console.log('\n📋 Testing service methods:\n');
+    logger.debug('\n📋 Testing service methods:\n');
     
     // Test getSchoolByDomain
-    console.log('3. getSchoolByDomain:');
+    logger.debug('3. getSchoolByDomain:');
     try {
       const school = await databricksService.getSchoolByDomain('demo.classwaves.com');
       if (school) {
-        console.log(`   ✅ Works: ${school.name} (${school.subscription_tier})`);
+        logger.debug(`   ✅ Works: ${school.name} (${school.subscription_tier})`);
       } else {
-        console.log('   ❌ No school found');
+        logger.debug('   ❌ No school found');
       }
     } catch (error: any) {
-      console.log(`   ❌ Error: ${error.message}`);
+      logger.debug(`   ❌ Error: ${error.message}`);
     }
     
     // Test getTeacherByEmail
-    console.log('\n4. getTeacherByEmail:');
+    logger.debug('\n4. getTeacherByEmail:');
     try {
       const teacher = await databricksService.getTeacherByEmail('teacher@demo.classwaves.com');
       if (teacher) {
-        console.log(`   ✅ Works: ${teacher.name} (${teacher.role})`);
+        logger.debug(`   ✅ Works: ${teacher.name} (${teacher.role})`);
       } else {
-        console.log('   ❌ No teacher found');
+        logger.debug('   ❌ No teacher found');
       }
     } catch (error: any) {
-      console.log(`   ❌ Error: ${error.message}`);
+      logger.debug(`   ❌ Error: ${error.message}`);
     }
     
     // Test creating a session
-    console.log('\n5. Creating test session:');
+    logger.debug('\n5. Creating test session:');
     try {
       const sessionId = await databricksService.createSession({
         title: 'Test Session',
@@ -89,7 +90,7 @@ async function testWorkspaceTables() {
         autoGroupEnabled: true,
         plannedDuration: 45
       });
-      console.log(`   ✅ Session created with ID: ${sessionId}`);
+      logger.debug(`   ✅ Session created with ID: ${sessionId}`);
       
       // Verify it exists
       const session = await databricksService.queryOne(
@@ -97,19 +98,19 @@ async function testWorkspaceTables() {
         [sessionId]
       );
       if (session) {
-        console.log(`   ✅ Session verified: ${session.title}`);
+        logger.debug(`   ✅ Session verified: ${session.title}`);
       }
     } catch (error: any) {
-      console.log(`   ❌ Error: ${error.message}`);
+      logger.debug(`   ❌ Error: ${error.message}`);
     }
     
-    console.log('\n✨ All tests completed!');
+    logger.debug('\n✨ All tests completed!');
     
   } catch (error) {
-    console.error('❌ Fatal error:', error);
+    logger.error('❌ Fatal error:', error);
   } finally {
     await databricksService.disconnect();
-    console.log('\n👋 Disconnected from Databricks');
+    logger.debug('\n👋 Disconnected from Databricks');
   }
 }
 

@@ -2,6 +2,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -722,10 +723,10 @@ class ClassWavesCatalogCreator {
   }
 
   async createCatalogStructure() {
-    console.log('🚀 Starting ClassWaves Unity Catalog structure creation...\n');
-    console.log(`📍 Target: ${this.catalog} catalog`);
-    console.log(`🏢 Host: ${this.host}`);
-    console.log(`📦 Warehouse: ${this.warehouseId}\n`);
+    logger.debug('🚀 Starting ClassWaves Unity Catalog structure creation...\n');
+    logger.debug(`📍 Target: ${this.catalog} catalog`);
+    logger.debug(`🏢 Host: ${this.host}`);
+    logger.debug(`📦 Warehouse: ${this.warehouseId}\n`);
 
     const results: {
       successful: string[];
@@ -736,34 +737,34 @@ class ClassWavesCatalogCreator {
     };
 
     // Step 1: Use the catalog
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`Step 1: Setting catalog to: ${this.catalog}`);
-    console.log(`${'='.repeat(50)}\n`);
+    logger.debug(`\n${'='.repeat(50)}`);
+    logger.debug(`Step 1: Setting catalog to: ${this.catalog}`);
+    logger.debug(`${'='.repeat(50)}\n`);
     
     const catalogResult = await this.executeStatement(`USE CATALOG ${this.catalog}`);
     
     if (!catalogResult.success) {
-      console.error(`❌ Failed to switch to catalog ${this.catalog}: ${catalogResult.error}`);
+      logger.error(`❌ Failed to switch to catalog ${this.catalog}: ${catalogResult.error}`);
       return results;
     }
-    console.log(`✅ Using catalog: ${this.catalog}`);
+    logger.debug(`✅ Using catalog: ${this.catalog}`);
 
     // Step 2: Create schemas
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`Step 2: Creating schemas`);
-    console.log(`${'='.repeat(50)}\n`);
+    logger.debug(`\n${'='.repeat(50)}`);
+    logger.debug(`Step 2: Creating schemas`);
+    logger.debug(`${'='.repeat(50)}\n`);
 
     for (const schema of this.schemas) {
-      console.log(`Creating schema: ${schema}`);
+      logger.debug(`Creating schema: ${schema}`);
       const schemaResult = await this.executeStatement(
         `CREATE SCHEMA IF NOT EXISTS ${schema}`
       );
       
       if (schemaResult.success) {
-        console.log(`✅ Schema created: ${schema}`);
+        logger.debug(`✅ Schema created: ${schema}`);
         results.successful.push(`schema:${schema}`);
       } else {
-        console.error(`❌ Failed to create schema ${schema}: ${schemaResult.error}`);
+        logger.error(`❌ Failed to create schema ${schema}: ${schemaResult.error}`);
         results.failed.push({ item: `schema:${schema}`, error: schemaResult.error });
       }
       
@@ -771,21 +772,21 @@ class ClassWavesCatalogCreator {
     }
 
     // Step 3: Create tables
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`Step 3: Creating tables`);
-    console.log(`${'='.repeat(50)}\n`);
+    logger.debug(`\n${'='.repeat(50)}`);
+    logger.debug(`Step 3: Creating tables`);
+    logger.debug(`${'='.repeat(50)}\n`);
 
     for (const table of this.tables) {
       const tableName = `${this.catalog}.${table.schema}.${table.name}`;
-      console.log(`Creating table: ${tableName}`);
+      logger.debug(`Creating table: ${tableName}`);
       
       const result = await this.executeStatement(table.sql);
       
       if (result.success) {
-        console.log(`✅ Successfully created ${tableName}`);
+        logger.debug(`✅ Successfully created ${tableName}`);
         results.successful.push(tableName);
       } else {
-        console.error(`❌ Failed to create ${tableName}: ${result.error}`);
+        logger.error(`❌ Failed to create ${tableName}: ${result.error}`);
         results.failed.push({ item: tableName, error: result.error });
       }
       
@@ -793,9 +794,9 @@ class ClassWavesCatalogCreator {
     }
 
     // Step 4: Insert demo data
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`Step 4: Inserting demo data`);
-    console.log(`${'='.repeat(50)}\n`);
+    logger.debug(`\n${'='.repeat(50)}`);
+    logger.debug(`Step 4: Inserting demo data`);
+    logger.debug(`${'='.repeat(50)}\n`);
 
     const demoStatements = [
       `INSERT INTO ${this.catalog}.users.schools (
@@ -822,27 +823,27 @@ class ClassWavesCatalogCreator {
     for (const stmt of demoStatements) {
       const result = await this.executeStatement(stmt);
       if (result.success) {
-        console.log(`✅ Demo data inserted`);
+        logger.debug(`✅ Demo data inserted`);
       } else {
-        console.error(`❌ Failed to insert demo data: ${result.error}`);
+        logger.error(`❌ Failed to insert demo data: ${result.error}`);
       }
     }
 
     // Summary
-    console.log('\n' + '='.repeat(50));
-    console.log('UNITY CATALOG CREATION SUMMARY');
-    console.log('='.repeat(50));
-    console.log(`✅ Successful: ${results.successful.length} items`);
-    console.log(`❌ Failed: ${results.failed.length} items`);
+    logger.debug('\n' + '='.repeat(50));
+    logger.debug('UNITY CATALOG CREATION SUMMARY');
+    logger.debug('='.repeat(50));
+    logger.debug(`✅ Successful: ${results.successful.length} items`);
+    logger.debug(`❌ Failed: ${results.failed.length} items`);
     
     if (results.successful.length > 0) {
-      console.log('\nSuccessfully created:');
-      results.successful.forEach(item => console.log(`  ✅ ${item}`));
+      logger.debug('\nSuccessfully created:');
+      results.successful.forEach(item => logger.debug(`  ✅ ${item}`));
     }
     
     if (results.failed.length > 0) {
-      console.log('\nFailed items:');
-      results.failed.forEach(f => console.error(`  ❌ ${f.item}: ${f.error}`));
+      logger.debug('\nFailed items:');
+      results.failed.forEach(f => logger.error(`  ❌ ${f.item}: ${f.error}`));
     }
 
     // Save results
@@ -853,7 +854,7 @@ class ClassWavesCatalogCreator {
     
     const resultsFile = path.join(resultsPath, 'unity-catalog-results.json');
     fs.writeFileSync(resultsFile, JSON.stringify(results, null, 2));
-    console.log(`\nResults saved to: ${resultsFile}`);
+    logger.debug(`\nResults saved to: ${resultsFile}`);
 
     return results;
   }
@@ -867,16 +868,16 @@ async function main() {
     const results = await creator.createCatalogStructure();
     
     if (results.successful.length > 0) {
-      console.log('\n🎉 Unity Catalog structure created successfully!');
+      logger.debug('\n🎉 Unity Catalog structure created successfully!');
       
       if (results.failed.length === 0) {
-        console.log('\n✅ ALL SCHEMAS AND TABLES CREATED SUCCESSFULLY!');
+        logger.debug('\n✅ ALL SCHEMAS AND TABLES CREATED SUCCESSFULLY!');
       }
     }
     
     process.exit(results.failed.length === 0 ? 0 : 1);
   } catch (error) {
-    console.error('\n❌ Catalog creation failed:', error);
+    logger.error('\n❌ Catalog creation failed:', error);
     process.exit(1);
   }
 }

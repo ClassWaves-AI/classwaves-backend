@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function simpleGroupTest() {
   try {
-    console.log('🔍 Simple Group Creation Test...');
+    logger.debug('🔍 Simple Group Creation Test...');
     
     // Test with a simple payload - this should trigger the server error
     const payload = {
@@ -14,9 +15,9 @@ async function simpleGroupTest() {
       maxMembers: 4
     };
     
-    console.log('Making request to create group...');
-    console.log('URL: http://localhost:3000/api/v1/sessions/test-session-id/groups');
-    console.log('Payload:', JSON.stringify(payload, null, 2));
+    logger.debug('Making request to create group...');
+    logger.debug('URL: http://localhost:3000/api/v1/sessions/test-session-id/groups');
+    logger.debug('Payload:', JSON.stringify(payload, null, 2));
     
     const response = await fetch('http://localhost:3000/api/v1/sessions/test-session-id/groups', {
       method: 'POST',
@@ -28,18 +29,18 @@ async function simpleGroupTest() {
     });
     
     const responseText = await response.text();
-    console.log('Response status:', response.status);
-    console.log('Response:', responseText);
+    logger.debug('Response status:', response.status);
+    logger.debug('Response:', responseText);
     
     // Now test with a real session (we should see what error occurs)
-    console.log('\n--- Testing with minimal session creation ---');
+    logger.debug('\n--- Testing with minimal session creation ---');
     
     const healthCheck = await fetch('http://localhost:3000/api/v1/health');
     const healthData = await healthCheck.text();
-    console.log('Health check:', healthData);
+    logger.debug('Health check:', healthData);
     
   } catch (error) {
-    console.error('❌ Error:', error);
+    logger.error('❌ Error:', error);
   }
 }
 

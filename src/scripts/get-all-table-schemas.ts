@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function getAllTableSchemas() {
   try {
-    console.log('🔍 Getting all table schemas for ClassWaves...');
+    logger.debug('🔍 Getting all table schemas for ClassWaves...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -35,14 +36,14 @@ async function getAllTableSchemas() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ HTTP Error:`, response.status, error);
+        logger.error(`❌ HTTP Error:`, response.status, error);
         return [];
       }
       
       const result = await response.json() as any;
       
       if (result.result?.status?.sqlState || result.status?.statusCode === 'ERROR') {
-        console.error(`❌ SQL Error:`, result.result?.status || result.status);
+        logger.error(`❌ SQL Error:`, result.result?.status || result.status);
         return [];
       }
       
@@ -60,72 +61,72 @@ async function getAllTableSchemas() {
       { name: 'audit_log', catalog: 'classwaves', schema: 'compliance' }
     ];
     
-    console.log('\n📊 TABLE SCHEMAS:\n');
+    logger.debug('\n📊 TABLE SCHEMAS:\n');
     
     for (const table of tables) {
-      console.log(`\n=== ${table.catalog}.${table.schema}.${table.name.toUpperCase()} ===`);
+      logger.debug(`\n=== ${table.catalog}.${table.schema}.${table.name.toUpperCase()} ===`);
       
       try {
         const schemaData = await executeSQL(`DESCRIBE ${table.catalog}.${table.schema}.${table.name}`);
         
         if (schemaData.length > 0) {
-          console.log(`\nColumns in ${table.name}:`);
+          logger.debug(`\nColumns in ${table.name}:`);
           schemaData.forEach((row, index) => {
             const [colName, dataType, nullable] = row;
-            console.log(`${index + 1}. ${colName} (${dataType})${nullable === 'YES' ? ' NULL' : ' NOT NULL'}`);
+            logger.debug(`${index + 1}. ${colName} (${dataType})${nullable === 'YES' ? ' NULL' : ' NOT NULL'}`);
           });
           
           // Get sample count
           try {
             const countData = await executeSQL(`SELECT COUNT(*) as count FROM ${table.catalog}.${table.schema}.${table.name}`);
             const count = countData[0]?.[0] || 0;
-            console.log(`📊 Row count: ${count}`);
+            logger.debug(`📊 Row count: ${count}`);
           } catch (e) {
-            console.log(`📊 Row count: Unable to get count`);
+            logger.debug(`📊 Row count: Unable to get count`);
           }
         } else {
-          console.log(`❌ No schema data found for ${table.name}`);
+          logger.debug(`❌ No schema data found for ${table.name}`);
         }
       } catch (error) {
-        console.error(`❌ Error getting schema for ${table.name}:`, error);
+        logger.error(`❌ Error getting schema for ${table.name}:`, error);
       }
     }
     
     // Show catalogs and schemas structure
-    console.log('\n\n=== CATALOG STRUCTURE ===');
+    logger.debug('\n\n=== CATALOG STRUCTURE ===');
     try {
       const catalogs = await executeSQL('SHOW CATALOGS');
-      console.log('\nAvailable catalogs:');
+      logger.debug('\nAvailable catalogs:');
       catalogs.forEach(row => {
-        console.log(`- ${row[0]}`);
+        logger.debug(`- ${row[0]}`);
       });
       
-      console.log('\nSchemas in classwaves catalog:');
+      logger.debug('\nSchemas in classwaves catalog:');
       const schemas = await executeSQL('SHOW SCHEMAS IN classwaves');
       schemas.forEach(row => {
-        console.log(`- classwaves.${row[0]}`);
+        logger.debug(`- classwaves.${row[0]}`);
       });
       
       // Show tables in each schema
       for (const schemaName of ['users', 'sessions', 'compliance']) {
-        console.log(`\nTables in classwaves.${schemaName}:`);
+        logger.debug(`\nTables in classwaves.${schemaName}:`);
         try {
           const schemaTables = await executeSQL(`SHOW TABLES IN classwaves.${schemaName}`);
           schemaTables.forEach(row => {
-            console.log(`- ${row[1]}`); // table name is usually in second column
+            logger.debug(`- ${row[1]}`); // table name is usually in second column
           });
         } catch (e) {
-          console.log(`❌ Could not list tables in ${schemaName}`);
+          logger.debug(`❌ Could not list tables in ${schemaName}`);
         }
       }
     } catch (error) {
-      console.error('❌ Error getting catalog structure:', error);
+      logger.error('❌ Error getting catalog structure:', error);
     }
     
-    console.log('\n✅ Schema inspection complete!');
+    logger.debug('\n✅ Schema inspection complete!');
     
   } catch (error) {
-    console.error('❌ Error in schema inspection:', error);
+    logger.error('❌ Error in schema inspection:', error);
   }
 }
 

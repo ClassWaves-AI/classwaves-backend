@@ -1,7 +1,8 @@
 import { Response } from 'express';
-import { databricksService } from '../services/databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { KioskAuthRequest } from '../middleware/kiosk.auth.middleware';
-import { websocketService } from '../services/websocket.service';
+import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
+import { logger } from '../utils/logger';
 
 export async function updateGroupStatus(req: KioskAuthRequest, res: Response): Promise<Response> {
   const { groupId } = req.params;
@@ -10,20 +11,19 @@ export async function updateGroupStatus(req: KioskAuthRequest, res: Response): P
   try {
     const kioskInfo = req.kiosk!;
 
-    await databricksService.update('student_groups', kioskInfo.groupId, {
+    await getCompositionRoot().getGroupRepository().updateGroupFields(kioskInfo.groupId, {
       is_ready: isReady,
       updated_at: new Date(),
     });
     
     // Get session info for WebSocket broadcast
-    const group = await databricksService.queryOne(`
-      SELECT session_id, name FROM classwaves.sessions.student_groups WHERE id = ?
-    `, [groupId]);
+    const group = await getCompositionRoot().getGroupRepository().getGroupSessionAndNameById(groupId);
     
     if (group) {
-      // Emit WebSocket event to teacher dashboard
-      if (websocketService.io) {
-        websocketService.io.to(`session:${group.session_id}`).emit('group:status_changed', {
+      // Emit WebSocket event to teacher dashboard via namespaced sessions service
+      const nsSessions = getNamespacedWebSocketService()?.getSessionsService();
+      if (nsSessions) {
+        nsSessions.emitToSession(group.session_id, 'group:status_changed', {
           groupId,
           status: isReady ? 'ready' : 'waiting',
           isReady
@@ -38,11 +38,10 @@ export async function updateGroupStatus(req: KioskAuthRequest, res: Response): P
     });
 
   } catch (error) {
-    console.error(`Failed to update status for group ${groupId}:`, error);
+    logger.error(`Failed to update status for group ${groupId}:`, error);
     return res.status(500).json({
       error: 'STATUS_UPDATE_FAILED',
       message: 'An internal error occurred while updating the group status.',
     });
   }
 }
-

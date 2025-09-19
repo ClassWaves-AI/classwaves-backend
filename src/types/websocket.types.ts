@@ -46,6 +46,16 @@ export interface TranscriptionUpdate {
   confidence: number;
 }
 
+export interface SessionEvent {
+  id: string;
+  session_id: string;
+  teacher_id: string;
+  event_type: 'configured' | 'started' | 'leader_ready' | 'member_join' | 'member_leave' | 'ended';
+  event_time: Date | string;
+  payload: any;
+  created_at?: Date | string;
+}
+
 // WebSocket event names
 export enum WSEvents {
   // Connection events

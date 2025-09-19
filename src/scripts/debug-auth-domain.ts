@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { databricksService } from '../services/databricks.service';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
@@ -8,34 +9,33 @@ async function main() {
   const email = process.argv[3] || 'rob@classwaves.ai';
 
   try {
-    console.log('Connecting to Databricks...');
+    logger.debug('Connecting to Databricks...');
     await databricksService.connect();
-    console.log('Connected.');
+    logger.debug('Connected.');
 
-    console.log('\nListing all schools (domain, status, name, id):');
+    logger.debug('\nListing all schools (domain, status, name, id):');
     const schools = await databricksService.query<any>(
       `SELECT domain, subscription_status, name, id FROM classwaves.users.schools`
     );
     console.table(schools);
 
-    console.log(`\nQuerying school by domain: ${domain}`);
+    logger.debug(`\nQuerying school by domain: ${domain}`);
     const school = await databricksService.getSchoolByDomain(domain);
-    console.log('School result:', school);
+    logger.debug('School result:', school);
 
-    console.log(`\nQuerying teacher by email: ${email}`);
+    logger.debug(`\nQuerying teacher by email: ${email}`);
     const teacher = await databricksService.getTeacherByEmail(email);
-    console.log('Teacher result:', teacher);
+    logger.debug('Teacher result:', teacher);
 
   } catch (err) {
-    console.error('Error during debug:', err);
+    logger.error('Error during debug:', err);
   } finally {
     await databricksService.disconnect();
   }
 }
 
 main().catch((e) => {
-  console.error(e);
+  logger.error(e);
   process.exit(1);
 });
-
 

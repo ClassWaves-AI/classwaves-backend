@@ -4,13 +4,14 @@ import { config } from 'dotenv';
 import { join } from 'path';
 import { databricksService } from '../services/databricks.service';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function seedTestSchool() {
   try {
-    console.log('🌱 Seeding test school...');
+    logger.debug('🌱 Seeding test school...');
     
     // Connect to Databricks
     await databricksService.connect();
@@ -21,7 +22,7 @@ async function seedTestSchool() {
     );
     
     if (existingSchool) {
-      console.log('✅ Test school already exists:', existingSchool);
+      logger.debug('✅ Test school already exists:', existingSchool);
       return;
     }
     
@@ -55,14 +56,14 @@ async function seedTestSchool() {
       ]
     );
     
-    console.log('✅ Test school created successfully!');
-    console.log('School ID:', schoolId);
-    console.log('Domain: test.edu');
-    console.log('');
-    console.log('You can now log in with any @test.edu email address');
+    logger.debug('✅ Test school created successfully!');
+    logger.debug('School ID:', schoolId);
+    logger.debug('Domain: test.edu');
+    logger.debug('');
+    logger.debug('You can now log in with any @test.edu email address');
     
   } catch (error) {
-    console.error('❌ Error seeding test school:', error);
+    logger.error('❌ Error seeding test school:', error);
     process.exit(1);
   } finally {
     await databricksService.disconnect();

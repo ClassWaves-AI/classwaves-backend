@@ -2,13 +2,14 @@ import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 dotenv.config();
 
 async function createTestSession() {
   try {
-    console.log('Creating test session...');
+    logger.debug('Creating test session...');
     
     // Connect to databricks
     await databricksService.connect();
@@ -19,12 +20,12 @@ async function createTestSession() {
     );
     
     if (!teacherCheck || teacherCheck.length === 0) {
-      console.error('Test teacher not found. Please run seed-test-school.ts first.');
+      logger.error('Test teacher not found. Please run seed-test-school.ts first.');
       process.exit(1);
     }
     
     const teacher = teacherCheck[0];
-    console.log('Found teacher:', teacher.name);
+    logger.debug('Found teacher:', teacher.name);
     
     // Get school ID
     const schoolCheck = await databricksService.query(
@@ -32,12 +33,12 @@ async function createTestSession() {
     );
     
     if (!schoolCheck || schoolCheck.length === 0) {
-      console.error('Test school not found. Please run seed-test-school.ts first.');
+      logger.error('Test school not found. Please run seed-test-school.ts first.');
       process.exit(1);
     }
     
     const school = schoolCheck[0];
-    console.log('Found school:', school.name);
+    logger.debug('Found school:', school.name);
     
     // Create a test session with a simple access code
     const sessionId = crypto.randomUUID();
@@ -46,7 +47,7 @@ async function createTestSession() {
     await databricksService.query(
       `INSERT INTO ${databricksConfig.catalog}.sessions.classroom_sessions 
        (id, title, description, status, teacher_id, school_id, access_code, 
-        max_students, target_group_size, auto_group_enabled, 
+        target_group_size, auto_group_enabled, 
         recording_enabled, transcription_enabled, ai_analysis_enabled,
         ferpa_compliant, coppa_compliant, recording_consent_obtained,
         created_at, updated_at)
@@ -59,7 +60,6 @@ async function createTestSession() {
         teacher.id,
         school.id,
         accessCode,
-        30, // max_students
         4,  // target_group_size
         true, // auto_group_enabled
         true, // recording_enabled
@@ -71,13 +71,13 @@ async function createTestSession() {
       ]
     );
     
-    console.log('✅ Test session created successfully!');
-    console.log('Session ID:', sessionId);
-    console.log('Access Code:', accessCode);
-    console.log('\nStudents can join at: http://localhost:3003/join/' + accessCode);
+    logger.debug('✅ Test session created successfully!');
+    logger.debug('Session ID:', sessionId);
+    logger.debug('Access Code:', accessCode);
+    logger.debug('\nStudents can join at: http://localhost:3003/join/' + accessCode);
     
   } catch (error) {
-    console.error('Error creating test session:', error);
+    logger.error('Error creating test session:', error);
     process.exit(1);
   } finally {
     process.exit(0);

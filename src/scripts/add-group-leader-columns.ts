@@ -1,12 +1,13 @@
 import { config } from 'dotenv';
 import { join } from 'path';
+import { logger } from '../utils/logger';
 
 // Load environment variables
 config({ path: join(__dirname, '../../.env') });
 
 async function addGroupLeaderColumns() {
   try {
-    console.log('🔧 Adding group leader tracking columns to database...');
+    logger.debug('🔧 Adding group leader tracking columns to database...');
     
     const host = process.env.DATABRICKS_HOST;
     const token = process.env.DATABRICKS_TOKEN;
@@ -16,7 +17,7 @@ async function addGroupLeaderColumns() {
       throw new Error('Missing required Databricks environment variables');
     }
     
-    console.log('Databricks config:', {
+    logger.debug('Databricks config:', {
       host: host ? 'Set' : 'Missing',
       token: token ? 'Set' : 'Missing',
       warehouse: warehouse ? 'Set' : 'Missing'
@@ -29,8 +30,8 @@ async function addGroupLeaderColumns() {
     
     // Function to execute SQL statement
     async function executeSQL(sql: string, description: string) {
-      console.log(`\n📝 ${description}...`);
-      console.log(`SQL: ${sql}`);
+      logger.debug(`\n📝 ${description}...`);
+      logger.debug(`SQL: ${sql}`);
       
       const response = await fetch(`${host}/api/2.0/sql/statements`, {
         method: 'POST',
@@ -44,12 +45,12 @@ async function addGroupLeaderColumns() {
       
       if (!response.ok) {
         const error = await response.text();
-        console.error(`❌ Failed to ${description}:`, response.status, error);
+        logger.error(`❌ Failed to ${description}:`, response.status, error);
         return false;
       }
       
       const result = await response.json();
-      console.log(`✅ ${description} completed successfully`);
+      logger.debug(`✅ ${description} completed successfully`);
       return true;
     }
     
@@ -85,14 +86,14 @@ async function addGroupLeaderColumns() {
       if (success) {
         successCount++;
       } else {
-        console.log(`⚠️ Column might already exist for: ${alteration.description}`);
+        logger.debug(`⚠️ Column might already exist for: ${alteration.description}`);
       }
     }
     
-    console.log(`\n🎉 Schema update complete! ${successCount}/${alterations.length} alterations processed.`);
+    logger.debug(`\n🎉 Schema update complete! ${successCount}/${alterations.length} alterations processed.`);
     
     // Verify the schema changes
-    console.log('\n🔍 Verifying schema changes...');
+    logger.debug('\n🔍 Verifying schema changes...');
     
     const verifyGroupsSQL = `DESCRIBE classwaves.sessions.student_groups`;
     const verifyParticipantsSQL = `DESCRIBE classwaves.sessions.participants`;
@@ -101,7 +102,7 @@ async function addGroupLeaderColumns() {
     await executeSQL(verifyParticipantsSQL, 'Verify participants schema');
     
   } catch (error) {
-    console.error('❌ Error updating schema:', error);
+    logger.error('❌ Error updating schema:', error);
   }
 }
 

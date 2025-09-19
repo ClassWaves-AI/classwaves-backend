@@ -2,16 +2,17 @@ import { databricksService } from '../services/databricks.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import dotenv from 'dotenv';
+import { logger } from '../utils/logger';
 
 dotenv.config();
 
 async function createCatalogStructure() {
-  console.log('🚀 Creating ClassWaves Databricks Catalog Structure...\n');
-  console.log('Structure: Catalog → Schema → Tables\n');
+  logger.debug('🚀 Creating ClassWaves Databricks Catalog Structure...\n');
+  logger.debug('Structure: Catalog → Schema → Tables\n');
   
   try {
     await databricksService.connect();
-    console.log('✅ Connected to Databricks\n');
+    logger.debug('✅ Connected to Databricks\n');
     
     // Read the SQL script
     const sqlPath = path.join(__dirname, '../../databricks-catalog-structure.sql');
@@ -27,7 +28,7 @@ async function createCatalogStructure() {
       })
       .map(stmt => stmt + ';');
     
-    console.log(`📋 Found ${statements.length} SQL statements to execute\n`);
+    logger.debug(`📋 Found ${statements.length} SQL statements to execute\n`);
     
     // Track progress by operation type
     const operations = {
@@ -79,57 +80,57 @@ async function createCatalogStructure() {
         if (operationType in operations) {
           operations[operationType as keyof typeof operations]++;
         }
-        console.log('✅');
+        logger.debug('✅');
       } catch (error: any) {
         errorCount++;
-        console.log('❌');
+        logger.debug('❌');
         
         // Log specific error types
         if (error.message?.includes('already exists')) {
-          console.log('   ℹ️  Already exists');
+          logger.debug('   ℹ️  Already exists');
         } else if (error.message?.includes('CASCADE')) {
-          console.log('   ℹ️  Cascade operation');
+          logger.debug('   ℹ️  Cascade operation');
         } else {
-          console.log(`   ❌ Error: ${error.message || error}`);
+          logger.debug(`   ❌ Error: ${error.message || error}`);
           errors.push({ statement: statement.substring(0, 100) + '...', error });
         }
       }
     }
     
     // Summary
-    console.log('\n📊 Execution Summary:');
-    console.log(`   ✅ Successful statements: ${successCount}`);
-    console.log(`   ❌ Failed statements: ${errorCount}`);
+    logger.debug('\n📊 Execution Summary:');
+    logger.debug(`   ✅ Successful statements: ${successCount}`);
+    logger.debug(`   ❌ Failed statements: ${errorCount}`);
     
-    console.log('\n📈 Operations breakdown:');
+    logger.debug('\n📈 Operations breakdown:');
     Object.entries(operations).forEach(([op, count]) => {
       if (count > 0) {
-        console.log(`   - ${op}: ${count}`);
+        logger.debug(`   - ${op}: ${count}`);
       }
     });
     
     // Verify the structure
-    console.log('\n🔍 Verifying catalog structure...\n');
+    logger.debug('\n🔍 Verifying catalog structure...\n');
     
     try {
       // Check catalog
       await databricksService.query('USE CATALOG classwaves');
-      console.log('✅ Catalog "classwaves" is active');
+      logger.debug('✅ Catalog "classwaves" is active');
       
       // List schemas
       const schemas = await databricksService.query('SHOW SCHEMAS');
-      console.log(`\n📁 Schemas created (${schemas.length}):`);
+      logger.debug(`\n📁 Schemas created (${schemas.length}):`);
       const expectedSchemas = ['users', 'sessions', 'analytics', 'compliance', 'ai_insights', 'operational'];
       
       expectedSchemas.forEach(schemaName => {
         const found = schemas.some((s: any) => 
           (s.schema_name || s.database_name || s.namespace || '').toLowerCase() === schemaName
         );
-        console.log(`   - ${schemaName}: ${found ? '✅' : '❌'}`);
+        logger.debug(`   - ${schemaName}: ${found ? '✅' : '❌'}`);
       });
       
       // Check key tables in each schema
-      console.log('\n📋 Verifying key tables:');
+      logger.debug('\n📋 Verifying key tables:');
       
       const keyTables = [
         { schema: 'users', tables: ['schools', 'teachers', 'students'] },
@@ -141,26 +142,26 @@ async function createCatalogStructure() {
       ];
       
       for (const { schema, tables } of keyTables) {
-        console.log(`\n   ${schema} schema:`);
+        logger.debug(`\n   ${schema} schema:`);
         for (const table of tables) {
           try {
             await databricksService.query(`SELECT 1 FROM classwaves.${schema}.${table} LIMIT 1`);
-            console.log(`     - ${table}: ✅`);
+            logger.debug(`     - ${table}: ✅`);
           } catch (error) {
-            console.log(`     - ${table}: ❌`);
+            logger.debug(`     - ${table}: ❌`);
           }
         }
       }
       
       // Check demo data
-      console.log('\n🧪 Checking demo data:');
+      logger.debug('\n🧪 Checking demo data:');
       try {
         const demoSchool = await databricksService.queryOne(
           'SELECT * FROM classwaves.users.schools WHERE domain = ?',
           ['demo.classwaves.com']
         );
         if (demoSchool) {
-          console.log('   ✅ Demo school created');
+          logger.debug('   ✅ Demo school created');
         }
         
         const demoTeacher = await databricksService.queryOne(
@@ -168,24 +169,24 @@ async function createCatalogStructure() {
           ['teacher@demo.classwaves.com']
         );
         if (demoTeacher) {
-          console.log('   ✅ Demo teacher created');
+          logger.debug('   ✅ Demo teacher created');
         }
       } catch (error) {
-        console.log('   ❌ Could not verify demo data');
+        logger.debug('   ❌ Could not verify demo data');
       }
       
     } catch (error: any) {
-      console.log('❌ Could not verify structure:', error.message);
+      logger.debug('❌ Could not verify structure:', error.message);
     }
     
-    console.log('\n✨ Catalog structure creation completed!');
+    logger.debug('\n✨ Catalog structure creation completed!');
     
   } catch (error) {
-    console.error('\n❌ Fatal error:', error);
+    logger.error('\n❌ Fatal error:', error);
     throw error;
   } finally {
     await databricksService.disconnect();
-    console.log('\n👋 Disconnected from Databricks');
+    logger.debug('\n👋 Disconnected from Databricks');
   }
 }
 

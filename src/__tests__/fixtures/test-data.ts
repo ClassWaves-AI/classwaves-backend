@@ -134,7 +134,6 @@ export const testData = {
       session_type: 'live' as const,
       subject: 'Math',
       grade_level: '5th',
-      max_students: 30,
       current_students: 0,
       created_at: new Date(),
       updated_at: new Date(),
@@ -149,7 +148,6 @@ export const testData = {
       session_type: 'live' as const,
       subject: 'Science',
       grade_level: '8th',
-      max_students: 24,
       current_students: 18,
       start_time: new Date(Date.now() - 15 * 60 * 1000),
       created_at: new Date(Date.now() - 30 * 60 * 1000),
@@ -165,7 +163,6 @@ export const testData = {
       session_type: 'live' as const,
       subject: 'English',
       grade_level: '7th',
-      max_students: 25,
       current_students: 20,
       start_time: new Date(Date.now() - 45 * 60 * 1000),
       pause_time: new Date(Date.now() - 5 * 60 * 1000),
@@ -182,7 +179,6 @@ export const testData = {
       session_type: 'live' as const,
       subject: 'History',
       grade_level: '8th',
-      max_students: 30,
       current_students: 0,
       start_time: new Date(Date.now() - 90 * 60 * 1000),
       end_time: new Date(Date.now() - 30 * 60 * 1000),
@@ -257,16 +253,32 @@ export const testData = {
     createSession: {
       topic: 'Math - Fractions Unit',
       goal: 'Students will understand fraction operations',
+      subject: 'Mathematics', // Add required subject field
       description: 'Interactive session on fraction addition and subtraction',
-      maxStudents: 30,
-      targetGroupSize: 4,
-      plannedDuration: 45,
-      autoGroupEnabled: true,
-      settings: {
-        recordingEnabled: true,
-        transcriptionEnabled: true,
-        aiAnalysisEnabled: true,
+      plannedDuration: 45, // Match schema field name
+      groupPlan: { // Add required groupPlan field
+        numberOfGroups: 2,
+        groupSize: 4,
+        groups: [
+          {
+            name: 'Group A',
+            leaderId: 'student-leader-1',
+            memberIds: ['student-1', 'student-2']
+          },
+          {
+            name: 'Group B', 
+            leaderId: 'student-leader-2',
+            memberIds: ['student-3', 'student-4']
+          }
+        ]
       },
+      aiConfig: {
+        hidden: true,
+        defaultsApplied: true
+      },
+      emailNotifications: {
+        enabled: true
+      }
     },
     joinSession: {
       sessionCode: 'ABC123',
