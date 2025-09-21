@@ -3,7 +3,7 @@ SET client_min_messages TO WARNING;
 
 -- Teacher
 INSERT INTO users.teachers (id, email, name)
-VALUES ('00000000-0000-0000-0000-000000000001', 'teacher@example.com', 'Dev Teacher')
+VALUES ('00000000-0000-0000-0000-000000000001', 'test.teacher@testschool.edu', 'Dev Teacher')
 ON CONFLICT (id) DO NOTHING;
 
 -- Session

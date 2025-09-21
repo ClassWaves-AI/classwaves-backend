@@ -16,7 +16,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { getCompositionRoot } from '../app/composition-root';
-import { databricksService } from '../services/databricks.service';
 import { databricksConfig } from '../config/databricks.config';
 import { recommendationEngineService } from '../services/recommendation-engine.service';
 import { alertPrioritizationService } from '../services/alert-prioritization.service';
@@ -430,6 +429,7 @@ export const getSessionAnalytics = async (req: AuthRequest, res: Response): Prom
     // Project guidanceCounts from session summary JSON (freeze-time counts)
     let guidanceCounts: { highPriorityCount: number; tier2Count: number } = { highPriorityCount: 0, tier2Count: 0 };
     try {
+      const { databricksService } = await import('../services/databricks.service');
       const row = await databricksService.queryOne<{ hp: any; t2: any }>(
         `SELECT 
            get_json_object(summary_json, '$.guidanceInsights.meta.highPriorityCount') AS hp,

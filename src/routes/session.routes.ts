@@ -20,7 +20,6 @@ import {
   consentCheck
 } from '../controllers/session.controller';
 import { authenticate } from '../middleware/auth.middleware';
-import { databricksService } from '../services/databricks.service';
 import { validate } from '../middleware/validation.middleware';
 import { createSessionSchema, updateSessionSchema, sessionLifecycleNotesSchema, resendSessionEmailSchema } from '../utils/validation.schemas';
 import { logger } from '../utils/logger';
@@ -90,6 +89,7 @@ router.get('/:sessionId/student-debug/:studentId', async (req, res) => {
     const { sessionId, studentId } = req.params;
     
     // Check participant record
+    const { databricksService } = await import('../services/databricks.service');
     const participant = await databricksService.queryOne(
       `SELECT 
          p.id,

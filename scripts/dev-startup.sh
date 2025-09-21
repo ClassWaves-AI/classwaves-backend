@@ -31,6 +31,30 @@ check_docker() {
     return 0
 }
 
+# Try to start Docker Desktop on macOS and wait for availability
+ensure_docker_started() {
+    if check_docker; then
+        return 0
+    fi
+    # Attempt to start Docker Desktop on macOS
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        echo "🟡 Attempting to start Docker Desktop..."
+        open -a Docker || true
+        local waited=0
+        while ! docker info > /dev/null 2>&1; do
+            sleep 2
+            waited=$((waited + 2))
+            if [ $waited -ge 120 ]; then
+                echo "❌ Docker did not become available within 120 seconds"
+                return 1
+            fi
+        done
+        echo "✅ Docker is running"
+        return 0
+    fi
+    return 1
+}
+
 # Function to check if Postgres (local dev) is healthy via Docker
 check_postgres() {
     if ! check_docker; then
@@ -125,6 +149,16 @@ start_backend() {
     # Navigate to backend directory
     cd "$(dirname "$0")/.."
     
+    # Free the target port if requested (default: on)
+    local APP_PORT
+    APP_PORT=${PORT:-3000}
+    if [[ "${DEV_KILL_PORT:-1}" == "1" ]]; then
+      if lsof -ti :"$APP_PORT" >/dev/null 2>&1; then
+        echo "🧹 Freeing port ${APP_PORT} (killing existing listeners)"
+        lsof -ti :"$APP_PORT" | xargs -r kill -9 || true
+      fi
+    fi
+
     # Start the development server
     # Ensure local dev uses Postgres provider by default (may be overridden by user env)
     export DB_PROVIDER=${DB_PROVIDER:-postgres}
@@ -142,11 +176,16 @@ main() {
     echo "======================================"
     echo
     
-    # Check if Docker is running and try to ensure Redis if missing
-    if check_docker; then
+    # Ensure Docker is running (auto-start on macOS if possible) and try to ensure Redis if missing
+    if ensure_docker_started; then
       # Ensure Postgres is up for local dev DB
       if ! check_postgres; then
           start_postgres
+      fi
+      # Optional one-time init/reset (controlled by env)
+      if [[ "${DEV_DB_INIT:-0}" == "1" ]]; then
+          echo "🛠  Applying local schema and seeds (DEV_DB_INIT=1)"
+          (cd "$(dirname "$0")/.." && npm run db:local:init >/dev/null)
       fi
       if ! check_redis; then
           start_redis

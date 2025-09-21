@@ -33,6 +33,7 @@ Following these is mandatory; keep changes aligned and record decisions as ADRs 
 
 - [Features](#features)
 - [Architecture Overview](#architecture-overview)
+- [CI & Automation](#ci--automation)
 - [Database Architecture](#database-architecture)
 - [Quick Start](#quick-start)
 - [API Documentation](#api-documentation)
@@ -63,6 +64,13 @@ Following these is mandatory; keep changes aligned and record decisions as ADRs 
 - **Rate Limiting & Security**: Enterprise-grade protection
 - **Real-time Monitoring**: Health checks and performance metrics
 - **Comprehensive Testing**: Unit, integration, and E2E tests
+
+## CI & Automation
+
+- **backend-ci.yml**: Primary pipeline (type-check, lint, unit coverage, Databricks smoke when secrets provided).
+- **backend-postgres.yml**: Optional workflow (manual trigger & weekly) that boots Postgres 15, applies local schema/seeds, and runs provider matrix + Postgres integration suites for parity checks.
+- **Architecture scan**: `scripts/architecture-scan.js` runs in warn mode during CI; use `node scripts/architecture-scan.js --strict` locally to fail on provider bleed.
+- **Provider parity validator**: `npm run validate-provider-parity` (also invoked in CI) confirms Postgres provider bindings and lists remaining Databricks fallbacks.
 
 ## Architecture Overview
 
@@ -658,6 +666,14 @@ npm test              # runs unit tests only
 npm run test:unit     # explicit unit tests
 ```
 
+- Local Postgres parity smoke:
+
+```
+ENABLE_LOCAL_DB_TESTS=1 npm run test:integration:provider:postgres
+```
+
+> Requires Dockerized Postgres; seeds and resets run automatically. Output highlights any remaining `fallback` components from `/api/v1/health/components`.
+
 - Enable network-bound tests locally (when ports can bind):
 ```
 ENABLE_NETWORK_TESTS=1 npm test                # run all tests
@@ -919,6 +935,36 @@ npm test                 # Run all tests
 npm run test:watch       # Watch mode
 npm run test:coverage    # Generate coverage report
 ```
+
+### Local Postgres Dev (npm run dev)
+The dev startup script handles common orchestration so you don’t have to:
+
+- Starts Docker Desktop on macOS automatically (waits up to 120s).
+- Ensures the local Postgres container is up and healthy; starts it if needed.
+- Ensures Redis is running and applies config when required.
+- Frees the target port (default 3000) before starting the server.
+
+Behavioral knobs (env vars):
+- `DEV_KILL_PORT=1` (default): kill any process on `PORT` before boot.
+- `DEV_DB_INIT=0` (default): set to `1` to apply local schema + seeds on start.
+- `PORT=3000` (default): change if you want a different HTTP port.
+
+Database provider defaults for local dev:
+- `DB_PROVIDER=postgres`, `DATABASE_URL=postgres://classwaves:classwaves@localhost:5433/classwaves_dev`, `DB_SSL=0`.
+
+Notes:
+- For E2E flows that orchestrate Postgres separately, export `DB_LOCAL_USE_EXISTING=1` to avoid reseeding in helper scripts.
+- Health endpoint: `GET /api/v1/health` should return 200 once the server is ready.
+- Admin-only components probe: `GET /api/v1/health/components` returns the active provider and per-port status (`ok|fallback|missing`) to surface Postgres parity gaps in dev/test.
+
+Seed identities (shared with dev auth fallback):
+- Teacher: `00000000-0000-0000-0000-000000000001` (`test.teacher@testschool.edu`)
+- Session: `00000000-0000-0000-0000-000000010000` (`Dev Session`)
+- Groups: `00000000-0000-0000-0000-000000020000` (`Group A`), `00000000-0000-0000-0000-000000020001` (`Group B`)
+
+Dev auth fallback (non-production only):
+- Enable with `cw.auth.dev_fallback_enabled=1` (or `CW_AUTH_DEV_FALLBACK_ENABLED=1`).
+- Requires Google config missing or PKCE payload absent; returns the seeded teacher/school above with `degradedMode: true` and emits `classwaves_auth_dev_fallback_total{reason}`.
 
 ## Deployment
 

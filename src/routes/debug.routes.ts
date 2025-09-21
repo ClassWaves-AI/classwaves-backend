@@ -1,5 +1,4 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { databricksService } from '../services/databricks.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { z } from 'zod';

@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS sessions.classroom_sessions (
   school_id uuid,
   scheduled_start timestamptz,
   actual_start timestamptz,
+  actual_end timestamptz,
+  actual_duration_minutes integer,
+  end_reason text,
   target_group_size integer,
   max_students integer,
   auto_group_enabled boolean NOT NULL DEFAULT false,
@@ -35,6 +38,7 @@ CREATE TABLE IF NOT EXISTS sessions.classroom_sessions (
   total_groups integer,
   total_students integer,
   access_code text,
+  teacher_notes text,
   engagement_score numeric,
   participation_rate numeric,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -43,6 +47,9 @@ CREATE TABLE IF NOT EXISTS sessions.classroom_sessions (
 
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS scheduled_start timestamptz;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS actual_start timestamptz;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS actual_end timestamptz;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS actual_duration_minutes integer;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS end_reason text;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS target_group_size integer;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS max_students integer;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS auto_group_enabled boolean DEFAULT false;
@@ -56,6 +63,7 @@ ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS data_retention_
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS total_groups integer;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS total_students integer;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS access_code text;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS teacher_notes text;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS engagement_score numeric;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS participation_rate numeric;
 

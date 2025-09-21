@@ -3,7 +3,6 @@ import { OAuth2Client } from 'google-auth-library';
 import { generateSessionId } from '../utils/jwt.utils';
 import { validateSchoolDomain } from '../utils/validation.schemas';
 import { Teacher, School } from '../types/auth.types';
-import { databricksService } from '../services/databricks.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
 import { SecureSessionService } from '../services/secure-session.service';
 import { 
@@ -13,9 +12,12 @@ import {
 } from '../utils/auth-optimization.utils';
 // Removed resilientAuthService (GSI credential flow)
 import { authHealthMonitor } from '../services/auth-health-monitor.service';
+import { databricksService, isDatabricksMockEnabled } from '../services/databricks.service';
 import { fail } from '../utils/api-response';
 import { ErrorCodes } from '@classwaves/shared';
 import { logger } from '../utils/logger';
+import { isAuthDevFallbackEnabled } from '../config/feature-flags';
+import { recordAuthDevFallback, type AuthDevFallbackReason } from '../metrics/auth.metrics';
 
 let cachedGoogleClient: OAuth2Client | null = null;
 function getGoogleClient(): OAuth2Client {
@@ -51,6 +53,90 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
   
   try {
     const { code, codeVerifier } = req.body;
+
+    // Development fallback: allow login without Google configuration or PKCE when explicitly enabled
+    const environment = process.env.NODE_ENV || 'development';
+    const missingGoogleConfig = !process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET;
+    const forceDev = process.env.FORCE_DEV_AUTH === '1';
+    const fallbackFlagEnabled = isAuthDevFallbackEnabled();
+    const fallbackAllowed = environment !== 'production' && (fallbackFlagEnabled || missingGoogleConfig || forceDev);
+    const missingPkcePayload = !code || !codeVerifier;
+
+    if (fallbackAllowed && (missingGoogleConfig || forceDev || missingPkcePayload)) {
+      const reason: AuthDevFallbackReason = missingGoogleConfig
+        ? 'missing_config'
+        : forceDev
+          ? 'forced_env'
+          : 'flag_enabled';
+      recordAuthDevFallback(reason);
+      logger.warn(
+        `⚠️ Dev auth fallback engaged [${requestId}]`,
+        {
+          environment,
+          missingGoogleConfig,
+          forceDev,
+          flagEnabled: fallbackFlagEnabled,
+          hasCode: Boolean(code),
+          hasVerifier: Boolean(codeVerifier),
+          reason,
+        }
+      );
+
+      const testTeacher: Teacher = {
+        id: '00000000-0000-0000-0000-000000000001' as any,
+        email: 'test.teacher@testschool.edu',
+        name: 'Test Teacher',
+        role: 'teacher',
+        access_level: 'full',
+      } as any;
+      const testSchool: School = {
+        id: '11111111-1111-1111-1111-111111111111' as any,
+        name: 'Test School',
+        domain: 'testschool.edu',
+        subscription_tier: 'professional',
+      } as any;
+      const sessionId = generateSessionId();
+      const secureTokens = await SecureJWTService.generateSecureTokens(testTeacher, testSchool, sessionId, req);
+      try {
+        await SecureSessionService.storeSecureSession(sessionId, testTeacher, testSchool, req);
+      } catch (e) {
+        logger.warn('Dev auth fallback: failed to store secure session', { error: (e as any)?.message || String(e) });
+      }
+      res.cookie('session_id', sessionId, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000,
+        path: '/',
+      });
+      authHealthMonitor.recordAuthAttempt(true, performance.now() - startTime, requestId);
+      authHealthMonitor.recordAuthEnd(requestId);
+      return res.json({
+        success: true,
+        teacher: {
+          id: testTeacher.id,
+          email: testTeacher.email,
+          name: testTeacher.name,
+          role: testTeacher.role,
+          accessLevel: testTeacher.access_level,
+        },
+        school: {
+          id: testSchool.id,
+          name: testSchool.name,
+          domain: testSchool.domain,
+          subscriptionTier: testSchool.subscription_tier,
+        },
+        tokens: {
+          accessToken: secureTokens.accessToken,
+          refreshToken: secureTokens.refreshToken,
+          expiresIn: secureTokens.expiresIn,
+          refreshExpiresIn: secureTokens.refreshExpiresIn,
+          tokenType: 'Bearer',
+          deviceFingerprint: secureTokens.deviceFingerprint,
+        },
+        degradedMode: true,
+      });
+    }
 
     logger.debug(`🛡️ Using authorization code authentication [${requestId}]`);
 
@@ -95,6 +181,7 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
         }
         
         // Use batch auth operations for code flow
+        const { databricksService } = await import('../services/databricks.service');
         const batchResult = await databricksService.batchAuthOperations(googleUser, domain);
 
         if (!batchResult || !batchResult.teacher || !batchResult.school) {
@@ -485,8 +572,14 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
   logger.debug('Environment check passed for test token endpoint');
 
   try {
-    const { secretKey } = req.body;
-    logger.debug('Test token request received', { hasSecretKey: !!secretKey });
+    const { secretKey, role = 'teacher', teacherId, schoolId, permissions = [], email } = req.body;
+    logger.debug('Test token request received', {
+      hasSecretKey: !!secretKey,
+      role,
+      hasTeacherId: !!teacherId,
+      hasSchoolId: !!schoolId,
+      permissionsCount: Array.isArray(permissions) ? permissions.length : 0,
+    });
     
     // Verify secret key (simple validation for testing)
     if (secretKey !== process.env.E2E_TEST_SECRET) {
@@ -495,22 +588,105 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
     }
     logger.debug('Test token secret key validation passed');
 
-    // Create a test teacher and school for the token
-    const testTeacher = {
-      id: 'test-teacher-id',
-      email: 'test.teacher@testschool.edu',
-      name: 'Test Teacher',
-      role: 'teacher',
-      access_level: 'full',
-    };
-
-    const testSchool = {
-      id: 'test-school-id',
+    const normalizedRole = role as 'teacher' | 'admin' | 'super_admin';
+    const teacherDefaults = {
+      teacher: {
+        id: '00000000-0000-0000-0000-000000000001',
+        email: 'test.teacher@testschool.edu',
+        name: 'Dev Teacher',
+        accessLevel: 'full',
+      },
+      admin: {
+        id: '00000000-0000-0000-0000-0000000000ad',
+        email: 'dev.admin@testschool.edu',
+        name: 'Dev Admin',
+        accessLevel: 'admin',
+      },
+      super_admin: {
+        id: '00000000-0000-0000-0000-0000000000sa',
+        email: 'dev.super.admin@testschool.edu',
+        name: 'Dev Super Admin',
+        accessLevel: 'admin',
+      },
+    } as const;
+    const schoolDefaults = {
+      id: '11111111-1111-1111-1111-111111111111',
       name: 'Test School',
       domain: 'testschool.edu',
-      subscription_tier: 'professional',
+      subscriptionTier: 'pro' as const,
     };
-    logger.debug('Test teacher and school objects created');
+
+    const teacherIdentity = teacherDefaults[normalizedRole] ?? teacherDefaults.teacher;
+    const effectiveTeacherId = (teacherId as string | undefined) ?? teacherIdentity.id;
+    const effectiveSchoolId = (schoolId as string | undefined) ?? schoolDefaults.id;
+    const normalizedPermissions = Array.isArray(permissions) ? permissions : [];
+
+    const effectiveEmail = typeof email === 'string' && email.length > 0 ? email : teacherIdentity.email;
+
+    const testTeacher = {
+      id: effectiveTeacherId,
+      email: effectiveEmail,
+      name: teacherIdentity.name,
+      role: normalizedRole,
+      access_level: teacherIdentity.accessLevel,
+      google_id: `${effectiveTeacherId}-google`,
+      school_id: effectiveSchoolId,
+      status: 'active',
+      max_concurrent_sessions: 5,
+      current_sessions: 0,
+      timezone: 'UTC',
+      login_count: 1,
+      total_sessions_created: 0,
+      created_at: new Date(),
+      updated_at: new Date(),
+      roles: [normalizedRole],
+      permissions: normalizedPermissions,
+    } as Teacher & { roles: string[]; permissions: string[] };
+
+    const testSchool = {
+      id: effectiveSchoolId,
+      name: schoolDefaults.name,
+      domain: schoolDefaults.domain,
+      subscription_tier: schoolDefaults.subscriptionTier,
+      subscription_status: 'active',
+      student_count: 0,
+      teacher_count: 0,
+      created_at: new Date(),
+      subscription_end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+    } as School;
+    logger.debug('Test teacher and school objects created', {
+      teacherId: testTeacher.id,
+      schoolId: testSchool.id,
+      teacherRole: testTeacher.role,
+    });
+
+    if (isDatabricksMockEnabled()) {
+      try {
+        await databricksService.upsert('classwaves.users.schools', { id: testSchool.id }, {
+          id: testSchool.id,
+          name: testSchool.name,
+          domain: testSchool.domain,
+          subscription_status: 'active',
+          subscription_tier: testSchool.subscription_tier,
+        });
+        await databricksService.upsert('classwaves.users.teachers', { id: testTeacher.id }, {
+          id: testTeacher.id,
+          email: testTeacher.email,
+          name: testTeacher.name,
+          role: testTeacher.role,
+          status: 'active',
+          school_id: testSchool.id,
+        });
+        logger.debug('Seeded databricks mock with admin identity', {
+          teacherId: testTeacher.id,
+          role: testTeacher.role,
+        });
+      } catch (seedError) {
+        logger.warn('Failed to seed databricks mock for test token', {
+          error: (seedError as any)?.message || String(seedError),
+        });
+      }
+    }
 
     // Generate secure tokens for testing
     logger.debug('Starting session ID generation');
@@ -560,6 +736,8 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
         name: testTeacher.name,
         role: testTeacher.role,
         accessLevel: testTeacher.access_level,
+        roles: testTeacher.roles,
+        permissions: normalizedPermissions,
       },
       school: {
         id: testSchool.id,

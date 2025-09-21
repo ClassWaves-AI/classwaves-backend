@@ -7,6 +7,7 @@ import { CacheTTLPolicy, ttlWithJitter } from './cache-ttl.policy';
 import { cachePort } from '../utils/cache.port.instance';
 import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
 import { logger } from '../utils/logger';
+import { sessionMetrics } from '../metrics/session.metrics';
 
 const sessionLogger = logger;
 
@@ -333,6 +334,7 @@ export class SecureSessionService {
       
       if (!encryptedData) {
         sessionLogger.debug(`    Session not found: ${sessionId}`);
+        sessionMetrics.recordIntegrityFailure('not_found');
         return null;
       }
       
@@ -340,6 +342,7 @@ export class SecureSessionService {
       
       if (!sessionData) {
         sessionLogger.error(`  Failed to decrypt session: ${sessionId}`);
+        sessionMetrics.recordIntegrityFailure('decrypt_failed');
         await this.removeCorruptedSession(sessionId);
         return null;
       }
@@ -619,6 +622,7 @@ export class SecureSessionService {
       const currentFingerprint = SecureJWTService.createDeviceFingerprint(req);
       if (sessionData.deviceFingerprint !== currentFingerprint) {
         sessionLogger.warn(`  Device fingerprint mismatch for session ${sessionData.sessionId}`);
+        sessionMetrics.recordIntegrityFailure('fingerprint_mismatch');
         return false;
       }
       
@@ -633,6 +637,7 @@ export class SecureSessionService {
       const maxAge = 24 * 60 * 60 * 1000; // 24 hours
       if (sessionAge > maxAge) {
         sessionLogger.warn(`  Session expired due to age: ${sessionData.sessionId}`);
+        sessionMetrics.recordIntegrityFailure('expired');
         return false;
       }
       
@@ -641,12 +646,14 @@ export class SecureSessionService {
       const maxInactiveTime = 4 * 60 * 60 * 1000; // 4 hours
       if (inactiveTime > maxInactiveTime) {
         sessionLogger.warn(`  Session expired due to inactivity: ${sessionData.sessionId}`);
+        sessionMetrics.recordIntegrityFailure('inactive');
         return false;
       }
       
       return true;
     } catch (error) {
       sessionLogger.error(`  Session integrity validation failed:`, error);
+      sessionMetrics.recordIntegrityFailure('integrity_error');
       return false;
     }
   }

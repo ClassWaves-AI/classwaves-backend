@@ -157,14 +157,8 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-E2E-Test-Secret'],
 };
 app.use(cors(corsOptions));
-// Explicitly handle preflight requests globally
-try {
-  app.options('*', cors(corsOptions));
-} catch (error) {
-  logger.warn('Failed to register CORS preflight handler', {
-    error: error instanceof Error ? error.message : String(error),
-  });
-}
+// Explicitly handle preflight requests globally (Express 5: use regex, not '*')
+app.options(/.*/, cors(corsOptions));
 
 // SECURITY 1: Global rate limiting to prevent brute-force attacks
 const globalRateLimit = rateLimit({

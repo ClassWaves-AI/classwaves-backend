@@ -9,6 +9,26 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { scanProviderBleed } = require('./provider-bleed-scan');
+
+const args = process.argv.slice(2);
+let strictMode = false;
+let rootOverride = null;
+
+for (const arg of args) {
+  if (arg === '--strict') {
+    strictMode = true;
+  } else if (arg.startsWith('--roots=')) {
+    rootOverride = arg.slice('--roots='.length);
+  }
+}
+
+const scanRoots = rootOverride
+  ? rootOverride
+      .split(',')
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0)
+  : ['src/controllers', 'src/services'];
 
 console.log('🔍 CLASSWAVES ARCHITECTURE SCAN');
 console.log('================================\n');
@@ -171,6 +191,27 @@ if (fs.existsSync(sowPath)) {
   }
 } else {
   console.log('❌ SOW Document: Not found');
+}
+
+// 9. PROVIDER BLEED SCAN
+console.log('\n🛡️ PROVIDER BLEED SCAN:');
+console.log('=======================');
+
+const providerViolations = scanProviderBleed({ roots: scanRoots });
+
+if (providerViolations.length === 0) {
+  console.log('✅ No direct databricks imports detected in controllers/services');
+} else {
+  console.log('❌ Provider bleed detected:');
+  providerViolations.forEach((violation) => {
+    console.log(`  - ${violation.file}:${violation.line} → ${violation.message}`);
+    console.log(`    ${violation.snippet}`);
+  });
+  if (strictMode) {
+  if (strictMode) {
+    process.exitCode = 1;
+  }
+  }
 }
 
 console.log('\n✅ ARCHITECTURE SCAN COMPLETE');

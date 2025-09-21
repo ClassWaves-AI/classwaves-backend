@@ -1,6 +1,6 @@
 import type { SessionRepositoryPort } from '../services/ports/session.repository.port';
 import type { DbProvider } from '@classwaves/shared';
-import { FeatureFlags } from '@classwaves/shared';
+import { isLocalPostgresEnabled } from '../config/feature-flags';
 import { sessionRepository as databricksSessionRepository } from '../adapters/repositories/databricks-session.repository';
 import type { GroupRepositoryPort } from '../services/ports/group.repository.port';
 import { groupRepository as databricksGroupRepository } from '../adapters/repositories/databricks-group.repository';
@@ -39,20 +39,12 @@ import { createPostgresDbAdapter } from '../adapters/db/postgres.adapter';
 import { createDatabricksDbAdapter } from '../adapters/db/databricks.adapter';
 import { createDbSessionRepository } from '../adapters/repositories/db-session.repository';
 import { createDbGroupRepository } from '../adapters/repositories/db-group.repository';
+import { createDbSessionDetailRepository } from '../adapters/repositories/db-session-detail.repository';
 import { logger } from '../utils/logger';
-
-function isTruthyEnv(value: string | undefined): boolean {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
-}
 
 function resolveDbProvider(): { provider: DbProvider; details: { envProvider?: string | null; flagEnabled: boolean; enforcedProvider?: DbProvider } } {
   const rawEnvProvider = process.env.DB_PROVIDER?.toLowerCase() ?? null;
-  const flagKey = FeatureFlags.DB_USE_LOCAL_POSTGRES;
-  const flagRawDirect = process.env[flagKey];
-  const flagRawEnv = process.env.CW_DB_USE_LOCAL_POSTGRES;
-  const flagEnabled = isTruthyEnv(flagRawDirect) || isTruthyEnv(flagRawEnv);
+  const flagEnabled = isLocalPostgresEnabled();
 
   let provider: DbProvider = 'databricks';
   if (rawEnvProvider === 'postgres') {
@@ -131,6 +123,7 @@ class CompositionRoot {
     if (this._dbProvider === 'postgres') {
       this._sessionRepository = createDbSessionRepository(this._dbPort);
       this._groupRepository = createDbGroupRepository(this._dbPort);
+      this._sessionDetailRepository = createDbSessionDetailRepository(this._dbPort);
     }
   }
 

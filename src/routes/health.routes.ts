@@ -55,6 +55,12 @@ router.get('/redis', healthController.getRedisHealthDetailed.bind(healthControll
 router.get('/databricks', healthController.getDatabricksHealthDetailed.bind(healthController));
 
 /**
+ * GET /api/v1/health/components
+ * Provider-aware component status report (admin-only)
+ */
+router.get('/components', authenticate, requireAnyAdmin, healthController.getComponentsHealth.bind(healthController));
+
+/**
  * POST /api/v1/health/errors/clear
  * Clear error logs (admin only)
  */

@@ -16,6 +16,7 @@ export const generateTestTokenSchema = z.object({
   schoolId: z.string().optional(),
   role: z.enum(['teacher', 'admin', 'super_admin']).default('teacher'),
   permissions: z.array(z.string()).default([]),
+  email: z.string().email().optional(),
 });
 
 // Session schemas (updated for declarative workflow)

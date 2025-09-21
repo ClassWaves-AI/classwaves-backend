@@ -124,6 +124,13 @@ static createDeviceFingerprint(req: Request): string {
       const now = Math.floor(Date.now() / 1000);
       logger.debug('Current timestamp set for JWT');
       
+      const enrichedRoles = Array.isArray((teacher as any).roles) && (teacher as any).roles.length > 0
+        ? (teacher as any).roles
+        : [teacher.role];
+      const enrichedPermissions = Array.isArray((teacher as any).permissions)
+        ? (teacher as any).permissions
+        : [];
+
       const basePayload = {
         userId: teacher.id,
         email: teacher.email,
@@ -131,8 +138,8 @@ static createDeviceFingerprint(req: Request): string {
         sessionId,
         fingerprint: deviceFingerprint,
         role: teacher.role,
-        roles: [teacher.role],
-        permissions: [],
+        roles: enrichedRoles,
+        permissions: enrichedPermissions,
         iss: 'classwaves',
         sub: teacher.id,
         iat: now

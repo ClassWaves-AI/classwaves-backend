@@ -17,8 +17,58 @@ import { errorLoggingMiddleware } from '../middleware/error-logging.middleware';
 import { getNamespacedWebSocketService } from '../services/websocket';
 import { cacheHealthMonitor } from '../services/cache-health-monitor.service';
 import { ok, fail, ErrorCodes } from '../utils/api-response';
-import { databricksService } from '../services/databricks.service';
 import { logger } from '../utils/logger';
+import { recordComponentStatuses } from '../metrics/health.metrics';
+
+type CompositionRootInstance = ReturnType<typeof getCompositionRoot>;
+
+type ComponentStatus = {
+  status: 'ok' | 'fallback' | 'missing';
+  detail?: string;
+};
+
+type ComponentMap = Record<string, ComponentStatus>;
+
+const databricksFallbackByComponent: Record<string, unknown> = {
+  sessionRepository: require('../adapters/repositories/databricks-session.repository').sessionRepository,
+  groupRepository: require('../adapters/repositories/databricks-group.repository').groupRepository,
+  sessionStatsRepository: require('../adapters/repositories/databricks-session-stats.repository').sessionStatsRepository,
+  sessionDetailRepository: require('../adapters/repositories/databricks-session-detail.repository').sessionDetailRepository,
+  rosterRepository: require('../adapters/repositories/databricks-roster.repository').rosterRepository,
+  adminRepository: require('../adapters/repositories/databricks-admin.repository').adminRepository,
+  budgetRepository: require('../adapters/repositories/databricks-budget.repository').budgetRepository,
+  analyticsRepository: require('../adapters/repositories/databricks-analytics.repository').analyticsRepository,
+  participantRepository: require('../adapters/repositories/databricks-participant.repository').participantRepository,
+  complianceRepository: require('../adapters/repositories/databricks-compliance.repository').complianceRepository,
+  healthRepository: require('../adapters/repositories/databricks-health.repository').healthRepository,
+  monitoringRepository: require('../adapters/repositories/databricks-monitoring.repository').monitoringRepository,
+  aiAnalysisPort: require('../adapters/ai-analysis.databricks').databricksAIAnalysisAdapter,
+  summariesRepository: require('../adapters/repositories/databricks-summaries.repository').summariesRepository,
+  guidanceInsightsRepository: require('../adapters/repositories/databricks-guidance-insights.repository').guidanceInsightsRepository,
+  guidanceEventsRepository: require('../adapters/repositories/databricks-guidance-events.repository').guidanceEventsRepository,
+};
+
+const componentDescriptors: Array<{
+  label: keyof typeof databricksFallbackByComponent;
+  getter: (composition: CompositionRootInstance) => unknown;
+}> = [
+  { label: 'sessionRepository', getter: (c) => c.getSessionRepository() },
+  { label: 'groupRepository', getter: (c) => c.getGroupRepository() },
+  { label: 'sessionStatsRepository', getter: (c) => c.getSessionStatsRepository() },
+  { label: 'sessionDetailRepository', getter: (c) => c.getSessionDetailRepository() },
+  { label: 'rosterRepository', getter: (c) => c.getRosterRepository() },
+  { label: 'adminRepository', getter: (c) => c.getAdminRepository() },
+  { label: 'budgetRepository', getter: (c) => c.getBudgetRepository() },
+  { label: 'analyticsRepository', getter: (c) => c.getAnalyticsRepository() },
+  { label: 'participantRepository', getter: (c) => c.getParticipantRepository() },
+  { label: 'complianceRepository', getter: (c) => c.getComplianceRepository() },
+  { label: 'healthRepository', getter: (c) => c.getHealthRepository() },
+  { label: 'monitoringRepository', getter: (c) => c.getMonitoringRepository() },
+  { label: 'aiAnalysisPort', getter: (c) => c.getAIAnalysisPort() },
+  { label: 'summariesRepository', getter: (c) => c.getSummariesRepository() },
+  { label: 'guidanceInsightsRepository', getter: (c) => c.getGuidanceInsightsRepository() },
+  { label: 'guidanceEventsRepository', getter: (c) => c.getGuidanceEventsRepository() },
+];
 
 interface ServiceHealth {
   status: 'healthy' | 'degraded' | 'unhealthy' | 'skipped';
@@ -58,6 +108,47 @@ class HealthController {
       HealthController.instance = new HealthController();
     }
     return HealthController.instance;
+  }
+
+  private detectComponentStatus(
+    provider: DbProvider,
+    label: keyof typeof databricksFallbackByComponent,
+    instance: unknown
+  ): ComponentStatus {
+    if (!instance) {
+      return { status: 'missing', detail: 'No implementation returned' };
+    }
+
+    if (provider === 'databricks') {
+      return { status: 'ok' };
+    }
+
+    const fallback = databricksFallbackByComponent[label];
+    if (fallback && instance === fallback) {
+      return { status: 'fallback', detail: 'Databricks fallback implementation in use' };
+    }
+
+    const ctorName = (instance as { constructor?: { name?: string } })?.constructor?.name ?? '';
+    if (ctorName.toLowerCase().includes('databricks')) {
+      return { status: 'fallback', detail: `Constructor indicates Databricks implementation (${ctorName})` };
+    }
+
+    return { status: 'ok' };
+  }
+
+  private getComponentStatuses(provider: DbProvider, composition: CompositionRootInstance): ComponentMap {
+    return componentDescriptors.reduce<ComponentMap>((acc, descriptor) => {
+      try {
+        const instance = descriptor.getter(composition);
+        acc[descriptor.label] = this.detectComponentStatus(provider, descriptor.label, instance);
+      } catch (error) {
+        acc[descriptor.label] = {
+          status: 'missing',
+          detail: error instanceof Error ? error.message : String(error),
+        };
+      }
+      return acc;
+    }, {} as ComponentMap);
   }
 
   private async checkRedisHealth(): Promise<ServiceHealth> {
@@ -293,6 +384,34 @@ class HealthController {
     }
   }
 
+  async getComponentsHealth(_req: Request, res: Response): Promise<Response> {
+    try {
+      const composition = getCompositionRoot();
+      const provider = composition.getDbProvider();
+      const components = this.getComponentStatuses(provider, composition);
+      recordComponentStatuses(provider, components);
+
+      return res.json({
+        success: true,
+        data: {
+          provider,
+          timestamp: new Date().toISOString(),
+          components,
+        },
+      });
+    } catch (error) {
+      logger.error('Components health check failed:', error);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'COMPONENTS_HEALTH_FAILED',
+          message: 'Failed to inspect health components',
+          details: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
   /**
    * GET /api/v1/health/redis
    * Lightweight Redis health probe with ping and short-lived R/W test
@@ -373,6 +492,7 @@ class HealthController {
     const t0 = Date.now();
     try {
       const timeoutMs = Number(process.env.DB_HEALTH_TIMEOUT_MS || 1200);
+      const { databricksService } = await import('../services/databricks.service');
       const probe = await databricksService.healthProbe(timeoutMs);
       const total = Date.now() - t0;
       const status = probe.ok ? 'healthy' : (probe.breaker.state === 'OPEN' ? 'unhealthy' : 'degraded');

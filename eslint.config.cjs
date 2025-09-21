@@ -70,6 +70,19 @@ module.exports = [
     rules: {
       '@typescript-eslint/no-unused-vars': 'warn',
       'no-console': 'off',
+      'no-restricted-imports': ['error', {
+        patterns: [
+          {
+            group: [
+              '../services/databricks*',
+              '../../services/databricks*',
+              '../adapters/repositories/databricks*',
+              '../../adapters/repositories/databricks*'
+            ],
+            message: 'Controllers and routes must depend on provider ports via the composition root, not Databricks adapters/services.'
+          }
+        ]
+      }],
     },
   },
   // Relax unused vars in utils

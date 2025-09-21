@@ -29,6 +29,12 @@ import { CacheTTLPolicy, ttlWithJitter } from '../services/cache-ttl.policy';
 import { cachePort } from '../utils/cache.port.instance';
 import { makeKey, isPrefixEnabled, isDualWriteEnabled } from '../utils/key-prefix.util';
 import { logger } from '../utils/logger';
+import { v5 as uuidv5 } from 'uuid';
+import { devSuppress } from '../utils/dev-suppress';
+
+// Deterministic UUID namespace for group-member IDs (stable across runs)
+// Chosen constant namespace; safe to keep process-wide.
+const GROUP_MEMBER_UUID_NS = '8d4b2f40-5f0e-4a88-9f2a-3e2b6d1f4e1a';
 
 /**
  * Store session access code in Redis for student leader joining
@@ -586,8 +592,8 @@ export async function createSession(req: Request, res: Response): Promise<Respon
 
         const membersForGroup: SessionGroupMember[] = [];
         for (const studentId of allMemberIds) {
-          // Deterministic ID to avoid exhausting generateId sequence in tests
-          const memberId = `mem_${groupId}_${studentId}`;
+          // Deterministic UUID for member row ID (valid for Postgres uuid type)
+          const memberId = uuidv5(`${groupId}:${studentId}`, GROUP_MEMBER_UUID_NS);
           await groupRepository.insertGroupMember({
             id: memberId,
             session_id: sessionId,
@@ -645,14 +651,26 @@ export async function createSession(req: Request, res: Response): Promise<Respon
     }
 
     // 4. Store access code in Redis for student leader joining (idempotent)
-    await idempotencyPort.withIdempotency(
-      `once:session-access:${sessionId}`,
-      10 * 60 * 1000,
-      async () => storeSessionAccessCode(sessionId, accessCode)
-    );
+    try {
+      await idempotencyPort.withIdempotency(
+        `once:session-access:${sessionId}`,
+        10 * 60 * 1000,
+        async () => storeSessionAccessCode(sessionId, accessCode)
+      );
+    } catch (e) {
+      logger.warn('⚠️ Failed to store access code in Redis (continuing)', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
 
     // 5. Record analytics - session configured event
-    await recordSessionConfigured(sessionId, teacher.id, groupPlan);
+    try {
+      await recordSessionConfigured(sessionId, teacher.id, groupPlan);
+    } catch (e) {
+      logger.warn('⚠️ recordSessionConfigured failed; continuing without analytics seed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
 
     // 6. Audit logging
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -768,7 +786,11 @@ export async function createSession(req: Request, res: Response): Promise<Respon
 
     // 9. Emit session created event for intelligent cache invalidation and warming (skip in unit tests)
     if (process.env.NODE_ENV !== 'test') {
-      await cacheEventBus.sessionCreated(sessionId, teacher.id, school.id);
+      await devSuppress(
+        'cache_event_bus:session_created',
+        () => cacheEventBus.sessionCreated(sessionId, teacher.id, school.id),
+        { context: { sessionId, teacherId: teacher.id, schoolId: school.id } }
+      );
     }
     logger.debug('🔄 Session created event emitted for cache management');
 
@@ -805,7 +827,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         message: 'Failed to create session',
       },
     };
-    if (process.env.NODE_ENV === 'test') {
+    if (process.env.NODE_ENV !== 'production') {
       responsePayload.error.details = {
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
@@ -825,13 +847,17 @@ async function triggerSessionEmailNotifications(
 ): Promise<EmailNotificationResults> {
   try {
     // Get all group leaders and build recipient list
-    const recipients = await buildEmailRecipientList(sessionId, groupPlan);
-    
-    if (recipients.length === 0) {
-      logger.warn('⚠️ No group leaders with email addresses found for session', sessionId);
+    // Skip roster lookups in non-production to avoid Databricks dependency
+  if (process.env.NODE_ENV !== 'production') {
       return { sent: [], failed: [] };
     }
-
+    const recipients = await buildEmailRecipientList(sessionId, groupPlan);
+    
+    // If no recipients, skip sending to avoid unnecessary errors (dev/test)
+    if (recipients.length === 0) {
+      logger.warn('⚠️ No email recipients to notify; skipping email send for this session');
+      return { sent: [], failed: [] };
+    }
     // Send notifications via email service
     return await getCompositionRoot().getEmailPort().sendSessionInvitation(recipients, sessionData);
   } catch (error) {
@@ -1166,6 +1192,7 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
   const queryBuilder = buildSessionDetailQuery();
   logQueryOptimization('getSession', queryBuilder.metrics);
   const sessionDetailRepo = getCompositionRoot().getSessionDetailRepository();
+  const sessionRepo = getCompositionRoot().getSessionRepository();
 
   // Get main session data with optimized field selection and caching
   const cacheKey = `session_detail:${sessionId}:${teacherId}`;
@@ -1176,15 +1203,17 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
       return buildSessionFromRow(direct, sessionId);
     }
 
-    const session = await queryCacheService.getCachedQuery(
+    let session = await queryCacheService.getCachedQuery(
       cacheKey,
       'session-detail',
       () => sessionDetailRepo.getOwnedSessionDetail(sessionId, teacherId),
       { sessionId, teacherId }
     );
-
   if (!session) {
-    throw new Error('Session not found');
+    // Fallback path for local Postgres: fetch minimal session row via DB repository
+    const basic = await (sessionRepo as any).getOwnedSessionBasic?.(sessionId, teacherId);
+    if (!basic) throw new Error('Session not found');
+    session = basic;
   }
 
   // Get groups and members via repository layer
@@ -1213,37 +1242,37 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     members: membersByGroupId.get(group.id) || [],
   }));
 
-  // Build complete session object
+  // Build complete session object (tolerant of missing optional fields)
   return {
     id: session.id,
     teacher_id: session.teacher_id,
     school_id: session.school_id,
     topic: session.title,
-    goal: session.goal || undefined,
-    subject: session.subject || undefined,
-    description: session.description || undefined,
+    goal: (session as any).goal || undefined,
+    subject: (session as any).subject || undefined,
+    description: (session as any).description || undefined,
     status: session.status,
-    join_code: session.access_code,
-    scheduled_start: session.scheduled_start ? new Date(session.scheduled_start) : undefined,
-    actual_start: session.actual_start ? new Date(session.actual_start) : undefined,
-    actual_end: session.actual_end ? new Date(session.actual_end) : undefined,
-    planned_duration_minutes: session.planned_duration_minutes || undefined,
-    actual_duration_minutes: session.actual_duration_minutes || undefined,
+    join_code: (session as any).access_code,
+    scheduled_start: (session as any).scheduled_start ? new Date((session as any).scheduled_start) : undefined,
+    actual_start: (session as any).actual_start ? new Date((session as any).actual_start) : undefined,
+    actual_end: (session as any).actual_end ? new Date((session as any).actual_end) : undefined,
+    planned_duration_minutes: (session as any).planned_duration_minutes || undefined,
+    actual_duration_minutes: (session as any).actual_duration_minutes || undefined,
     groupsDetailed,
     groups: {
       total: groupsDetailed.length,
       active: groupsDetailed.filter(g => g.isReady).length,
     },
     settings: {
-      auto_grouping: false, // Always disabled in declarative workflow
-      students_per_group: session.target_group_size || 4,
+      auto_grouping: false,
+      students_per_group: (session as any).target_group_size || 4,
       require_group_leader: true,
-      enable_audio_recording: Boolean(session.recording_enabled),
-      enable_live_transcription: Boolean(session.transcription_enabled),
-      enable_ai_insights: Boolean(session.ai_analysis_enabled),
+      enable_audio_recording: Boolean((session as any).recording_enabled),
+      enable_live_transcription: Boolean((session as any).transcription_enabled),
+      enable_ai_insights: Boolean((session as any).ai_analysis_enabled),
     },
-    created_at: new Date(session.created_at),
-    updated_at: session.updated_at ? new Date(session.updated_at) : new Date(), // Handle null values gracefully
+    created_at: new Date((session as any).created_at),
+    updated_at: (session as any).updated_at ? new Date((session as any).updated_at) : new Date(),
   };
 }
 
@@ -1813,7 +1842,11 @@ export async function startSession(req: Request, res: Response): Promise<Respons
       logger.warn('⚠️ Failed to emit session:status_changed (non-blocking):', e instanceof Error ? e.message : String(e));
     }
     if (process.env.NODE_ENV !== 'test') {
-      await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, 'created', 'active');
+      await devSuppress(
+        'cache_event_bus:session_status_changed',
+        () => cacheEventBus.sessionStatusChanged(sessionId, teacher.id, 'created', 'active'),
+        { context: { sessionId, teacherId: teacher.id, fromStatus: 'created', toStatus: 'active' } }
+      );
     }
     logger.debug('🔄 Session status change event emitted: created → active');
 
@@ -1931,7 +1964,11 @@ export async function endSession(req: Request, res: Response): Promise<Response>
     
     // Emit session status change event for intelligent cache invalidation (skip in unit tests)
     if (process.env.NODE_ENV !== 'test') {
-      await cacheEventBus.sessionStatusChanged(sessionId, teacher.id, session.status, 'ended');
+      await devSuppress(
+        'cache_event_bus:session_status_changed',
+        () => cacheEventBus.sessionStatusChanged(sessionId, teacher.id, session.status, 'ended'),
+        { context: { sessionId, teacherId: teacher.id, fromStatus: session.status, toStatus: 'ended' } }
+      );
     }
     logger.debug('🔄 Session status change event emitted:', session.status, '→ ended');
     // Persist ended status for gating (short TTL)
@@ -2397,12 +2434,15 @@ export async function updateSession(req: Request, res: Response): Promise<Respon
     }
     
     // Emit cache event for invalidation + WS client refresh
-    try {
-      const changes = Object.keys(fieldsToUpdate);
-      await cacheEventBus.sessionUpdated(sessionId, teacher.id, changes);
-    } catch (e) {
-      logger.warn('⚠️ CacheEventBus.sessionUpdated failed (non-blocking):', e instanceof Error ? e.message : String(e));
-    }
+    const changes = Object.keys(fieldsToUpdate);
+    await devSuppress(
+      'cache_event_bus:session_updated',
+      () => cacheEventBus.sessionUpdated(sessionId, teacher.id, changes),
+      {
+        context: { sessionId, teacherId: teacher.id, changes },
+        swallowInProduction: true,
+      }
+    );
     
     return res.json({
       success: true,
@@ -2459,11 +2499,14 @@ export async function deleteSession(req: Request, res: Response): Promise<Respon
     await getCompositionRoot().getSessionRepository().updateStatus(sessionId, 'archived');
     
     // Emit cache event for invalidation + WS refresh
-    try {
-      await cacheEventBus.sessionDeleted(sessionId, teacher.id);
-    } catch (e) {
-      logger.warn('⚠️ CacheEventBus.sessionDeleted failed (non-blocking):', e instanceof Error ? e.message : String(e));
-    }
+    await devSuppress(
+      'cache_event_bus:session_deleted',
+      () => cacheEventBus.sessionDeleted(sessionId, teacher.id),
+      {
+        context: { sessionId, teacherId: teacher.id },
+        swallowInProduction: true,
+      }
+    );
     
     // Record audit log (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');

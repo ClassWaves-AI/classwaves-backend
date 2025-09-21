@@ -13,7 +13,12 @@ import { logger } from '../utils/logger';
 const router = Router();
 
 // Google OAuth callback (optimized)
-router.post('/google', validate(googleAuthSchema), optimizedGoogleAuthHandler);
+if (process.env.NODE_ENV === 'production') {
+  router.post('/google', validate(googleAuthSchema), optimizedGoogleAuthHandler);
+} else {
+  // In development, allow handler to engage dev fallback without strict validation
+  router.post('/google', optimizedGoogleAuthHandler);
+}
 
 // Token refresh (now uses secure rotation under the hood)
 router.post('/refresh', validate(refreshTokenSchema), rotateTokens);
