@@ -10,16 +10,19 @@ import { getNamespacedWebSocketService } from '../../services/websocket/namespac
 import { v4 as uuidv4 } from 'uuid';
 
 // Mock WebSocket service for reliable testing (focus on DB persistence)
+const sessionsServiceMock = {
+  emitToSession: jest.fn(),
+  emitToGroup: jest.fn(),
+  emit: jest.fn(),
+};
+
 jest.mock('../../services/websocket/namespaced-websocket.service', () => ({
   getNamespacedWebSocketService: () => ({
-    getSessionsService: () => ({
-      emitToSession: jest.fn(),
-      emitToGroup: jest.fn(),
-    })
+    getSessionsService: () => sessionsServiceMock,
   })
 }));
 
-const mockWebsocketService = websocketService as jest.Mocked<typeof websocketService>;
+const websocketService = getNamespacedWebSocketService()!.getSessionsService();
 
 describe('Real-time Analytics E2E Flow (Real Database)', () => {
   let testSessionId: string;
@@ -278,12 +281,12 @@ describe('Real-time Analytics E2E Flow (Real Database)', () => {
       websocketService.emit('session:analytics', { sessionId: testSessionId, teacherId: testTeacherId });
 
       // Verify mocked service was called correctly
-      expect(mockWebsocketService.emitToSession).toHaveBeenCalledWith(
+      expect(sessionsServiceMock.emitToSession).toHaveBeenCalledWith(
         testSessionId, 
         'group:status_changed', 
         eventData
       );
-      expect(mockWebsocketService.emit).toHaveBeenCalledWith(
+      expect(sessionsServiceMock.emit).toHaveBeenCalledWith(
         'session:analytics', 
         { sessionId: testSessionId, teacherId: testTeacherId }
       );

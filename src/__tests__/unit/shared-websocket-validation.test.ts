@@ -3,7 +3,7 @@ import {
   GroupJoinLeaveSchema,
   GroupLeaderReadySchema,
   WaveListenerIssueSchema,
-} from '@classwaves/shared';
+} from '../../utils/validation.schemas';
 
 describe('Shared WS validation schemas', () => {
   it('validates session status update', () => {
@@ -34,4 +34,3 @@ describe('Shared WS validation schemas', () => {
     expect(bad.success).toBe(false);
   });
 });
-

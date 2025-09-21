@@ -76,7 +76,7 @@ The `/sessions` client is the canonical consumer for transcriptions and analytic
 | `session:guidance:unsubscribe` | `{ sessionId }` | Leave session-specific guidance room. |
 | `analytics:subscribe` | `{ sessionId?: string; metrics?: string[] }` | Subscribe to analytics rooms (see below). |
 | `analytics:unsubscribe` | `{ sessionId?: string; metrics?: string[] }` | Leave analytics rooms. |
-| `prompt:interact` | `{ promptId, action: 'acknowledge'|'use'|'dismiss', feedback?, sessionId? }` | Teacher prompt interactions. |
+| `prompt:interaction` | `{ promptId, action: 'acknowledge'|'use'|'dismiss'|'snooze'|'copy'|'save_exit_check', feedback?, sessionId? }` | Teacher prompt interactions. |
 
 ### Server → client events
 
@@ -219,4 +219,3 @@ Ensure worker env has the same `REDIS_URL` and necessary TLS/password options. I
 - Backend services: `ai-analysis-trigger.service.ts`, `teacher-prompt.service.ts`, `guidance-namespace.service.ts`
 - Frontend guidance hook: `classwaves-frontend/src/features/teacher-guidance/hooks/use-teacher-guidance-websocket-namespaced.ts`
 - Shared types: `@classwaves/shared/src/types/ws.events.ts`
-

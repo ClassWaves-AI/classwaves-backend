@@ -374,7 +374,7 @@ npm run dev
   - Ports: `src/services/ports/*`
   - Domain services: `src/services/**/*`
   - HTTP adapters: `src/routes/*` + `src/controllers/*` with Zod validation in `src/utils/validation.schemas.ts`
-  - WebSocket: `src/services/websocket.service.ts` and events in `src/types/websocket.types.ts`
+  - WebSocket: `src/services/websocket/namespaced-websocket.service.ts` and events in `src/types/websocket.types.ts`
 - Add/adjust an API route: wire Zod schema → controller → service. Add unit tests under `src/__tests__/unit` and integration under `src/__tests__/integration`.
 - Validate DB contracts: `npm run db:verify` (Databricks), cache policy: `npm run cache:policy:print`.
 

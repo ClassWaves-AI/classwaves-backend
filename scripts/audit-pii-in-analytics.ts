@@ -96,7 +96,7 @@ async function auditSessionEventsPayloads(databricksService: any, violations: PI
               issue: `Potentially sensitive group names in ${event.event_type} event payload`,
               severity: 'MEDIUM',
               recommendation: 'Use generic group identifiers instead of descriptive names that might contain student references.',
-              codeRef: 'src/services/websocket.service.ts:977-980'
+              codeRef: 'src/services/websocket/sessions-namespace.service.ts:624-645'
             });
           }
 

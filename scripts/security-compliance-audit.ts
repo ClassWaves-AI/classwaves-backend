@@ -69,19 +69,18 @@ async function auditAnalyticsPayloads(checks: SecurityCheck[]): Promise<void> {
   try {
     // Read analytics payload implementations
     const sessionControllerContent = await fs.readFile('src/controllers/session.controller.ts', 'utf-8');
+    const websocketPaths = [
+      'src/services/websocket/namespaced-websocket.service.ts',
+      'src/services/websocket/sessions-namespace.service.ts',
+      'src/services/websocket/guidance-namespace.service.ts',
+      'src/services/websocket/index.ts',
+    ];
     let websocketServiceContent = '';
-    try {
-      websocketServiceContent = await fs.readFile('src/services/websocket.service.ts', 'utf-8');
-    } catch {
-      // Fallback to namespaced/index files after legacy removal
+    for (const candidate of websocketPaths) {
       try {
-        websocketServiceContent = await fs.readFile('src/services/websocket/index.ts', 'utf-8');
+        websocketServiceContent += `\n/* ${candidate} */\n` + await fs.readFile(candidate, 'utf-8');
       } catch {
-        try {
-          websocketServiceContent = await fs.readFile('src/services/websocket/sessions-namespace.service.ts', 'utf-8');
-        } catch {
-          websocketServiceContent = '';
-        }
+        // best effort: some files may not exist in older branches
       }
     }
 

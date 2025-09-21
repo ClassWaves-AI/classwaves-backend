@@ -157,12 +157,11 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       await this.handleGuidanceUnsubscription(socket, data);
     });
 
-    // Prompt interaction events (support legacy + new event names)
+    // Prompt interaction events
     const promptInteractionListener = async (data: PromptInteractionData) => {
       await this.handlePromptInteraction(socket, data);
     };
     socket.on('prompt:interaction', promptInteractionListener);
-    socket.on('prompt:interact', promptInteractionListener);
     socket.on('teacher:prompt:interaction', promptInteractionListener);
 
     // Session-specific subscriptions

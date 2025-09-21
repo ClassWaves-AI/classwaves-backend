@@ -44,13 +44,30 @@ module.exports = [
       ...tsPlugin.configs.recommended.rules,
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',
-      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
+      // Prefer explicit intent for unused parameters and caught errors per ADR
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_ignored',
+          varsIgnorePattern: '^_',
+        },
+      ],
       'no-unused-vars': 'off',
       'no-undef': 'off',
-      'no-empty': 'warn',
+      // Allow intentionally empty catch with an intent comment (ADR: allowEmptyCatch)
+      'no-empty': ['warn', { allowEmptyCatch: true }],
       'no-unreachable': 'warn',
       '@typescript-eslint/no-empty-object-type': 'warn',
-      '@typescript-eslint/ban-ts-comment': 'warn',
+      // Prefer @ts-expect-error; keep as warn to avoid CI break while migrating
+      '@typescript-eslint/ban-ts-comment': [
+        'warn',
+        {
+          'ts-ignore': true,
+          'ts-expect-error': 'allow-with-description',
+          minimumDescriptionLength: 3,
+        },
+      ],
       '@typescript-eslint/no-require-imports': 'warn',
       '@typescript-eslint/no-unsafe-function-type': 'warn',
       'no-console': ['warn', { allow: ['warn', 'error'] }],

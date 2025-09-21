@@ -19,22 +19,22 @@ const checks = [
     description: 'Verify WebSocket service has proper reconnection settings',
     check: () => {
       // Check that the WebSocket service is properly configured
-      const wsServicePath = path.join(__dirname, '../src/services/websocket.service.ts');
+      const wsServicePath = path.join(__dirname, '../src/services/websocket/namespaced-websocket.service.ts');
       const fs = require('fs');
       const content = fs.readFileSync(wsServicePath, 'utf8');
-      
-      const hasReconnectionConfig = content.includes('pingTimeout') && content.includes('pingInterval');
-      const hasSessionJoinHandler = content.includes('session:join');
-      const hasLeaderReadyHandler = content.includes('group:leader_ready');
-      const hasAutoReconnectLogic = content.includes('session:status_changed');
+
+      const hasConnectionRecovery = content.includes('connectionStateRecovery');
+      const hasRedisAdapter = content.includes('createAdapter');
+      const hasSessionsNamespace = content.includes('SessionsNamespaceService');
+      const hasGuidanceNamespace = content.includes('GuidanceNamespaceService');
       
       return {
-        passed: hasReconnectionConfig && hasSessionJoinHandler && hasLeaderReadyHandler && hasAutoReconnectLogic,
+        passed: hasConnectionRecovery && hasRedisAdapter && hasSessionsNamespace && hasGuidanceNamespace,
         details: {
-          reconnectionConfig: hasReconnectionConfig,
-          sessionJoinHandler: hasSessionJoinHandler,
-          leaderReadyHandler: hasLeaderReadyHandler,
-          autoReconnectLogic: hasAutoReconnectLogic
+          connectionRecovery: hasConnectionRecovery,
+          redisAdapter: hasRedisAdapter,
+          sessionsNamespace: hasSessionsNamespace,
+          guidanceNamespace: hasGuidanceNamespace
         }
       };
     }
