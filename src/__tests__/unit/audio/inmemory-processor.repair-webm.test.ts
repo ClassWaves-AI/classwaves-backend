@@ -1,10 +1,12 @@
 import { InMemoryAudioProcessor } from '../../../services/audio/InMemoryAudioProcessor';
 
 const calls: { buffer: Buffer }[] = [];
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn(async (b: Buffer) => { calls.push({ buffer: b }); return { text: 'ok' } as any; }),
-  },
+const mockProvider = {
+  transcribeBuffer: jest.fn(async (b: Buffer) => { calls.push({ buffer: b }); return { text: 'ok' } as any; }),
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }));
 
 describe('InMemoryAudioProcessor WebM fragment repair (WS flag)', () => {
@@ -35,4 +37,3 @@ describe('InMemoryAudioProcessor WebM fragment repair (WS flag)', () => {
     expect(buf.indexOf(CLUSTER)).toBe(headerLen);
   });
 });
-

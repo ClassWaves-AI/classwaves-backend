@@ -1,6 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, jest } from '@jest/globals';
 import { InMemoryAudioProcessor } from '../../../services/audio/InMemoryAudioProcessor';
-import { openAIWhisperService } from '../../../services/openai-whisper.service';
+import type { SpeechToTextPort } from '../../../services/stt.port';
+
+const mockProvider: jest.Mocked<SpeechToTextPort> = {
+  transcribeBuffer: jest.fn(),
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
+}));
 
 describe('InMemoryAudioProcessor (Body 1 scope)', () => {
   beforeAll(() => {
@@ -8,6 +16,16 @@ describe('InMemoryAudioProcessor (Body 1 scope)', () => {
     process.env.DATABRICKS_TOKEN = '';
     // Use fake timers so constructor's setInterval does not keep process open
     jest.useFakeTimers();
+  });
+
+  beforeEach(() => {
+    mockProvider.transcribeBuffer.mockReset();
+    mockProvider.transcribeBuffer.mockResolvedValue({
+      text: 'mock-text',
+      confidence: 0.95,
+      language: 'en',
+      duration: 1,
+    });
   });
 
   afterAll(() => {
@@ -91,21 +109,18 @@ describe('InMemoryAudioProcessor (Body 1 scope)', () => {
     } as any;
     (processor as any).groupWindows.set(groupId, state);
 
-    const spy = jest.spyOn(openAIWhisperService, 'transcribeBuffer').mockRejectedValue(new Error('fail'));
+    mockProvider.transcribeBuffer.mockRejectedValue(new Error('fail'));
 
     await expect((processor as any).flushGroupWindow(groupId, state, 'audio/webm')).rejects.toThrow();
     state.chunks = [Buffer.from('bb')];
     state.bytes = 2;
     await expect((processor as any).flushGroupWindow(groupId, state, 'audio/webm')).rejects.toThrow();
 
-    spy.mockClear();
     state.chunks = [Buffer.from('cc')];
     state.bytes = 2;
     const resp = await (processor as any).flushGroupWindow(groupId, state, 'audio/webm');
     expect(typeof resp.text).toBe('string');
-    expect(spy).not.toHaveBeenCalled();
-
-    spy.mockRestore();
+    expect(mockProvider.transcribeBuffer).toHaveBeenCalledTimes(2);
   });
 
   it('zeros buffers and skips STT when STT_PROVIDER=off', async () => {
@@ -143,5 +158,3 @@ describe('InMemoryAudioProcessor (Body 1 scope)', () => {
     createWriteStreamSpy.mockRestore();
   });
 });
-
-

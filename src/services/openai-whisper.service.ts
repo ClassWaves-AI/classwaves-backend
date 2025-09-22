@@ -6,6 +6,7 @@ import { databricksService } from './databricks.service';
 import type { SpeechToTextPort } from './stt.port';
 import { redisService } from './redis.service';
 import { logger } from '../utils/logger';
+import { sttBudgetService } from './stt.budget.service';
 
 export interface WhisperOptions { language?: string; durationSeconds?: number }
 export interface WhisperResult { text: string; confidence?: number; language?: string; duration?: number }
@@ -24,17 +25,13 @@ export class OpenAIWhisperService implements SpeechToTextPort {
 
   // Metrics (guard against duplicate registration in test)
   private readonly whisperLatency = this.getOrCreateHistogram('whisper_latency_ms', 'Latency for Whisper requests', [50,100,200,500,1000,2000,5000,10000]);
-  private readonly whisperStatus = this.getOrCreateCounter('whisper_status_count', 'Whisper status code count', ['status']);
-  private readonly whisperRetries = this.getOrCreateCounter('whisper_retry_count', 'Total Whisper retries');
-  private readonly whisper429 = this.getOrCreateCounter('whisper_429_count', 'Total Whisper 429 responses');
+  private readonly providerLatency = this.getOrCreateHistogram('stt_provider_latency_ms', 'Latency from job submit to transcript fetch by provider', [200,500,1000,2000,4000,8000,12000], ['provider']);
+  private readonly whisperStatus = this.getOrCreateCounter('whisper_status_total', 'Whisper status code count', ['status']);
+  private readonly whisperRetries = this.getOrCreateCounter('whisper_retries_total', 'Total Whisper retries');
+  private readonly whisper429 = this.getOrCreateCounter('whisper_429_total', 'Total Whisper 429 responses');
   private readonly windowBytes = this.getOrCreateHistogram('stt_window_bytes', 'Window bytes submitted', [8e3, 3.2e4, 1.28e5, 5.12e5, 2.0e6]);
 
   // Budget metrics
-  private readonly budgetMinutesGauge = this.getOrCreateGauge('stt_budget_minutes', 'Accumulated STT minutes for the day', ['school', 'date']);
-  private readonly budgetAlerts = this.getOrCreateCounter('stt_budget_alerts_total', 'Total budget alerts emitted', ['school', 'pct']);
-  private readonly budgetMemory = new Map<string, { minutes: number; lastPct: number }>();
-  private readonly budgetAlertsStore = new Map<string, Array<{ id: string; percentage: number; triggeredAt: string; acknowledged: boolean }>>();
-
   private normalizeMimeForUpload(mimeType: string): string {
     const mt = (mimeType || '').toLowerCase();
     if (mt.startsWith('audio/webm')) return 'audio/webm';
@@ -91,15 +88,16 @@ export class OpenAIWhisperService implements SpeechToTextPort {
     }
     const limiter = schoolId ? this.getSchoolLimiter(schoolId) : this.limiter;
     this.windowBytes.observe(audio.byteLength);
-    const endTimer = this.whisperLatency.startTimer();
     return limiter.schedule(async () => {
-      const result = await this.transcribeWithRetry(audio, mimeType, options);
-      endTimer();
-      // Optional: persist metrics to DB when enabled
-      if (process.env.ENABLE_DB_METRICS_PERSIST === '1') {
-        try {
-          await databricksService.insert('operational.system_events', {
-            id: Date.now().toString(),
+      const stopLatencyTimer = this.whisperLatency.startTimer();
+      const stopProviderTimer = this.providerLatency.startTimer({ provider: 'openai' });
+      try {
+        const result = await this.transcribeWithRetry(audio, mimeType, options);
+        // Optional: persist metrics to DB when enabled
+        if (process.env.ENABLE_DB_METRICS_PERSIST === '1') {
+          try {
+            await databricksService.insert('operational.system_events', {
+              id: Date.now().toString(),
             event_type: 'api_call',
             severity: 'info',
             component: 'openai_whisper',
@@ -117,11 +115,15 @@ export class OpenAIWhisperService implements SpeechToTextPort {
       // Budget tracking (per school, per day)
       try {
         const seconds = (result?.duration ?? options?.durationSeconds ?? 0) as number;
-        await this.recordBudgetUsage(schoolId, seconds);
+        await sttBudgetService.recordUsage({ schoolId, durationSeconds: seconds, provider: 'openai' });
       } catch {
         // ignore budget tracking errors
       }
       return result;
+      } finally {
+        stopLatencyTimer();
+        stopProviderTimer();
+      }
     });
   }
 
@@ -214,10 +216,12 @@ export class OpenAIWhisperService implements SpeechToTextPort {
     if (Array.isArray(labelNames)) cfg.labelNames = labelNames;
     return new client.Counter(cfg);
   }
-  private getOrCreateHistogram(name: string, help: string, buckets: number[]) {
+  private getOrCreateHistogram(name: string, help: string, buckets: number[], labelNames?: string[]) {
     const existing = client.register.getSingleMetric(name) as client.Histogram<string> | undefined;
     if (existing) return existing;
-    return new client.Histogram({ name, help, buckets });
+    const cfg: any = { name, help, buckets };
+    if (Array.isArray(labelNames)) cfg.labelNames = labelNames;
+    return new client.Histogram(cfg);
   }
 
   private getOrCreateGauge(name: string, help: string, labelNames?: string[]) {
@@ -226,91 +230,6 @@ export class OpenAIWhisperService implements SpeechToTextPort {
     const cfg: any = { name, help };
     if (Array.isArray(labelNames)) cfg.labelNames = labelNames;
     return new client.Gauge(cfg);
-  }
-
-  private async recordBudgetUsage(schoolId: string | undefined, seconds: number): Promise<void> {
-    const dailyBudgetMinutes = Number(process.env.STT_BUDGET_MINUTES_PER_DAY || 0);
-    if (!schoolId || !dailyBudgetMinutes || dailyBudgetMinutes <= 0 || !Number.isFinite(seconds) || seconds <= 0) {
-      return;
-    }
-    const minutes = seconds / 60;
-    const now = new Date();
-    const y = now.getUTCFullYear();
-    const m = `${now.getUTCMonth() + 1}`.padStart(2, '0');
-    const d = `${now.getUTCDate()}`.padStart(2, '0');
-    const dayKey = `${y}${m}${d}`;
-    const usageKey = `stt:usage:minutes:${schoolId}:${dayKey}`;
-    const alertedKey = `stt:usage:last_alert_pct:${schoolId}:${dayKey}`;
-
-    let totalMinutes = 0;
-    let lastAlerted = 0;
-    const connected = redisService.isConnected();
-    if (connected) {
-      const client = redisService.getClient();
-      // Increment minutes and fetch last alerted pct in parallel
-      const [totalMinutesStr, lastAlertedStr] = await Promise.all([
-        (async () => {
-          try {
-            // @ts-ignore ioredis supports incrbyfloat
-            await (client as any).incrbyfloat?.(usageKey, minutes);
-          } catch {
-            // Fallback when incrbyfloat not available in mock
-            const cur = parseFloat((await client.get(usageKey)) || '0');
-            await client.set(usageKey, String(cur + minutes));
-          }
-          return (await client.get(usageKey)) || '0';
-        })(),
-        client.get(alertedKey)
-      ]);
-      totalMinutes = parseFloat(totalMinutesStr || '0') || 0;
-      lastAlerted = parseInt(lastAlertedStr || '0', 10) || 0;
-    } else {
-      const mem = this.budgetMemory.get(`${schoolId}:${dayKey}`) || { minutes: 0, lastPct: 0 };
-      mem.minutes += minutes;
-      totalMinutes = mem.minutes;
-      lastAlerted = mem.lastPct;
-      this.budgetMemory.set(`${schoolId}:${dayKey}`, mem);
-    }
-
-    // Update gauge
-    this.budgetMinutesGauge.set({ school: schoolId, date: dayKey }, totalMinutes);
-
-    const thresholdPcts = String(process.env.STT_BUDGET_ALERT_PCTS || '50,75,90,100')
-      .split(',')
-      .map((s) => parseInt(s.trim(), 10))
-      .filter((n) => !isNaN(n) && n > 0 && n <= 200)
-      .sort((a, b) => a - b);
-
-    // Find first threshold crossed beyond lastAlerted
-    const pct = Math.floor((totalMinutes / dailyBudgetMinutes) * 100);
-    const toAlert = thresholdPcts.find((t) => pct >= t && lastAlerted < t);
-    if (typeof toAlert === 'number') {
-      this.budgetAlerts.inc({ school: schoolId, pct: String(toAlert) });
-      if (connected) {
-        const client = redisService.getClient();
-        await client.set(alertedKey, String(toAlert));
-      } else {
-        const mem = this.budgetMemory.get(`${schoolId}:${dayKey}`) || { minutes: totalMinutes, lastPct: 0 };
-        mem.lastPct = toAlert;
-        mem.minutes = totalMinutes;
-        this.budgetMemory.set(`${schoolId}:${dayKey}`, mem);
-      }
-
-      // Optional DB persist
-      if (process.env.ENABLE_DB_METRICS_PERSIST === '1') {
-        try {
-          await databricksService.insert('operational.budget_alerts', {
-            id: `${schoolId}-${Date.now()}`,
-            school_id: schoolId,
-            day: dayKey,
-            budget_minutes: dailyBudgetMinutes,
-            used_minutes: totalMinutes,
-            percent: toAlert,
-            created_at: new Date(),
-          } as any);
-        } catch { /* intentionally ignored: best effort cleanup */ }
-      }
-    }
   }
 
   // Lightweight credential health-check
@@ -325,50 +244,6 @@ export class OpenAIWhisperService implements SpeechToTextPort {
       return resp.status === 200;
     } catch {
       return false;
-    }
-  }
-
-  /**
-   * Public API: Get budget usage for a school on a specific date
-   */
-  async getBudgetUsage(schoolId: string, date: string): Promise<{ minutes: number }> {
-    try {
-      // Convert date to dayKey format (YYYYMMDD)
-      const dayKey = date.replace(/-/g, '');
-      const usageKey = `stt:usage:minutes:${schoolId}:${dayKey}`;
-      
-      if (redisService.isConnected()) {
-        const client = redisService.getClient();
-        const minutesStr = await client.get(usageKey);
-        return { minutes: parseFloat(minutesStr || '0') };
-      } else {
-        // Fallback to in-memory cache
-        const key = `${schoolId}:${date}`;
-        const usage = this.budgetMemory.get(key);
-        return { minutes: usage?.minutes || 0 };
-      }
-    } catch (error) {
-      logger.warn('Error fetching budget usage:', error);
-      return { minutes: 0 };
-    }
-  }
-
-  /**
-   * Public API: Get budget alerts for a school
-   */
-  async getBudgetAlerts(schoolId: string): Promise<Array<{ id: string; percentage: number; triggeredAt: string; acknowledged: boolean }>> {
-    return this.budgetAlertsStore.get(schoolId) || [];
-  }
-
-  /**
-   * Public API: Acknowledge a budget alert
-   */
-  async acknowledgeBudgetAlert(schoolId: string, alertId: string): Promise<void> {
-    const alerts = this.budgetAlertsStore.get(schoolId) || [];
-    const alert = alerts.find(a => a.id === alertId);
-    if (alert) {
-      alert.acknowledged = true;
-      this.budgetAlertsStore.set(schoolId, alerts);
     }
   }
 

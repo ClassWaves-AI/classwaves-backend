@@ -3,7 +3,7 @@ import { logger } from '../utils/logger';
 import { Worker } from 'bullmq';
 import * as client from 'prom-client';
 import { redisService } from '../services/redis.service';
-import { openAIWhisperService } from '../services/openai-whisper.service';
+import { getSttProvider } from '../services/stt.provider';
 import { maybeTranscodeToWav } from '../services/audio/transcode.util';
 import { getNamespacedWebSocketService } from '../services/websocket/namespaced-websocket.service';
 import { getTeacherIdForSessionCached } from '../services/utils/teacher-id-cache.service';
@@ -98,7 +98,8 @@ export async function processAudioJob(data: AudioJob): Promise<void> {
   const languageHint = languageHintRaw ? languageHintRaw : undefined;
 
   const tryTranscribe = async (b: Buffer, m: string) => {
-    return openAIWhisperService.transcribeBuffer(
+    const provider = getSttProvider();
+    return provider.transcribeBuffer(
       b,
       m,
       { durationSeconds: Math.round((data.endTs - data.startTs) / 1000), language: languageHint },

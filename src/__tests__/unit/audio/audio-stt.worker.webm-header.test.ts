@@ -1,14 +1,14 @@
-import { processAudioJob } from '../../../workers/audio-stt.worker';
-
-// Capture buffers passed to Whisper for assertions
+// Capture buffers passed to provider for assertions
 const calls: { buffer: Buffer; mime: string }[] = [];
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn(async (b: Buffer, m: string) => {
-      calls.push({ buffer: b, mime: m });
-      return { text: 'ok' } as any;
-    }),
-  },
+const mockProvider = {
+  transcribeBuffer: jest.fn(async (b: Buffer, m: string) => {
+    calls.push({ buffer: b, mime: m });
+    return { text: 'ok' } as any;
+  }),
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }));
 
 jest.mock('../../../services/redis.service', () => {
@@ -20,6 +20,8 @@ jest.mock('../../../services/redis.service', () => {
   };
   return { redisService: { getClient: () => client } };
 });
+
+import { processAudioJob } from '../../../workers/audio-stt.worker';
 
 describe('audio-stt.worker - WebM header caching & prepend for REST uploads', () => {
   beforeEach(() => { calls.length = 0; });
@@ -55,4 +57,3 @@ describe('audio-stt.worker - WebM header caching & prepend for REST uploads', ()
     expect(b[3]).toBe(0xa3);
   });
 });
-

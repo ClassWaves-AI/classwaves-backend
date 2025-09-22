@@ -1033,17 +1033,18 @@ The backend now supports a local Postgres provider for faster offline iteration.
 
 1. **Start Postgres**: `npm run db:local:up`
 2. **Wait for health**: `npm run db:local:wait` (retries until the container reports healthy)
-3. **Initialize schema/seeds**: `npm run db:local:init` (idempotent; re-run after updating schema files)
-4. **Optional reset**: `npm run db:local:reset` drops known schemas and reapplies schema + seeds
+3. **Initialize schema/seeds**: `npm run db:local:init` (idempotent; re-run after updating schema files). When `CW_DBX_MANIFEST_ENABLED=1`, this command regenerates the manifest-driven schema under `src/db/local/generated/` before applying it.
+4. **Optional reset**: `npm run db:local:reset` drops known schemas and reapplies schema + seeds (also manifests-aware when the flag is enabled)
 5. **Open psql shell**: `npm run db:local:shell` (uses Docker exec; Ctrl+D to exit)
 6. **Run backend against Postgres**: `npm run dev:local` (sets `DB_PROVIDER=postgres` while reusing the standard dev startup script)
 
 Notes:
 - The local connection string defaults to `postgres://classwaves:classwaves@localhost:5433/classwaves_dev`. Override the host port by editing `docker-compose.yml` or exporting `DATABASE_URL` before running the scripts.
 - On Windows, run these commands from WSL with Docker Desktop running; ensure the WSL distribution has access to Docker.
-- `db:local:init` applies SQL from `src/db/local/schema.sql` and `src/db/local/seeds/dev.sql`. Missing files are skipped with a warning so schema work can land incrementally.
+- `db:local:init` applies SQL from `src/db/local/schema.sql` and `src/db/local/seeds/dev.sql`. When the manifest flag is enabled it uses the generated outputs in `src/db/local/generated/` which are produced by `npm run db:manifest:generate`.
 - Verify connectivity manually with `psql $DATABASE_URL -c 'select 1';` (or use `npm run db:local:shell`).
 - The Postgres adapter implements the shared DB port (`src/adapters/db/postgres.adapter.ts`), rewrites `?` placeholders to `$n`, and emits Prometheus metrics (`classwaves_db_query_attempts_total`, `classwaves_db_query_failures_total`, `classwaves_db_query_duration_ms`) with `provider`/`operation` labels when `DB_PROVIDER=postgres`.
+- **Dev auth fallback**: In non-production, when Google OAuth env vars are absent or `cw.auth.dev_fallback_enabled=1`, `/api/v1/auth/google` issues tokens for the seeded dev teacher/school. The flow sets `degradedMode=true`, records `classwaves_auth_dev_fallback_total{environment,trigger}`, and stores a secure session so the frontend can proceed without Google credentials.
 
 ### Code Standards
 - **TypeScript**: Strict mode enabled

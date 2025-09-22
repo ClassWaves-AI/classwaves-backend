@@ -8,6 +8,7 @@ import type { SessionStatsRepositoryPort } from '../services/ports/session-stats
 import { sessionStatsRepository as databricksSessionStatsRepository } from '../adapters/repositories/databricks-session-stats.repository';
 import type { SessionDetailRepositoryPort } from '../services/ports/session-detail.repository.port';
 import { sessionDetailRepository as databricksSessionDetailRepository } from '../adapters/repositories/databricks-session-detail.repository';
+import { createDbSessionDetailRepository } from '../adapters/repositories/db-session-detail.repository';
 import type { RosterRepositoryPort } from '../services/ports/roster.repository.port';
 import { rosterRepository as databricksRosterRepository } from '../adapters/repositories/databricks-roster.repository';
 import type { AdminRepositoryPort } from '../services/ports/admin.repository.port';
@@ -39,7 +40,9 @@ import { createPostgresDbAdapter } from '../adapters/db/postgres.adapter';
 import { createDatabricksDbAdapter } from '../adapters/db/databricks.adapter';
 import { createDbSessionRepository } from '../adapters/repositories/db-session.repository';
 import { createDbGroupRepository } from '../adapters/repositories/db-group.repository';
+import { createDbRosterRepository } from '../adapters/repositories/db-roster.repository';
 import { logger } from '../utils/logger';
+import { getSchemaManifestHash } from '../utils/manifest.utils';
 
 function isTruthyEnv(value: string | undefined): boolean {
   if (!value) return false;
@@ -52,7 +55,8 @@ function resolveDbProvider(): { provider: DbProvider; details: { envProvider?: s
   const flagKey = FeatureFlags.DB_USE_LOCAL_POSTGRES;
   const flagRawDirect = process.env[flagKey];
   const flagRawEnv = process.env.CW_DB_USE_LOCAL_POSTGRES;
-  const flagEnabled = isTruthyEnv(flagRawDirect) || isTruthyEnv(flagRawEnv);
+  const useLocalDb = isTruthyEnv(process.env.USE_LOCAL_DB);
+  const flagEnabled = isTruthyEnv(flagRawDirect) || isTruthyEnv(flagRawEnv) || useLocalDb;
 
   let provider: DbProvider = 'databricks';
   if (rawEnvProvider === 'postgres') {
@@ -102,11 +106,16 @@ class CompositionRoot {
   constructor() {
     const { provider, details } = resolveDbProvider();
     this._dbProvider = provider;
+    if (provider === 'postgres' && process.env.DATABRICKS_MOCK !== '1') {
+      process.env.DATABRICKS_MOCK = '1';
+    }
     this._dbPort = provider === 'postgres' ? createPostgresDbAdapter() : createDatabricksDbAdapter();
+    const schemaManifestVersion = provider === 'postgres' ? getSchemaManifestHash() ?? null : null;
     logger.info('db-provider-selected', {
       provider: this._dbProvider,
       envProvider: details.envProvider,
       flagEnabled: details.flagEnabled,
+      schema_manifest_version: schemaManifestVersion,
     });
 
     // Wire default adapters
@@ -131,6 +140,8 @@ class CompositionRoot {
     if (this._dbProvider === 'postgres') {
       this._sessionRepository = createDbSessionRepository(this._dbPort);
       this._groupRepository = createDbGroupRepository(this._dbPort);
+      this._rosterRepository = createDbRosterRepository(this._dbPort);
+      this._sessionDetailRepository = createDbSessionDetailRepository(this._dbPort);
     }
   }
 

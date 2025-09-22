@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions.classroom_sessions (
   school_id uuid,
   scheduled_start timestamptz,
   actual_start timestamptz,
+  actual_end timestamptz,
   target_group_size integer,
   max_students integer,
   auto_group_enabled boolean NOT NULL DEFAULT false,
@@ -37,12 +38,16 @@ CREATE TABLE IF NOT EXISTS sessions.classroom_sessions (
   access_code text,
   engagement_score numeric,
   participation_rate numeric,
+  actual_duration_minutes integer,
+  end_reason text,
+  teacher_notes text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS scheduled_start timestamptz;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS actual_start timestamptz;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS actual_end timestamptz;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS target_group_size integer;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS max_students integer;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS auto_group_enabled boolean DEFAULT false;
@@ -58,6 +63,9 @@ ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS total_students 
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS access_code text;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS engagement_score numeric;
 ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS participation_rate numeric;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS actual_duration_minutes integer;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS end_reason text;
+ALTER TABLE sessions.classroom_sessions ADD COLUMN IF NOT EXISTS teacher_notes text;
 
 CREATE TABLE IF NOT EXISTS sessions.student_groups (
   id uuid PRIMARY KEY,
@@ -110,19 +118,64 @@ CREATE TABLE IF NOT EXISTS users.teachers (
   id uuid PRIMARY KEY,
   email text UNIQUE,
   name text,
+  school_id uuid,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS users.schools (
+  id uuid PRIMARY KEY,
+  name text NOT NULL,
+  domain text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE users.teachers ADD COLUMN IF NOT EXISTS school_id uuid;
 
 CREATE TABLE IF NOT EXISTS users.students (
   id uuid PRIMARY KEY,
   name text,
   display_name text,
   email text,
+  school_id uuid,
+  grade_level text,
+  status text,
+  has_parental_consent boolean,
+  consent_date timestamptz,
+  parent_email text,
+  email_consent boolean,
+  coppa_compliant boolean,
+  teacher_verified_age boolean,
+  data_sharing_consent boolean,
+  audio_recording_consent boolean,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE users.students ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE users.students ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS school_id uuid;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS grade_level text;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS status text;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS has_parental_consent boolean;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS consent_date timestamptz;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS parent_email text;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS email_consent boolean;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS coppa_compliant boolean;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS teacher_verified_age boolean;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS data_sharing_consent boolean;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS audio_recording_consent boolean;
+ALTER TABLE users.students ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+ALTER TABLE users.students ALTER COLUMN status SET DEFAULT 'active';
+ALTER TABLE users.students ALTER COLUMN created_at SET DEFAULT now();
+ALTER TABLE users.students ALTER COLUMN updated_at SET DEFAULT now();
+
+ALTER TABLE users.students
+  ADD CONSTRAINT fk_students_school
+  FOREIGN KEY (school_id)
+  REFERENCES users.schools(id)
+  ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_students_school ON users.students(school_id);
 
 -- Analytics Events
 CREATE TABLE IF NOT EXISTS analytics.session_events (

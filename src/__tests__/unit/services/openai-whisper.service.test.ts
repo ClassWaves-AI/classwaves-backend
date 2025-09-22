@@ -1,6 +1,14 @@
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { OpenAIWhisperService, openAIWhisperService } from '../../../services/openai-whisper.service';
 import { redisService } from '../../../services/redis.service';
-import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+
+jest.mock('../../../services/stt.budget.service', () => ({
+  sttBudgetService: {
+    recordUsage: jest.fn(),
+  },
+}));
+
+const { sttBudgetService } = require('../../../services/stt.budget.service');
 
 describe('OpenAIWhisperService', () => {
   beforeEach(() => {
@@ -30,38 +38,22 @@ describe('OpenAIWhisperService', () => {
     process.env.NODE_ENV = 'development';
     process.env.STT_BUDGET_MINUTES_PER_DAY = '1'; // tiny budget for test
     process.env.STT_BUDGET_ALERT_PCTS = '50,100';
+    process.env.OPENAI_API_KEY = 'dummy-key';
+
+    const recordUsageMock = sttBudgetService.recordUsage as jest.Mock;
+    recordUsageMock.mockClear();
 
     const svc = new OpenAIWhisperService();
-
-    // Spy on redis set/get via thin helpers for determinism
-    const client = redisService.getClient();
-    const getSpy = jest.spyOn(client as any, 'get');
-    const setSpy = jest.spyOn(client as any, 'set');
-    const incrFloatSpy = jest
-      .spyOn(client as any, 'incrbyfloat')
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .mockImplementation(async (..._args: any[]) => {});
 
     // Mock internal retry path to immediately succeed with known duration
     // @ts-ignore override private method for test determinism
     jest.spyOn(svc as any, 'transcribeWithRetry').mockResolvedValue({ text: 'ok', duration: 30 }); // 0.5 min
 
     await svc.transcribeBuffer(Buffer.from([0x00]), 'audio/webm', { durationSeconds: 30 }, 'school-T');
+    await svc.transcribeBuffer(Buffer.from([0x01]), 'audio/webm', { durationSeconds: 45 }, 'school-T');
 
-    // After first call: ~0.5 min used -> >=50% threshold triggers alert write to redis or memory
-    expect(incrFloatSpy).toHaveBeenCalled();
-    // In some test environments redis mock may not be connected; allow either redis set or in-memory path
-    const setCalled = (setSpy as any).mock.calls.some((c: any[]) => String(c[0]).includes('stt:usage:last_alert_pct:school-T') && c[1] === '50');
-    expect(setCalled || true).toBe(true);
-
-    // Second call takes another 0.5 min -> cross 100%
-    await svc.transcribeBuffer(Buffer.from([0x00]), 'audio/webm', { durationSeconds: 30 }, 'school-T');
-    const setCalled100 = (setSpy as any).mock.calls.some((c: any[]) => String(c[0]).includes('stt:usage:last_alert_pct:school-T') && c[1] === '100');
-    expect(setCalled100 || true).toBe(true);
-
-    incrFloatSpy.mockRestore();
-    getSpy.mockRestore();
-    setSpy.mockRestore();
+    expect(recordUsageMock).toHaveBeenCalledTimes(2);
+    expect(recordUsageMock).toHaveBeenCalledWith({ schoolId: 'school-T', durationSeconds: 30, provider: 'openai' });
   });
 
   it('adaptive windowing increases under 429s (simulated)', async () => {

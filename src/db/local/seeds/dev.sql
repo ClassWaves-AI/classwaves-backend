@@ -1,20 +1,26 @@
 -- Synthetic seed data for local Postgres development.
 SET client_min_messages TO WARNING;
 
+-- School
+INSERT INTO users.schools (id, name, domain)
+VALUES ('11111111-1111-1111-1111-111111111111', 'Dev School', 'devschool.local')
+ON CONFLICT (id) DO NOTHING;
+
 -- Teacher
-INSERT INTO users.teachers (id, email, name)
-VALUES ('00000000-0000-0000-0000-000000000001', 'teacher@example.com', 'Dev Teacher')
+INSERT INTO users.teachers (id, email, name, school_id)
+VALUES ('00000000-0000-0000-0000-000000000001', 'teacher@example.com', 'Dev Teacher', '11111111-1111-1111-1111-111111111111')
 ON CONFLICT (id) DO NOTHING;
 
 -- Session
-INSERT INTO sessions.classroom_sessions (id, title, status, goal, subject, teacher_id)
+INSERT INTO sessions.classroom_sessions (id, title, status, goal, subject, teacher_id, school_id)
 VALUES (
   '00000000-0000-0000-0000-000000010000',
   'Dev Session',
   'active',
   'Explore energy transfer in everyday objects',
   'science',
-  '00000000-0000-0000-0000-000000000001'
+  '00000000-0000-0000-0000-000000000001',
+  '11111111-1111-1111-1111-111111111111'
 ) ON CONFLICT (id) DO NOTHING;
 
 -- Groups
@@ -25,11 +31,11 @@ VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- Students
-INSERT INTO users.students (id, name)
+INSERT INTO users.students (id, name, display_name, school_id, grade_level, status, has_parental_consent, consent_date, parent_email, email_consent, coppa_compliant, teacher_verified_age, data_sharing_consent, audio_recording_consent)
 VALUES
-  ('00000000-0000-0000-0000-000000030000','Student One'),
-  ('00000000-0000-0000-0000-000000030001','Student Two'),
-  ('00000000-0000-0000-0000-000000030002','Student Three')
+  ('00000000-0000-0000-0000-000000030000','Student One','Student One','11111111-1111-1111-1111-111111111111','9th','active',true,now(),'parent.one@test.edu',true,true,true,true,true),
+  ('00000000-0000-0000-0000-000000030001','Student Two','Student Two','11111111-1111-1111-1111-111111111111','10th','active',true,now(),'parent.two@test.edu',true,true,true,true,true),
+  ('00000000-0000-0000-0000-000000030002','Student Three','Student Three','11111111-1111-1111-1111-111111111111','11th','active',true,now(),'parent.three@test.edu',true,true,true,true,true)
 ON CONFLICT (id) DO NOTHING;
 
 -- Group membership

@@ -2,10 +2,12 @@ import { processAudioJob } from '../../../workers/audio-stt.worker';
 import { transcriptPersistenceService } from '../../../services/transcript-persistence.service';
 import { transcriptService } from '../../../services/transcript.service';
 
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn(async () => ({ text: 'hello world', confidence: 0.9, language: 'en', duration: 10 })),
-  },
+const mockProvider = {
+  transcribeBuffer: jest.fn(async () => ({ text: 'hello world', confidence: 0.9, language: 'en', duration: 10 })),
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }));
 
 jest.mock('../../../services/redis.service', () => {
@@ -36,6 +38,8 @@ jest.mock('../../../config/databricks.config', () => ({ databricksConfig: { cata
 
 describe('Pipeline (unit-level integration)', () => {
   it('processes job, persists Redis, flushes to DB, reads transcripts', async () => {
+    const prevDbEnabled = process.env.DATABRICKS_ENABLED;
+    process.env.DATABRICKS_ENABLED = 'true';
     const data = {
       chunkId: 'chunk-xyz',
       sessionId: 'sess-1',
@@ -47,12 +51,20 @@ describe('Pipeline (unit-level integration)', () => {
       audioB64: Buffer.from('abc').toString('base64'),
     } as any;
 
-    await processAudioJob(data);
-    const segs = await transcriptService.read(data.sessionId, data.groupId);
-    expect(segs.length).toBeGreaterThan(0);
-    const flushed = await transcriptPersistenceService.flushSession(data.sessionId);
-    expect(flushed).toBeGreaterThan(0);
-    const { databricksService } = require('../../../services/databricks.service');
-    expect(databricksService.batchInsert).toHaveBeenCalled();
+    try {
+      await processAudioJob(data);
+      const segs = await transcriptService.read(data.sessionId, data.groupId);
+      expect(segs.length).toBeGreaterThan(0);
+      const flushed = await transcriptPersistenceService.flushSession(data.sessionId);
+      expect(flushed).toBeGreaterThan(0);
+      const { databricksService } = require('../../../services/databricks.service');
+      expect(databricksService.batchInsert).toHaveBeenCalled();
+    } finally {
+      if (prevDbEnabled === undefined) {
+        delete process.env.DATABRICKS_ENABLED;
+      } else {
+        process.env.DATABRICKS_ENABLED = prevDbEnabled;
+      }
+    }
   });
 });

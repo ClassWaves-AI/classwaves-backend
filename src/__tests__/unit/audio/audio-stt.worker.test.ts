@@ -1,17 +1,16 @@
-import { processAudioJob } from '../../../workers/audio-stt.worker';
+const mockProvider = {
+  transcribeBuffer: jest.fn(),
+};
 
-jest.mock('../../../services/openai-whisper.service', () => {
-  const calls: any[] = [];
-  return {
-    openAIWhisperService: {
-      transcribeBuffer: jest.fn(async (_b: Buffer, m: string) => {
-        calls.push(m);
-        if (calls.length === 1) throw new Error('Whisper error: 400 Invalid format');
-        return { text: 'ok after wav' } as any;
-      }),
-    },
-  };
-});
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
+}));
+
+jest.mock('../../../services/audio/transcode.util', () => ({
+  maybeTranscodeToWav: jest.fn(async (buffer: Buffer) => ({ buffer, mime: 'audio/wav' })),
+}));
+
+import { processAudioJob } from '../../../workers/audio-stt.worker';
 
 jest.mock('../../../services/redis.service', () => {
   const store = new Map<string, string>();
@@ -39,6 +38,13 @@ describe('audio-stt.worker WAV fallback', () => {
   beforeAll(() => { process.env.STT_TRANSCODE_TO_WAV = '1'; });
 
   it('retries with wav once on 400', async () => {
+    const calls: any[] = [];
+    mockProvider.transcribeBuffer = jest.fn(async (_b: Buffer, m: string) => {
+      calls.push(m);
+      if (calls.length === 1) throw new Error('Whisper error: 400 Invalid format');
+      return { text: 'ok after wav' } as any;
+    });
+
     await expect(processAudioJob(data as any)).resolves.toBeUndefined();
     // Verify segment persisted in Redis
     const { redisService } = require('../../../services/redis.service');
@@ -50,4 +56,3 @@ describe('audio-stt.worker WAV fallback', () => {
     expect(arr[0].id).toBe('c1');
   });
 });
-

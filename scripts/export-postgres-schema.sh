@@ -5,12 +5,23 @@ set -euo pipefail
 # Prefers Docker container `classwaves-postgres`; falls back to psql via $DATABASE_URL
 
 OUTPUT_FILE="$(dirname "$0")/../docs/LOCAL_POSTGRES_SCHEMA.md"
+MANIFEST_HASH_FILE="$(dirname "$0")/../src/db/local/generated/schema-manifest.hash"
 DB_USER="${PGUSER:-classwaves}"
 DB_NAME="${PGDATABASE:-classwaves_dev}"
 DB_HOST="${PGHOST:-localhost}"
 DB_PORT="${PGPORT:-5433}"
 
-echo "# Local Postgres Schema (generated $(date -u +%FT%TZ))" > "$OUTPUT_FILE"
+MANIFEST_HASH=""
+if [ -f "$MANIFEST_HASH_FILE" ]; then
+  MANIFEST_HASH="$(head -n 1 "$MANIFEST_HASH_FILE" 2>/dev/null | tr -d '\r')"
+fi
+
+HEADER_TS="generated $(date -u +%FT%TZ)"
+if [ -n "$MANIFEST_HASH" ]; then
+  HEADER_TS="$HEADER_TS; manifest_hash=${MANIFEST_HASH}"
+fi
+
+echo "# Local Postgres Schema (${HEADER_TS})" > "$OUTPUT_FILE"
 echo >> "$OUTPUT_FILE"
 
 SQL="\
@@ -36,4 +47,3 @@ else
 fi
 
 echo "✅ Wrote schema to $OUTPUT_FILE"
-

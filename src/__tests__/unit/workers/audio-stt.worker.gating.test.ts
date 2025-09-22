@@ -9,11 +9,13 @@ jest.mock('prom-client', () => {
   return { Counter, Histogram, register };
 });
 
-// Stub whisper service to avoid real STT
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn(async () => ({ text: 'hello class waves' }))
-  }
+// Stub STT provider to avoid real STT
+const mockProvider = {
+  transcribeBuffer: jest.fn(async () => ({ text: 'hello class waves' })),
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }));
 
 // Mock Redis so ending/status flags can be controlled

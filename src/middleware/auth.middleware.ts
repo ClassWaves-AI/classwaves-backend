@@ -37,6 +37,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     try {
       let effectiveSessionId: string;
 
+      const allowDevBypass = process.env.NODE_ENV !== 'production' &&
+        (process.env.NODE_ENV === 'test' || (process.env.USE_LOCAL_DB === '1' && process.env.E2E_TEST_SECRET));
+
       if (token) {
         // Basic sanity check: JWT should contain two dots
         const looksLikeJwt = token.split('.').length === 3;
@@ -47,25 +50,31 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           
           let payload: JWTPayload;
           
-          // In test mode with E2E_TEST_SECRET, use basic JWT verification
-          if (process.env.NODE_ENV === 'test' && process.env.E2E_TEST_SECRET) {
+          // In test/local E2E mode allow basic JWT verification
+          if (allowDevBypass) {
             logger.debug('Using test mode JWT verification');
             payload = verifyToken(token) as JWTPayload;
           } else {
             // Verify JWT token with enhanced security
             const securePayload = await SecureJWTService.verifyTokenSecurity(token, req, 'access');
             if (!securePayload) {
-              return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid or expired token', 401);
+              // If secure verification fails but dev bypass is allowed, fall back to basic verification
+              if (allowDevBypass) {
+                payload = verifyToken(token) as JWTPayload;
+              } else {
+                return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid or expired token', 401);
+              }
+            } else {
+              // Convert SecureJWTPayload to JWTPayload
+              payload = {
+                userId: securePayload.userId,
+                email: securePayload.email,
+                schoolId: securePayload.schoolId,
+                role: securePayload.role,
+                sessionId: securePayload.sessionId,
+                type: securePayload.type
+              };
             }
-            // Convert SecureJWTPayload to JWTPayload
-            payload = {
-              userId: securePayload.userId,
-              email: securePayload.email,
-              schoolId: securePayload.schoolId,
-              role: securePayload.role,
-              sessionId: securePayload.sessionId,
-              type: securePayload.type
-            };
           }
           if (payload.type !== 'access') {
             return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid token type', 401);
@@ -74,8 +83,8 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
           // The JWT sessionId might be from a previous session that got rotated
           effectiveSessionId = req.cookies?.session_id || payload.sessionId;
 
-          // Test-mode fallback: populate req.user directly from token when Redis is not part of unit tests
-          if (process.env.NODE_ENV === 'test') {
+          // Test-mode fallback: populate req.user directly from token when Redis/local auth is bypassed
+          if (allowDevBypass) {
             (req as AuthRequest).user = {
               id: payload.userId,
               email: payload.email,
@@ -115,7 +124,35 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       if (!sessionData) {
         // Enhanced logging for rotation debugging
         logger.warn('Session lookup failed', { sessionId: '[REDACTED]', tokenSource: token ? 'jwt' : 'cookie' });
-        
+
+        // In local/test flows fall back to JWT claims when Redis session has been reset
+        if (token && allowDevBypass) {
+          try {
+            const payload = verifyToken(token) as JWTPayload;
+            if (payload.type !== 'access') {
+              return fail(res, ErrorCodes.INVALID_TOKEN, 'Invalid token type', 401);
+            }
+
+            (req as AuthRequest).user = {
+              id: payload.userId,
+              email: payload.email,
+              school_id: payload.schoolId,
+              role: payload.role,
+              status: 'active',
+              access_level: payload.role === 'admin' ? 'admin' : 'teacher',
+              max_concurrent_sessions: 5,
+              current_sessions: 1,
+              timezone: 'UTC',
+            } as any;
+            (req as AuthRequest).school = { id: payload.schoolId } as any;
+            (req as AuthRequest).sessionId = payload.sessionId;
+            ;(req as any).authContext = parseClaims({ ...payload, roles: (payload as any)?.roles ?? [payload.role], sub: payload.userId }) as AuthContext;
+            return next();
+          } catch (error) {
+            logger.warn('Dev fallback verification failed', { error: (error as any)?.message || String(error) });
+          }
+        }
+
         // For token rotation scenarios, provide a more specific error
         // This helps clients understand they may need to re-authenticate or retry
         return fail(res, ErrorCodes.AUTH_REQUIRED, 'Session has expired or been invalidated', 401);

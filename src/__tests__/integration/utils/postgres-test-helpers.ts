@@ -6,6 +6,11 @@ import { FeatureFlags } from '@classwaves/shared';
 const backendRoot = path.resolve(__dirname, '../../..');
 const DEFAULT_DATABASE_URL = 'postgres://classwaves:classwaves@localhost:5433/classwaves_dev';
 const DB_LOCAL_USE_EXISTING = process.env.DB_LOCAL_USE_EXISTING === '1';
+const GENERATED_DIR = path.join(backendRoot, 'src/db/local/generated');
+const GENERATED_SCHEMA_FILE = path.join(GENERATED_DIR, 'schema.sql');
+const GENERATED_SEED_FILE = path.join(GENERATED_DIR, 'seeds', 'dev.sql');
+const STATIC_SCHEMA_FILE = path.join(backendRoot, 'src/db/local/schema.sql');
+const STATIC_SEED_FILE = path.join(backendRoot, 'src/db/local/seeds/dev.sql');
 
 export const ENABLE_LOCAL_DB_TESTS = process.env.ENABLE_LOCAL_DB_TESTS === '1';
 
@@ -44,18 +49,37 @@ function runPsqlFile(file: string): void {
   execSync(command, { stdio: 'inherit', env });
 }
 
+function isManifestEnabled(): boolean {
+  const candidates = [
+    process.env.CW_DBX_MANIFEST_ENABLED,
+    process.env.DBX_MANIFEST_ENABLED,
+    process.env[FeatureFlags.DBX_MANIFEST_ENABLED],
+  ];
+  return candidates.some((value) => typeof value === 'string' && ['1', 'true', 'yes', 'on'].includes(value.toLowerCase()));
+}
+
+function ensureManifestArtifacts(): { schemaFile: string; seedFile: string } {
+  if (!isManifestEnabled()) {
+    return { schemaFile: STATIC_SCHEMA_FILE, seedFile: STATIC_SEED_FILE };
+  }
+  execSync('npx ts-node scripts/dbx-manifest/generate.ts', { cwd: backendRoot, stdio: 'inherit' });
+  return { schemaFile: GENERATED_SCHEMA_FILE, seedFile: GENERATED_SEED_FILE };
+}
+
 function resetExistingDatabase(): void {
+  const { schemaFile, seedFile } = ensureManifestArtifacts();
   runPsqlCommand('DROP SCHEMA IF EXISTS ai_insights CASCADE;');
   runPsqlCommand('DROP SCHEMA IF EXISTS analytics CASCADE;');
   runPsqlCommand('DROP SCHEMA IF EXISTS sessions CASCADE;');
   runPsqlCommand('DROP SCHEMA IF EXISTS users CASCADE;');
-  runPsqlFile(path.join(backendRoot, 'src/db/local/schema.sql'));
-  runPsqlFile(path.join(backendRoot, 'src/db/local/seeds/dev.sql'));
+  runPsqlFile(schemaFile);
+  runPsqlFile(seedFile);
 }
 
 function initExistingDatabase(): void {
-  runPsqlFile(path.join(backendRoot, 'src/db/local/schema.sql'));
-  runPsqlFile(path.join(backendRoot, 'src/db/local/seeds/dev.sql'));
+  const { schemaFile, seedFile } = ensureManifestArtifacts();
+  runPsqlFile(schemaFile);
+  runPsqlFile(seedFile);
 }
 
 export function ensureLocalPostgresReset(): void {

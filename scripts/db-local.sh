@@ -12,8 +12,14 @@ SERVICE_NAME="postgres"
 CONTAINER_NAME="classwaves-postgres"
 DEFAULT_DATABASE_URL="postgres://classwaves:classwaves@localhost:5433/classwaves_dev"
 DATABASE_URL="${DATABASE_URL:-${DEFAULT_DATABASE_URL}}"
-SCHEMA_FILE="${BACKEND_DIR}/src/db/local/schema.sql"
-SEED_FILE="${BACKEND_DIR}/src/db/local/seeds/dev.sql"
+STATIC_SCHEMA_FILE="${BACKEND_DIR}/src/db/local/schema.sql"
+STATIC_SEED_FILE="${BACKEND_DIR}/src/db/local/seeds/dev.sql"
+GENERATED_DIR="${BACKEND_DIR}/src/db/local/generated"
+GENERATED_SCHEMA_FILE="${GENERATED_DIR}/schema.sql"
+GENERATED_SEED_FILE="${GENERATED_DIR}/seeds/dev.sql"
+MANIFEST_HASH_FILE="${GENERATED_DIR}/schema-manifest.hash"
+SCHEMA_FILE="${STATIC_SCHEMA_FILE}"
+SEED_FILE="${STATIC_SEED_FILE}"
 WAIT_TIMEOUT_SECONDS="${DB_LOCAL_WAIT_TIMEOUT:-90}"
 
 info() { echo "[db-local] $*"; }
@@ -92,6 +98,51 @@ apply_sql_file() {
   cat "$file" | psql_exec
 }
 
+is_truthy() {
+  local value="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    1|true|yes|on) return 0 ;;
+  esac
+  return 1
+}
+
+manifest_enabled() {
+  local candidates=(
+    "${CW_DBX_MANIFEST_ENABLED:-}"
+    "${DBX_MANIFEST_ENABLED:-}"
+    "${cw_dbx_manifest_enabled:-}"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [ -n "$candidate" ] && is_truthy "$candidate"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_manifest_generated() {
+  if ! manifest_enabled; then
+    SCHEMA_FILE="${STATIC_SCHEMA_FILE}"
+    SEED_FILE="${STATIC_SEED_FILE}"
+    return 0
+  fi
+
+  require_command npx
+  info "Generating schema via manifest pipeline"
+  (cd "${BACKEND_DIR}" && npx ts-node scripts/dbx-manifest/generate.ts)
+
+  SCHEMA_FILE="${GENERATED_SCHEMA_FILE}"
+  SEED_FILE="${GENERATED_SEED_FILE}"
+
+  if [ -f "${MANIFEST_HASH_FILE}" ]; then
+    local hash
+    hash="$(head -n 1 "${MANIFEST_HASH_FILE}" 2>/dev/null | tr -d '\r')"
+    if [ -n "$hash" ]; then
+      info "Using manifest hash ${hash}"
+    fi
+  fi
+}
+
 cmd_up() {
   info "Starting ${SERVICE_NAME} container via docker compose"
   (cd "${REPO_ROOT}" && compose up -d "${SERVICE_NAME}")
@@ -104,6 +155,7 @@ cmd_wait() {
 cmd_init() {
   trap 'warn "db_local_init_error"; exit 1' ERR
   cmd_up
+  ensure_manifest_generated
   wait_for_health
   info "db_local_init_start"
   apply_sql_file "$SCHEMA_FILE" "schema"

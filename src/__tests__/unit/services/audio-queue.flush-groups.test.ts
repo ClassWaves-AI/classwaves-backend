@@ -10,10 +10,12 @@ jest.mock('../../../services/queue/audio-task-queue.port', () => {
 });
 
 // Mock STT transcribe to avoid real work
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn().mockResolvedValue({ text: 'ok', confidence: 0.99, language: 'en', duration: 1 })
-  }
+const mockProvider = {
+  transcribeBuffer: jest.fn().mockResolvedValue({ text: 'ok', confidence: 0.99, language: 'en', duration: 1 })
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }));
 
 describe('InMemoryAudioProcessor — flushGroups uses worker queue when enabled', () => {

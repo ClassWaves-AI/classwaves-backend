@@ -3,7 +3,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { generateSessionId } from '../utils/jwt.utils';
 import { validateSchoolDomain } from '../utils/validation.schemas';
 import { Teacher, School } from '../types/auth.types';
-import { databricksService } from '../services/databricks.service';
+import { databricksService, isDatabricksMockEnabled } from '../services/databricks.service';
 import { SecureJWTService } from '../services/secure-jwt.service';
 import { SecureSessionService } from '../services/secure-session.service';
 import { 
@@ -14,8 +14,11 @@ import {
 // Removed resilientAuthService (GSI credential flow)
 import { authHealthMonitor } from '../services/auth-health-monitor.service';
 import { fail } from '../utils/api-response';
-import { ErrorCodes } from '@classwaves/shared';
+import { ErrorCodes, FeatureFlags } from '@classwaves/shared';
 import { logger } from '../utils/logger';
+import { recordAuthDevFallback } from '../metrics/auth.metrics';
+import { getDevAuthFallbackDecision } from '../utils/auth-dev-fallback.utils';
+import { isLocalDbEnabled } from '../config/feature-flags';
 
 let cachedGoogleClient: OAuth2Client | null = null;
 function getGoogleClient(): OAuth2Client {
@@ -27,6 +30,171 @@ function getGoogleClient(): OAuth2Client {
     );
   }
   return cachedGoogleClient;
+}
+
+function buildDevAuthFallbackIdentity(): { teacher: Teacher; school: School } {
+  const now = new Date();
+  const schoolId = process.env.DEV_FALLBACK_SCHOOL_ID || '11111111-1111-1111-1111-111111111111';
+  const schoolName = process.env.DEV_FALLBACK_SCHOOL_NAME || 'Dev School';
+  const schoolDomain = process.env.DEV_FALLBACK_SCHOOL_DOMAIN || 'devschool.local';
+
+  const school: School = {
+    id: schoolId,
+    name: schoolName,
+    domain: schoolDomain,
+    district_id: undefined,
+    subscription_status: 'active',
+    subscription_tier: 'basic',
+    student_count: 0,
+    teacher_count: 1,
+    created_at: now,
+    subscription_end_date: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+  };
+
+  const teacherId = process.env.DEV_FALLBACK_TEACHER_ID || '00000000-0000-0000-0000-000000000001';
+  const teacherEmail = process.env.E2E_TEACHER_EMAIL || process.env.DEV_FALLBACK_TEACHER_EMAIL || 'teacher@example.com';
+  const teacherName = process.env.DEV_FALLBACK_TEACHER_NAME || 'Dev Teacher';
+
+  const teacher: Teacher = {
+    id: teacherId,
+    google_id: process.env.DEV_FALLBACK_TEACHER_GOOGLE_ID || `dev-google-${teacherId}`,
+    email: teacherEmail,
+    name: teacherName,
+    picture: process.env.DEV_FALLBACK_TEACHER_AVATAR || '',
+    school_id: schoolId,
+    role: (process.env.DEV_FALLBACK_TEACHER_ROLE as Teacher['role']) || 'teacher',
+    status: 'active',
+    access_level: process.env.DEV_FALLBACK_TEACHER_ACCESS_LEVEL || 'full',
+    max_concurrent_sessions: 3,
+    current_sessions: 0,
+    timezone: process.env.DEV_FALLBACK_TEACHER_TIMEZONE || 'UTC',
+    login_count: 1,
+    total_sessions_created: 0,
+    created_at: now,
+    updated_at: now,
+  };
+
+  return { teacher, school };
+}
+
+async function handleDevAuthFallback(
+  req: Request,
+  res: Response,
+  requestId: string,
+  startTime: number,
+  trigger: string | undefined,
+): Promise<Response> {
+  const fallbackStart = performance.now();
+  const { teacher, school } = buildDevAuthFallbackIdentity();
+  const sessionId = generateSessionId();
+
+  logger.warn('dev auth fallback engaged', {
+    requestId,
+    trigger,
+    teacherId: teacher.id,
+    schoolId: school.id,
+  });
+
+  let secureTokens;
+  try {
+    secureTokens = await SecureJWTService.generateSecureTokens(teacher, school, sessionId, req);
+  } catch (error) {
+    logger.error('Failed to generate secure tokens during dev auth fallback', { error: (error as Error)?.message || String(error) });
+    throw error;
+  }
+
+  try {
+    await storeSessionOptimized(sessionId, teacher, school, req);
+  } catch (error) {
+    logger.error('Failed to store secure session during dev auth fallback', { error: (error as Error)?.message || String(error) });
+  }
+
+  if (isDatabricksMockEnabled()) {
+    try {
+      await databricksService.upsert(
+        'classwaves.users.schools',
+        { id: school.id },
+        {
+          id: school.id,
+          name: school.name,
+          domain: school.domain,
+          subscription_status: school.subscription_status ?? 'active',
+          subscription_tier: school.subscription_tier ?? 'basic',
+          created_at: school.created_at ?? new Date(),
+          updated_at: new Date(),
+        },
+      );
+
+      await databricksService.upsert(
+        'classwaves.users.teachers',
+        { id: teacher.id },
+        {
+          id: teacher.id,
+          email: teacher.email,
+          name: teacher.name,
+          role: teacher.role,
+          status: teacher.status ?? 'active',
+          school_id: teacher.school_id,
+          google_id: teacher.google_id,
+          access_level: teacher.access_level ?? 'full',
+          login_count: teacher.login_count ?? 1,
+          last_login: new Date(),
+          updated_at: new Date(),
+        },
+      );
+    } catch (error) {
+      logger.warn('Failed to seed dev fallback identity into databricks mock', {
+        error: (error as Error)?.message || String(error),
+      });
+    }
+  }
+
+  recordAuthDevFallback(trigger ?? 'unknown');
+
+  const totalAuthTime = performance.now() - startTime;
+  authHealthMonitor.recordAuthAttempt(true, totalAuthTime, requestId);
+  authHealthMonitor.recordAuthEnd(requestId);
+
+  res.cookie('session_id', sessionId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'lax' : 'lax',
+    maxAge: 24 * 60 * 60 * 1000,
+    path: '/',
+  });
+
+  return res.json({
+    success: true,
+    teacher: {
+      id: teacher.id,
+      email: teacher.email,
+      name: teacher.name,
+      role: teacher.role,
+      accessLevel: teacher.access_level,
+    },
+    school: {
+      id: school.id,
+      name: school.name,
+      domain: school.domain,
+      subscriptionTier: school.subscription_tier,
+    },
+    tokens: {
+      accessToken: secureTokens.accessToken,
+      refreshToken: secureTokens.refreshToken,
+      expiresIn: secureTokens.expiresIn,
+      refreshExpiresIn: secureTokens.refreshExpiresIn,
+      tokenType: 'Bearer',
+      deviceFingerprint: secureTokens.deviceFingerprint,
+    },
+    degradedMode: true,
+    provider: isLocalDbEnabled() ? 'postgres' : 'databricks',
+    performance: {
+      totalTime: performance.now() - fallbackStart,
+      fallback: 'dev',
+      trigger,
+      requestId,
+    },
+  });
 }
 
 
@@ -50,7 +218,12 @@ export async function optimizedGoogleAuthHandler(req: Request, res: Response): P
   authHealthMonitor.recordAuthStart(requestId);
   
   try {
-    const { code, codeVerifier } = req.body;
+    const { code, codeVerifier } = req.body ?? {};
+
+    const devFallbackDecision = getDevAuthFallbackDecision(req);
+    if (devFallbackDecision.shouldFallback) {
+      return await handleDevAuthFallback(req, res, requestId, startTime, devFallbackDecision.trigger);
+    }
 
     logger.debug(`🛡️ Using authorization code authentication [${requestId}]`);
 
@@ -496,20 +669,41 @@ export async function generateTestTokenHandler(req: Request, res: Response): Pro
     logger.debug('Test token secret key validation passed');
 
     // Create a test teacher and school for the token
-    const testTeacher = {
-      id: 'test-teacher-id',
-      email: 'test.teacher@testschool.edu',
-      name: 'Test Teacher',
-      role: 'teacher',
-      access_level: 'full',
-    };
+    const useLocalDb =
+      (process.env.DB_PROVIDER || '').toLowerCase() === 'postgres' ||
+      (process.env[FeatureFlags.DB_USE_LOCAL_POSTGRES] || '').toLowerCase() === '1' ||
+      (process.env.CW_DB_USE_LOCAL_POSTGRES || '').toLowerCase() === '1' ||
+      (process.env.USE_LOCAL_DB || '').toLowerCase() === '1';
 
-    const testSchool = {
-      id: 'test-school-id',
-      name: 'Test School',
-      domain: 'testschool.edu',
-      subscription_tier: 'professional',
-    };
+    const testTeacher = useLocalDb
+      ? {
+          id: '00000000-0000-0000-0000-000000000001',
+          email: process.env.E2E_TEACHER_EMAIL || 'teacher@example.com',
+          name: 'Dev Teacher',
+          role: 'teacher',
+          access_level: 'full',
+        }
+      : {
+          id: 'test-teacher-id',
+          email: 'test.teacher@testschool.edu',
+          name: 'Test Teacher',
+          role: 'teacher',
+          access_level: 'full',
+        };
+
+    const testSchool = useLocalDb
+      ? {
+          id: '11111111-1111-1111-1111-111111111111',
+          name: 'Dev School',
+          domain: 'devschool.local',
+          subscription_tier: 'development',
+        }
+      : {
+          id: 'test-school-id',
+          name: 'Test School',
+          domain: 'testschool.edu',
+          subscription_tier: 'professional',
+        };
     logger.debug('Test teacher and school objects created');
 
     // Generate secure tokens for testing

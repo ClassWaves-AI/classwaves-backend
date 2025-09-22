@@ -1,0 +1,5465 @@
+{
+  "schemas": [
+    {
+      "name": "admin",
+      "tables": [
+        {
+          "schema": "admin",
+          "name": "districts",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "contact_email",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "contact_phone",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "contract_details",
+              "originalType": "map<string,string>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "is_active",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "region",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "school_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "state",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "student_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "subscription_tier",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "superintendent_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "teacher_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "website",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.admin.districts",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "admin",
+          "name": "schema_migrations",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "error_message",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "executed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "execution_time_ms",
+              "originalType": "bigint",
+              "postgresType": "bigint",
+              "nullable": true
+            },
+            {
+              "name": "migration_file",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "migration_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "sql_hash",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.admin.schema_migrations",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "admin",
+          "name": "school_settings",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "description",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "is_editable",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "setting_key",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "setting_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "setting_value",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.admin.school_settings",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ai_insights",
+      "tables": [
+        {
+          "schema": "ai_insights",
+          "name": "analysis_results",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "confidence_score",
+              "originalType": "decimal(5,4)",
+              "postgresType": "numeric(5,4)",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "Per-group Tier2 scope"
+            },
+            {
+              "name": "model_version",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "processing_time_ms",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "result_data",
+              "originalType": "string",
+              "postgresType": "jsonb",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.analysis_results",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "educational_insights",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "applies_to_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "applies_to_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "confidence_level",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "description",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "impact_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "insight_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "recommendations",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "title",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.educational_insights",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "group_summaries",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "summary_json",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.group_summaries",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "guidance_events",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "event_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "event_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "payload",
+              "originalType": "string",
+              "postgresType": "jsonb",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.guidance_events",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "intervention_suggestions",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "acted_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "acted_upon",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "intervention_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "reason",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "suggested_action",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "target_student_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "target_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "urgency",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "was_effective",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.intervention_suggestions",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "schema_migrations",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "error_message",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "executed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "execution_time_ms",
+              "originalType": "bigint",
+              "postgresType": "bigint",
+              "nullable": true
+            },
+            {
+              "name": "migration_file",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "migration_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "sql_hash",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.schema_migrations",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "session_guidance_analytics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "acknowledgment_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "ai_analysis_latency_ms",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_effectiveness_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_feedback_rating",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_response_time_seconds",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "category_breakdown",
+              "originalType": "map<string,struct<generated:int,used:int,effectiveness:double>>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "compliance_violations",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "data_retention_compliance",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "discussion_quality_improvement",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "effectiveness_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "error_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "learning_objective_completion_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "phase_breakdown",
+              "originalType": "map<string,struct<generated:int,used:int,effectiveness:double>>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "priority_breakdown",
+              "originalType": "map<string,struct<generated:int,used:int,effectiveness:double>>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "privacy_safeguards_applied",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "prompt_generation_latency_ms",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "session_date",
+              "originalType": "date",
+              "postgresType": "date",
+              "nullable": true
+            },
+            {
+              "name": "session_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "session_improvement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "student_engagement_improvement",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "subject_area",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "system_uptime_percentage",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "teacher_feedback_text",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "teacher_satisfaction_rating",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_acknowledged",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_dismissed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_expired",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_generated",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_used",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "usage_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "would_recommend_system",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.session_guidance_analytics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "session_summaries",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "summary_json",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.session_summaries",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "teacher_guidance_metrics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false,
+              "comment": "Unique identifier for the guidance metric record"
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "Reference to the classroom session"
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "Reference to the teacher user"
+            },
+            {
+              "name": "prompt_category",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "facilitation, deepening, redirection, collaboration,"
+            },
+            {
+              "name": "prompt_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "Unique identifier for the specific prompt"
+            }
+          ],
+          "fullName": "classwaves.ai_insights.teacher_guidance_metrics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "teacher_prompt_effectiveness",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "acknowledgment_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_effectiveness_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_feedback_rating",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_learning_impact",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_response_time_seconds",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "calculation_period_end",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "calculation_period_start",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "confidence_interval_lower",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "confidence_interval_upper",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "data_points",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "dismissal_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "last_calculated",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "priority_level",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "prompt_category",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "session_phase",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "std_dev_effectiveness",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "subject_area",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "total_acknowledged",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_dismissed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_generated",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_used",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "usage_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.teacher_prompt_effectiveness",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "tier1_analysis",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "insights",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.tier1_analysis",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "ai_insights",
+          "name": "tier2_analysis",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "insights",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.ai_insights.tier2_analysis",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "analytics",
+      "tables": [
+        {
+          "schema": "analytics",
+          "name": "dashboard_metrics_hourly",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false,
+              "comment": "Unique identifier for hourly metric record"
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "School identifier for data isolation"
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "Record creation timestamp"
+            },
+            {
+              "name": "ai_analyses_completed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of AI analyses completed during this hour"
+            },
+            {
+              "name": "ai_analysis_success_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "AI analysis success rate as percentage"
+            },
+            {
+              "name": "avg_ai_processing_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average AI processing time in milliseconds"
+            },
+            {
+              "name": "avg_audio_quality",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average audio quality score for the hour"
+            },
+            {
+              "name": "avg_collaboration_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average collaboration effectiveness for the hour"
+            },
+            {
+              "name": "avg_connection_stability",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average connection stability for the hour"
+            },
+            {
+              "name": "avg_engagement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average student engagement score for the hour"
+            },
+            {
+              "name": "avg_latency_ms",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average network latency in milliseconds"
+            },
+            {
+              "name": "avg_participation_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average student participation rate for the hour"
+            },
+            {
+              "name": "avg_response_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average system response time in milliseconds"
+            },
+            {
+              "name": "avg_session_quality",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Average session quality score for the hour"
+            },
+            {
+              "name": "calculated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "When this aggregation was calculated"
+            },
+            {
+              "name": "calculation_method",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Method used for aggregation (hourly_rollup)"
+            },
+            {
+              "name": "data_sources_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of source records aggregated"
+            },
+            {
+              "name": "error_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Error rate as percentage (0.0-100.0)"
+            },
+            {
+              "name": "estimated_compute_cost",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Estimated compute cost for this hour"
+            },
+            {
+              "name": "metric_hour",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "Hour of aggregated metrics (e.g., 2024-01-15 14:00:00)"
+            },
+            {
+              "name": "ready_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of groups that were ready during this hour"
+            },
+            {
+              "name": "sessions_active",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of active sessions during this hour"
+            },
+            {
+              "name": "sessions_completed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of sessions completed during this hour"
+            },
+            {
+              "name": "students_active",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of unique students active during this hour"
+            },
+            {
+              "name": "teachers_active",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of unique teachers active during this hour"
+            },
+            {
+              "name": "total_alerts",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total system alerts generated during this hour"
+            },
+            {
+              "name": "total_errors",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total system errors during this hour"
+            },
+            {
+              "name": "total_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total number of groups active during this hour"
+            },
+            {
+              "name": "total_interventions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total teacher interventions during this hour"
+            },
+            {
+              "name": "total_prompts_generated",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total AI prompts generated during this hour"
+            },
+            {
+              "name": "total_prompts_used",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total prompts acted upon by teachers"
+            },
+            {
+              "name": "total_storage_gb",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Total storage used in gigabytes"
+            },
+            {
+              "name": "total_transcription_minutes",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Total minutes of transcription processed"
+            },
+            {
+              "name": "websocket_connections",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Peak concurrent websocket connections"
+            }
+          ],
+          "fullName": "classwaves.analytics.dashboard_metrics_hourly",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "educational_metrics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "aggregation_level",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "calculation_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "metric_metadata",
+              "originalType": "map<string,string>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "metric_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "metric_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "metric_value",
+              "originalType": "decimal(10,4)",
+              "postgresType": "numeric(10,4)",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.educational_metrics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "group_analytics",
+          "columns": [
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "avg_collaboration_time",
+              "originalType": "decimal(10,2)",
+              "postgresType": "numeric(10,2)",
+              "nullable": true
+            },
+            {
+              "name": "avg_message_length",
+              "originalType": "decimal(8,2)",
+              "postgresType": "numeric(8,2)",
+              "nullable": true
+            },
+            {
+              "name": "completion_rate",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "computed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "engagement_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "leader_engagement_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "member_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "participation_rate",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "total_messages",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.group_analytics"
+        },
+        {
+          "schema": "analytics",
+          "name": "group_metrics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "academic_discourse_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "average_sentiment_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "calculation_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "configured_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Teacher-assigned group name"
+            },
+            {
+              "name": "configured_size",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of members assigned to group"
+            },
+            {
+              "name": "conflict_instances",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "dominant_speaker_percentage",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "emotional_support_instances",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "interruption_rate",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "leader_assigned",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true,
+              "comment": "Whether a leader was assigned to this group"
+            },
+            {
+              "name": "leader_ready_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "When group leader marked ready"
+            },
+            {
+              "name": "members_configured",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of members configured for group"
+            },
+            {
+              "name": "members_present",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of configured members actually present"
+            },
+            {
+              "name": "participation_equality_index",
+              "originalType": "decimal(5,4)",
+              "postgresType": "numeric(5,4)",
+              "nullable": true
+            },
+            {
+              "name": "silent_members_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "supportive_interactions_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "topic_coherence_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "turn_taking_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "vocabulary_diversity_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.group_metrics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "session_analytics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "analysis_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "analytics_data",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "computation_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "computation_metadata",
+              "originalType": "string",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "computed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "error_message",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "failed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "processing_time_ms",
+              "originalType": "bigint",
+              "postgresType": "bigint",
+              "nullable": true
+            },
+            {
+              "name": "started_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "version",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.session_analytics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "session_analytics_cache",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "active_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "actual_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "actual_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "avg_collaboration_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_engagement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_group_readiness_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_participation_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "cache_key",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "expires_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "last_updated",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "planned_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "planned_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "ready_groups_at_10m",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "ready_groups_at_5m",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "ready_groups_at_start",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "session_date",
+              "originalType": "date",
+              "postgresType": "date",
+              "nullable": true
+            },
+            {
+              "name": "session_status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "total_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_transcriptions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.session_analytics_cache",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "session_events",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false,
+              "comment": "Unique event identifier"
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "Session this event belongs to (FK to classroom_sessions)"
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true,
+              "comment": "Teacher who owns the session (FK to teachers)"
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "Record creation timestamp"
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "event_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "When the event occurred (UTC timestamp)"
+            },
+            {
+              "name": "event_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Event type: configured"
+            },
+            {
+              "name": "payload",
+              "originalType": "string",
+              "postgresType": "jsonb",
+              "nullable": true,
+              "comment": "JSON string with event-specific data (groupId, counts, member info, etc.)"
+            }
+          ],
+          "fullName": "classwaves.analytics.session_events",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "session_metrics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "academic_vocabulary_usage",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "active_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "adherence_members_ratio",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true,
+              "comment": "Ratio of actual to planned member participation"
+            },
+            {
+              "name": "attention_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "average_connection_quality",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "average_group_size",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "average_speaking_time_seconds",
+              "originalType": "decimal(10,2)",
+              "postgresType": "numeric(10,2)",
+              "nullable": true
+            },
+            {
+              "name": "calculation_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "collaboration_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "configured_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "When session was fully configured"
+            },
+            {
+              "name": "group_formation_time_seconds",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "group_stability_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "interaction_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "on_topic_percentage",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "overall_engagement_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "participation_rate",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "planned_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Planned session duration in minutes"
+            },
+            {
+              "name": "planned_group_size",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Target group size configured by teacher"
+            },
+            {
+              "name": "planned_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of groups configured by teacher"
+            },
+            {
+              "name": "planned_leaders",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of group leaders assigned"
+            },
+            {
+              "name": "planned_members",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Total members planned across all groups"
+            },
+            {
+              "name": "planned_scheduled_start",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "Teacher-scheduled start time"
+            },
+            {
+              "name": "question_asking_rate",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "ready_groups_at_10m",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of groups ready at 10 minutes"
+            },
+            {
+              "name": "ready_groups_at_5m",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of groups ready at 5 minutes"
+            },
+            {
+              "name": "ready_groups_at_start",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true,
+              "comment": "Number of groups marked ready when session started"
+            },
+            {
+              "name": "speaking_time_std_dev",
+              "originalType": "decimal(10,2)",
+              "postgresType": "numeric(10,2)",
+              "nullable": true
+            },
+            {
+              "name": "started_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true,
+              "comment": "When session was actually started"
+            },
+            {
+              "name": "started_without_ready_groups",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true,
+              "comment": "Whether session started before all groups were ready"
+            },
+            {
+              "name": "technical_issues_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.session_metrics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "student_metrics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "average_sentiment",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "average_turn_duration_seconds",
+              "originalType": "decimal(10,2)",
+              "postgresType": "numeric(10,2)",
+              "nullable": true
+            },
+            {
+              "name": "calculation_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "confidence_level",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "fluency_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "grammar_accuracy_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "initiative_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "participant_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "participation_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "peer_interaction_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "questions_asked_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "responsiveness_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "speaking_turns_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "stress_indicators_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "supportive_comments_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_speaking_time_seconds",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "vocabulary_complexity_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.student_metrics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "analytics",
+          "name": "teacher_analytics_summary",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "avg_collaboration_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_critical_thinking_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_discussion_quality_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_effectiveness_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_engagement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_participation_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_prompt_response_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_session_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "calculated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "calculation_method",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "confidence_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "data_quality_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "prompt_usage_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "source_tables",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "summary_date",
+              "originalType": "date",
+              "postgresType": "date",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_dismissed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_shown",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_used",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_session_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_sessions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.analytics.teacher_analytics_summary",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "audio",
+      "tables": [
+        {
+          "schema": "audio",
+          "name": "recordings",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "channels",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "codec",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "duration_seconds",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "file_path",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "file_size_bytes",
+              "originalType": "bigint",
+              "postgresType": "bigint",
+              "nullable": true
+            },
+            {
+              "name": "format",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "is_processed",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "last_error",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "participant_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "processed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "processing_attempts",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "sample_rate",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "transcription_status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.audio.recordings",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "communication",
+      "tables": [
+        {
+          "schema": "communication",
+          "name": "messages",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "content",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "deleted_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "is_archived",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "is_deleted",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "is_read",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "message_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "metadata",
+              "originalType": "map<string,string>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "read_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "recipient_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "recipient_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "sender_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "sender_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "subject",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.communication.messages",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "compliance",
+      "tables": [
+        {
+          "schema": "compliance",
+          "name": "audit_log",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "actor_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "actor_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "affected_student_ids",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "compliance_basis",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "data_accessed",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "description",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "event_category",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "event_timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "event_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "ip_address",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "resource_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "resource_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "user_agent",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.compliance.audit_log",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "compliance",
+          "name": "coppa_compliance",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "age_verification_method",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "age_verified_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "auto_delete_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "birth_year",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "data_collection_limited",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "delete_after_days",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "deletion_completed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "deletion_requested_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "is_under_13",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "no_behavioral_targeting",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "no_third_party_sharing",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "parent_access_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "parent_last_reviewed",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "student_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.compliance.coppa_compliance",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "compliance",
+          "name": "parental_consents",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "consent_date",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "consent_given",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "consent_text_version",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "consent_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "expires_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "ip_address",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "parent_email",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "parent_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "relationship",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "revoked_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "student_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "user_agent",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "verification_method",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "verification_token",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "verified_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.compliance.parental_consents",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "compliance",
+          "name": "retention_policies",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "archive_after_days",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "auto_delete_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "delete_after_days",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "legal_basis",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "policy_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "retention_days",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.compliance.retention_policies",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "notifications",
+      "tables": [
+        {
+          "schema": "notifications",
+          "name": "notification_queue",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "channel",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "content",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "expires_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "failed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "failure_reason",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "max_retries",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "notification_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "priority",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "recipient_address",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "retry_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "scheduled_for",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "sent_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "subject",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "template_data",
+              "originalType": "map<string,string>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "template_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "user_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.notifications.notification_queue",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "notifications",
+          "name": "templates",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "body_template",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "category",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "channel",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "created_by",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "description",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "is_active",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "subject_template",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "variables",
+              "originalType": "array<string>",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "version",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.notifications.templates",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "operational",
+      "tables": [
+        {
+          "schema": "operational",
+          "name": "api_metrics",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "endpoint",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "ip_address",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "method",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "response_time_ms",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "status_code",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "timestamp",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "user_agent",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "user_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.operational.api_metrics",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "operational",
+          "name": "background_jobs",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "completed_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "error_message",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "job_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "parameters",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "result",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "retry_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "scheduled_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "started_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.operational.background_jobs",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "operational",
+          "name": "system_events",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "component",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "error_details",
+              "originalType": "string",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "event_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "message",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "severity",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "user_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.operational.system_events",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sessions",
+      "tables": [
+        {
+          "schema": "sessions",
+          "name": "classroom_sessions",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "access_code",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "actual_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "actual_end",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "actual_start",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "ai_analysis_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "auto_group_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "coppa_compliant",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "data_retention_date",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "description",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "end_reason",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "engagement_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "ferpa_compliant",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "goal",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Learning goal/objectives for the session"
+            },
+            {
+              "name": "max_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "participation_rate",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "planned_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "recording_consent_obtained",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "recording_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "scheduled_start",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "subject",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Subject area for the session"
+            },
+            {
+              "name": "target_group_size",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "teacher_notes",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "title",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "total_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_students",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "transcription_enabled",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.sessions.classroom_sessions",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "sessions",
+          "name": "participants",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "anonymous_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "browser_info",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "can_hear",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "can_speak",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "connection_quality",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "device_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "display_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "interaction_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "is_active",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "is_muted",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "join_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "leave_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "message_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "student_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "total_speaking_time_seconds",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.sessions.participants",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "sessions",
+          "name": "student_group_members",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "student_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.sessions.student_group_members",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "sessions",
+          "name": "student_groups",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "argumentation_quality",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true,
+              "comment": "Score representing the quality of arguments, evidence, and reasoning."
+            },
+            {
+              "name": "auto_managed",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "collaboration_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "conceptual_density",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true,
+              "comment": "Lexical richness of group discussion."
+            },
+            {
+              "name": "current_size",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "end_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "group_number",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "is_ready",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "leader_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "max_size",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "sentiment_arc",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "JSON string representing the trend of the group sentiment over time."
+            },
+            {
+              "name": "start_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "topic_focus_score",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true
+            },
+            {
+              "name": "topical_cohesion",
+              "originalType": "decimal(5,2)",
+              "postgresType": "numeric(5,2)",
+              "nullable": true,
+              "comment": "Metric indicating how focused the group discussion is."
+            },
+            {
+              "name": "total_speaking_time_seconds",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.sessions.student_groups",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "sessions",
+          "name": "transcriptions",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "academic_vocabulary_detected",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "confidence_score",
+              "originalType": "decimal(5,4)",
+              "postgresType": "numeric(5,4)",
+              "nullable": true
+            },
+            {
+              "name": "content",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "duration_seconds",
+              "originalType": "decimal(10,3)",
+              "postgresType": "numeric(10,3)",
+              "nullable": true
+            },
+            {
+              "name": "end_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "group_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "is_final",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "key_phrases",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "language_code",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "sentiment",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "speaker_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "speaker_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "speaker_type",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "start_time",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.sessions.transcriptions",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "users",
+      "tables": [
+        {
+          "schema": "users",
+          "name": "analytics_job_metadata",
+          "columns": [
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "error_message",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "execution_duration_seconds",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "job_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "last_run",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "processing_period",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "records_processed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.analytics_job_metadata"
+        },
+        {
+          "schema": "users",
+          "name": "dashboard_metrics_hourly",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "ai_analyses_completed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "ai_analysis_success_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_ai_processing_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_audio_quality",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_collaboration_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_connection_stability",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_engagement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_participation_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_response_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_session_quality",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "calculated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "calculation_method",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "data_sources_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "estimated_compute_cost",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "metric_hour",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "sessions_active",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "sessions_completed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "students_active",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "teachers_active",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_alerts",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_errors",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_interventions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_generated",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_used",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_storage_gb",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "total_transcription_minutes",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.dashboard_metrics_hourly",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "users",
+          "name": "schools",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "admin_email",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "coppa_compliant",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "current_teachers",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "data_retention_days",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "domain",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "ferpa_agreement",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "google_workspace_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "max_teachers",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "stripe_customer_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "subscription_end_date",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "subscription_start_date",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "subscription_status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "subscription_tier",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "trial_ends_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.schools",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "users",
+          "name": "session_analytics_cache",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "session_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "actual_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "avg_ai_confidence",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_audio_quality",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_connection_stability",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_critical_thinking_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_engagement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_group_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_participation_balance",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_readiness_time_minutes",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "cache_freshness",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "cache_hit_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "cached_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "error_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "fallback_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "group_completion_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "groups_ready_at_10min",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "groups_ready_at_5min",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "groups_ready_at_start",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "intervention_events",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "intervention_recommendations",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "key_insights",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "last_full_calculation",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "last_real_time_update",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "leader_readiness_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "leader_ready_events",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "participation_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "planned_groups",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "session_date",
+              "originalType": "date",
+              "postgresType": "date",
+              "nullable": true
+            },
+            {
+              "name": "session_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "session_effectiveness_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "session_overall_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "session_status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "total_ai_analyses",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_participants",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_transcription_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.session_analytics_cache",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "users",
+          "name": "students",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "audio_recording_consent",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "consent_date",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "coppa_compliant",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "data_sharing_consent",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "display_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "email",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "email_consent",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "family_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Student family/last name"
+            },
+            {
+              "name": "given_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Student given/first name"
+            },
+            {
+              "name": "google_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "grade_level",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "has_parental_consent",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "parent_email",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "preferred_name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true,
+              "comment": "Student preferred name"
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "teacher_verified_age",
+              "originalType": "boolean",
+              "postgresType": "boolean",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.students",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "users",
+          "name": "teacher_analytics_summary",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "teacher_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "avg_alert_response_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_collaboration_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_critical_thinking_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_discussion_quality_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_effectiveness_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_engagement_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_group_completion_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_group_readiness_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_intervention_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_participation_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_prompt_response_time",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "avg_session_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "calculated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "confidence_score",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "data_points_included",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "improvement_trend",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "last_updated",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "prompt_usage_rate",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "summary_date",
+              "originalType": "date",
+              "postgresType": "date",
+              "nullable": true
+            },
+            {
+              "name": "total_alerts_generated",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_interventions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_leader_ready_events",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_dismissed",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_shown",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_prompts_used",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_session_duration_minutes",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "total_sessions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "vs_peer_average",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            },
+            {
+              "name": "vs_school_average",
+              "originalType": "double",
+              "postgresType": "double precision",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.teacher_analytics_summary",
+          "primaryKey": [
+            "id"
+          ]
+        },
+        {
+          "schema": "users",
+          "name": "teachers",
+          "columns": [
+            {
+              "name": "id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": false
+            },
+            {
+              "name": "school_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "created_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "updated_at",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "access_level",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "current_sessions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "email",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "features_enabled",
+              "originalType": "string",
+              "postgresType": "jsonb",
+              "nullable": true
+            },
+            {
+              "name": "google_id",
+              "originalType": "string",
+              "postgresType": "uuid",
+              "nullable": true
+            },
+            {
+              "name": "grade",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "last_login",
+              "originalType": "timestamp",
+              "postgresType": "timestamptz",
+              "nullable": true
+            },
+            {
+              "name": "login_count",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "max_concurrent_sessions",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            },
+            {
+              "name": "name",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "picture",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "role",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "status",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "subject",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "timezone",
+              "originalType": "string",
+              "postgresType": "text",
+              "nullable": true
+            },
+            {
+              "name": "total_sessions_created",
+              "originalType": "int",
+              "postgresType": "integer",
+              "nullable": true
+            }
+          ],
+          "fullName": "classwaves.users.teachers",
+          "primaryKey": [
+            "id"
+          ]
+        }
+      ]
+    }
+  ],
+  "sourceDocument": "docs/DATABASE_SCHEMA_COMPLETE.md",
+  "generatedAt": "2025-09-17T15:54:03.576Z"
+}

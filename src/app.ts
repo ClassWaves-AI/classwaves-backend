@@ -47,6 +47,7 @@ import { ErrorCodes } from '@classwaves/shared';
 import { logger } from './utils/logger';
 import { getCompositionRoot } from './app/composition-root';
 import { initOtel, httpTraceMiddleware, createRouteSpanMiddleware } from './observability/otel';
+import { getSchemaManifestHash } from './utils/manifest.utils';
 
 // Optional OTEL: initialize and wire tracing when enabled
 if (process.env.OTEL_ENABLED === '1') {
@@ -154,17 +155,9 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-E2E-Test-Secret'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-E2E-Test-Secret', 'X-CW-Fingerprint'],
 };
 app.use(cors(corsOptions));
-// Explicitly handle preflight requests globally
-try {
-  app.options('*', cors(corsOptions));
-} catch (error) {
-  logger.warn('Failed to register CORS preflight handler', {
-    error: error instanceof Error ? error.message : String(error),
-  });
-}
 
 // SECURITY 1: Global rate limiting to prevent brute-force attacks
 const globalRateLimit = rateLimit({
@@ -477,14 +470,15 @@ const appInfoGauge = (() => {
   return new client.Gauge({
     name,
     help: 'ClassWaves app metadata',
-    labelNames: ['db_provider'],
+    labelNames: ['db_provider', 'manifest_hash'],
   });
 })();
 
 function updateAppInfoGauge(): void {
   try {
     const provider = getCompositionRoot().getDbProvider();
-    appInfoGauge.set({ db_provider: provider }, 1);
+    const manifestHash = provider === 'postgres' ? getSchemaManifestHash() ?? 'unknown' : 'not_applicable';
+    appInfoGauge.set({ db_provider: provider, manifest_hash: manifestHash }, 1);
   } catch (error) {
     if (process.env.API_DEBUG === '1') {
       logger.warn('Unable to update app info gauge', {

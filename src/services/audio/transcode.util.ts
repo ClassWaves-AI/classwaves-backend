@@ -7,10 +7,14 @@ export interface TranscodeResult {
 }
 
 // Real in-memory transcode to WAV (PCM 16kHz mono) using ffmpeg-static + fluent-ffmpeg
-export async function maybeTranscodeToWav(buf: Buffer, mime: string): Promise<TranscodeResult> {
+interface TranscodeOptions {
+  force?: boolean;
+}
+
+export async function maybeTranscodeToWav(buf: Buffer, mime: string, options: TranscodeOptions = {}): Promise<TranscodeResult> {
   // If already WAV or transcode disabled, pass-through
   const wavAlready = mime?.toLowerCase().startsWith('audio/wav');
-  const allowTranscode = (process.env.STT_TRANSCODE_TO_WAV === '1') || (process.env.WS_STT_TRANSCODE_TO_WAV === '1');
+  const allowTranscode = options.force || (process.env.STT_TRANSCODE_TO_WAV === '1') || (process.env.WS_STT_TRANSCODE_TO_WAV === '1');
   if (wavAlready || !allowTranscode) {
     return { buffer: buf, mime };
   }
