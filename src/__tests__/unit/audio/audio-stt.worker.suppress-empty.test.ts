@@ -1,5 +1,3 @@
-import { processAudioJob } from '../../../workers/audio-stt.worker';
-
 const wsEmitMock = jest.fn();
 jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
   getNamespacedWebSocketService: () => ({
@@ -7,11 +5,15 @@ jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
   }),
 }));
 
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn(async () => ({ text: '' } as any)),
-  },
+const mockProvider = {
+  transcribeBuffer: jest.fn(async () => ({ text: '' } as any)),
+};
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }));
+
+import { processAudioJob } from '../../../workers/audio-stt.worker';
 
 const store = new Map<string, string>();
 const setMock = jest.fn(async (k: string, v: string) => { store.set(k, v); return 'OK'; });
@@ -42,4 +44,3 @@ describe('audio-stt.worker suppress empty transcripts', () => {
     expect(wsEmitMock).not.toHaveBeenCalled();
   });
 });
-

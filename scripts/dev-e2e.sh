@@ -17,7 +17,8 @@ if [[ "$USE_LOCAL_DB" == "1" ]]; then
   export CW_DB_USE_LOCAL_POSTGRES="1"
 fi
 
-export E2E_TEST_SECRET="${E2E_TEST_SECRET:-test}"
+export E2E_TEST_SECRET="${E2E_TEST_SECRET:-test-secret-key}"
+export E2E_FINGERPRINT="${E2E_FINGERPRINT:-e2e-smoke}"
 export NODE_ENV="test"
 export STT_INLINE_WORKER="${STT_INLINE_WORKER:-1}"
 export STT_FORCE_MOCK="${STT_FORCE_MOCK:-1}"

@@ -4,6 +4,28 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+load_env_file() {
+    local env_file="$1"
+    [ -f "$env_file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|\#*) continue ;;
+        esac
+        if [[ $line =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local value="${BASH_REMATCH[2]}"
+            if [ -z "${!key+x}" ]; then
+                export "$key=$value"
+            fi
+        fi
+    done < "$env_file"
+}
+
+load_env_file "${BACKEND_DIR}/.env"
+
 echo "🚀 Starting ClassWaves Backend Development Environment..."
 
 # Function to check if Redis is running

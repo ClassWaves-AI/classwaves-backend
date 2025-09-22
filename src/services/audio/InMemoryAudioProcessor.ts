@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { openAIWhisperService } from '../openai-whisper.service';
+import { getSttProvider } from '../stt.provider';
 import { maybeTranscodeToWav } from './transcode.util';
 import * as client from 'prom-client';
 import { logger } from '../../utils/logger';
@@ -139,6 +139,7 @@ export class InMemoryAudioProcessor {
     const run = async () => {
       const processingStart = performance.now();
       const bufferKey = `${groupId}-${Date.now()}`;
+      const provider = getSttProvider();
       try {
         this.validateAudioFormat(mimeType);
         await this.handleBackPressure(groupId);
@@ -179,7 +180,7 @@ export class InMemoryAudioProcessor {
           } catch { /* intentionally ignored: best effort cleanup */ }
           let transcription: any;
           try {
-            transcription = await openAIWhisperService.transcribeBuffer(submitBuffer, mimeType, {}, schoolId);
+            transcription = await provider.transcribeBuffer(submitBuffer, mimeType, {}, schoolId);
           } catch (e) {
             if (process.env.WS_STT_TRANSCODE_TO_WAV === '1') {
               try {
@@ -187,7 +188,7 @@ export class InMemoryAudioProcessor {
                   try { logger.warn('🎛️  WS Whisper decode error — attempting WAV transcode fallback'); } catch { /* intentionally ignored: best effort cleanup */ }
                 }
                 const wav = await maybeTranscodeToWav(submitBuffer, mimeType);
-                transcription = await openAIWhisperService.transcribeBuffer(wav.buffer, wav.mime, {}, schoolId);
+                transcription = await provider.transcribeBuffer(wav.buffer, wav.mime, {}, schoolId);
                 if (process.env.API_DEBUG === '1') {
                   try { logger.debug('✅ WS WAV transcode fallback succeeded'); } catch { /* intentionally ignored: best effort cleanup */ }
                 }
@@ -276,7 +277,8 @@ export class InMemoryAudioProcessor {
         duration: undefined,
       };
     }
-    const transcription = await openAIWhisperService.transcribeBuffer(audioChunk, mimeType);
+    const provider = getSttProvider();
+    const transcription = await provider.transcribeBuffer(audioChunk, mimeType);
     // Zero buffer immediately
     this.secureZeroBuffer(audioChunk);
     const elapsed = performance.now() - start;
@@ -374,9 +376,11 @@ export class InMemoryAudioProcessor {
     state.chunks = [];
     state.bytes = 0;
 
+    const provider = getSttProvider();
+
     try {
       // Pass the window duration as a hint for budgeting when Whisper does not return duration
-      const result = await openAIWhisperService.transcribeBuffer(windowBuffer, mimeType, { durationSeconds: state.windowSeconds }, schoolId);
+      const result = await provider.transcribeBuffer(windowBuffer, mimeType, { durationSeconds: state.windowSeconds }, schoolId);
       const latency = performance.now() - submitStart;
       if (process.env.API_DEBUG === '1') logger.debug(JSON.stringify({
         event: 'whisper_submit',
@@ -656,7 +660,8 @@ export class InMemoryAudioProcessor {
    */
   // Deprecated placeholder (unused)
   private async streamToWhisper(_audioBuffer: Buffer, _mimeType: string): Promise<WhisperResponse> {
-    const result = await openAIWhisperService.transcribeBuffer(Buffer.alloc(0), 'audio/webm');
+    const provider = getSttProvider();
+    const result = await provider.transcribeBuffer(Buffer.alloc(0), 'audio/webm');
     return {
       text: result.text,
       confidence: result.confidence || 0,

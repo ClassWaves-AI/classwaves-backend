@@ -1,10 +1,11 @@
 import type { GroupRepositoryPort } from '../../services/ports/group.repository.port';
 import type { DbPort } from '../../services/ports/db.port';
 
-const GROUP_TABLE = 'classwaves.sessions.student_groups';
-const MEMBERS_TABLE = 'classwaves.sessions.student_group_members';
-const SESSION_TABLE = 'classwaves.sessions.classroom_sessions';
-const STUDENTS_TABLE = 'classwaves.users.students';
+import { normalizeTableFqn } from '../db/fqn.utils';
+const { identifier: GROUP_TABLE } = normalizeTableFqn('classwaves.sessions.student_groups');
+const { identifier: MEMBERS_TABLE } = normalizeTableFqn('classwaves.sessions.student_group_members');
+const { identifier: SESSION_TABLE } = normalizeTableFqn('classwaves.sessions.classroom_sessions');
+const { identifier: STUDENTS_TABLE } = normalizeTableFqn('classwaves.users.students');
 
 export class DbGroupRepository implements GroupRepositoryPort {
   constructor(private readonly db: DbPort) {}

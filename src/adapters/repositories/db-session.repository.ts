@@ -1,8 +1,9 @@
 import type { SessionRepositoryPort, SessionStatus, SessionBasic } from '../../services/ports/session.repository.port';
 import type { DbPort } from '../../services/ports/db.port';
 
-const SESSION_TABLE = 'classwaves.sessions.classroom_sessions';
-const GROUP_TABLE = 'classwaves.sessions.student_groups';
+import { normalizeTableFqn } from '../db/fqn.utils';
+const { identifier: SESSION_TABLE } = normalizeTableFqn('classwaves.sessions.classroom_sessions');
+const { identifier: GROUP_TABLE } = normalizeTableFqn('classwaves.sessions.student_groups');
 
 export class DbSessionRepository implements SessionRepositoryPort {
   constructor(private readonly db: DbPort) {}

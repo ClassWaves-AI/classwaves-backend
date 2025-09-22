@@ -3,6 +3,9 @@
   Compare canonical Databricks SOT (docs/DATABASE_SCHEMA_COMPLETE.md)
   with local Postgres export (docs/LOCAL_POSTGRES_SCHEMA.md) at a coarse level.
   Outputs table/column presence diffs to stdout.
+
+  CI guard: exits with non-zero status when drift is detected so that
+  `npm run db:drift:check` can fail in CI on schema differences.
 */
 const fs = require('fs');
 const path = require('path');
@@ -89,6 +92,7 @@ function main() {
   function canonicalType(dbxType, pgType, colName) {
     const d = (dbxType || '').toLowerCase();
     const p = (pgType || '').toLowerCase();
+    const c = (colName || '').toLowerCase();
     // Normalize DBX → canonical
     let dCanon = d
       .replace(/decimal\([^\)]*\)/g, 'numeric')
@@ -96,10 +100,22 @@ function main() {
       .replace(/string/g, 'text')
       .replace(/timestamp/g, 'timestamptz')
       .replace(/int/g, 'integer');
-    // Heuristic: array/struct/json → jsonb acceptable in Postgres
-    if (d.includes('array') || d.includes('struct') || colName.includes('payload') || colName.includes('context_supporting_lines') || colName.includes('learning_objectives')) {
-      dCanon = 'jsonb';
-    }
+    // Heuristic: ARRAY/STRUCT/MAP or JSON-like columns → treat as jsonb for parity checks
+    const looksJsonLike = (
+      d.includes('array') ||
+      d.includes('struct') ||
+      d.includes('map') ||
+      c.includes('payload') ||
+      c.includes('result_data') ||
+      c.includes('features') ||
+      c.includes('metadata') ||
+      c.includes('contract_details') ||
+      c.includes('context_supporting_lines') ||
+      c.includes('learning_objectives') ||
+      /_data$/.test(c) ||
+      /_details$/.test(c)
+    );
+    if (looksJsonLike) dCanon = 'jsonb';
     // Normalize PG → canonical
     const pCanon = p
       .replace(/timestamp with time zone|timestamptz/g, 'timestamptz')
@@ -107,6 +123,9 @@ function main() {
       .replace(/integer|int4/g, 'integer')
       .replace(/double precision|float8/g, 'double precision')
       .replace(/jsonb|json/g, 'jsonb')
+      // Arrays in Postgres information_schema typically show as 'array'
+      // Normalize to jsonb to avoid false positives when DBX describes ARRAY<...>
+      .replace(/array/g, 'jsonb')
       .replace(/numeric\([^\)]*\)|decimal\([^\)]*\)/g, 'numeric');
     return { dCanon, pCanon };
   }
@@ -159,9 +178,13 @@ function main() {
     }
   }
 
-  if (!missingInPg.length && !extraInPg.length && !columnDiffs.length && !typeNullMismatches.length) {
+  const hasDiff = missingInPg.length || extraInPg.length || columnDiffs.length || typeNullMismatches.length;
+  if (!hasDiff) {
     console.log('No differences detected at table/column/type/nullability level.');
+    process.exit(0);
   }
+  // Non-zero exit for CI guard
+  process.exit(1);
 }
 
 main();

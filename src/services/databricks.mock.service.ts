@@ -259,25 +259,31 @@ export class DatabricksMockService {
 
   async batchAuthOperations(googleUser?: any, domain?: string): Promise<{ school: any; teacher: any }> {
     const now = new Date();
+    const email = (googleUser?.email || 'mock-teacher@classwaves.test').toLowerCase();
+    const isRob = email === 'rob@classwaves.ai';
+    const role: 'teacher' | 'admin' | 'super_admin' = isRob ? 'super_admin' : 'teacher';
+    const schoolId = '11111111-1111-1111-1111-111111111111';
+    const teacherId = isRob ? '00000000-0000-0000-0000-000000000001' : 'mock-teacher';
+
     return {
       school: {
-        id: 'mock-school',
-        name: 'Mock School',
-        domain: domain || 'mock.classwaves.test',
+        id: schoolId,
+        name: 'Dev School',
+        domain: domain || 'devschool.local',
         subscription_tier: 'trial',
         subscription_status: 'active',
         teacher_count: 1,
         student_count: 0,
       },
       teacher: {
-        id: 'mock-teacher',
+        id: teacherId,
         google_id: googleUser?.id || 'mock-google-id',
-        email: googleUser?.email || 'mock-teacher@classwaves.test',
-        name: googleUser?.name || 'Mock Teacher',
+        email,
+        name: googleUser?.name || (isRob ? 'Dev Super Admin' : 'Mock Teacher'),
         picture: googleUser?.picture || '',
-        school_id: 'mock-school',
+        school_id: schoolId,
         status: 'active',
-        role: 'teacher',
+        role,
         access_level: 'basic',
         max_concurrent_sessions: 3,
         current_sessions: 0,

@@ -88,7 +88,12 @@ export class EmailService {
           if (process.env.NODE_ENV === 'test') {
             throw oauthErr;
           }
-          logger.warn('⚠️ No SMTP credentials available; using dev JSON transport (no network)');
+          const message = 'No SMTP credentials available; using dev JSON transport (no network)';
+          if (process.env.NODE_ENV === 'production') {
+            logger.warn(`⚠️ ${message}`);
+          } else {
+            logger.info(`ℹ️ ${message}`);
+          }
           this.transporter = nodemailer.createTransport({ jsonTransport: true } as any);
           // No verify needed for jsonTransport, but mimic success
           logger.debug('✅ Email service initialized with JSON transport (dev)');

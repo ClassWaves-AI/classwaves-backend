@@ -1719,25 +1719,55 @@ export class SessionsNamespaceService extends NamespaceBaseService {
 
   // Build a lightweight snapshot for immediate UI sync on join
   private async buildSessionSnapshot(sessionId: string) {
-    // Fetch minimal session settings and status
-    const session = await databricksService.queryOne(
-      `SELECT id, status, recording_enabled, transcription_enabled
-       FROM classwaves.sessions.classroom_sessions
-       WHERE id = ?`,
-      [sessionId]
-    );
+    const { getCompositionRoot } = await import('../../app/composition-root');
+    const composition = getCompositionRoot();
 
-    // Fetch groups readiness
-    const groups = await databricksService.query(
-      `SELECT id, name, is_ready
-       FROM classwaves.sessions.student_groups
-       WHERE session_id = ?
-       ORDER BY group_number`,
-      [sessionId]
-    );
+    let session: any = null;
+    let groups: any[] = [];
 
-    const groupsDetailed = groups.map((g: any) => ({ id: g.id, name: g.name, isReady: Boolean(g.is_ready) }));
-    const groupsReady = groupsDetailed.filter((g: any) => g.isReady).length;
+    if (composition.getDbProvider() === 'postgres') {
+      try {
+        const db = composition.getDbPort();
+        session = await db.queryOne(
+          `SELECT id, status, recording_enabled, transcription_enabled
+           FROM sessions.classroom_sessions
+           WHERE id = ?`,
+          [sessionId]
+        );
+        groups = await db.query(
+          `SELECT id, name, is_ready
+           FROM sessions.student_groups
+           WHERE session_id = ?
+           ORDER BY group_number`,
+          [sessionId]
+        );
+      } catch (error) {
+        logger.warn('session_snapshot.postgres_fetch_failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (!session || !Array.isArray(groups)) {
+      session = await databricksService.queryOne(
+        `SELECT id, status, recording_enabled, transcription_enabled
+         FROM classwaves.sessions.classroom_sessions
+         WHERE id = ?`,
+        [sessionId]
+      );
+
+      groups = await databricksService.query(
+        `SELECT id, name, is_ready
+         FROM classwaves.sessions.student_groups
+         WHERE session_id = ?
+         ORDER BY group_number`,
+        [sessionId]
+      );
+    }
+
+    const groupsDetailed = (groups || []).map((g: any) => ({ id: g.id, name: g.name, isReady: Boolean(g.is_ready) }));
+    const groupsReady = groupsDetailed.filter((g) => g.isReady).length;
 
     // Compute live participant count from room membership (server-local)
     const room = this.namespace.adapter.rooms.get(`session:${sessionId}`);

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { openAIWhisperService } from '../services/openai-whisper.service';
+import { sttBudgetService } from '../services/stt.budget.service';
 import { getCompositionRoot } from '../app/composition-root';
 import { logger } from '../utils/logger';
 
@@ -41,7 +41,7 @@ export const getBudgetUsage = async (req: Request, res: Response): Promise<void>
     const queryDate = date as string || new Date().toISOString().split('T')[0];
     
     // Get budget usage from OpenAI Whisper service
-    const usage = await openAIWhisperService.getBudgetUsage(schoolId, queryDate);
+    const usage = await sttBudgetService.getUsage(schoolId, queryDate);
     
     // Get school budget limit from database
     const budgetRepo = getCompositionRoot().getBudgetRepository();
@@ -86,7 +86,7 @@ export const getBudgetAlerts = async (req: Request, res: Response): Promise<void
     }
 
     // Get active budget alerts from OpenAI Whisper service
-    const alerts = await openAIWhisperService.getBudgetAlerts(schoolId);
+    const alerts = await sttBudgetService.getAlerts(schoolId);
     
     const response: BudgetAlertResponse = {
       schoolId,
@@ -158,7 +158,7 @@ export const acknowledgeBudgetAlert = async (req: Request, res: Response): Promi
       return;
     }
 
-    await openAIWhisperService.acknowledgeBudgetAlert(schoolId, alertId);
+    await sttBudgetService.acknowledgeAlert(schoolId, alertId);
     
     res.json({ success: true, schoolId, alertId });
   } catch (error) {

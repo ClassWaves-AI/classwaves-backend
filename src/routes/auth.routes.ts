@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { optimizedGoogleAuthHandler, generateTestTokenHandler, rotateTokens, secureLogout } from '../controllers/auth.controller';
 import { validate } from '../middleware/validation.middleware';
 import { googleAuthSchema, refreshTokenSchema, generateTestTokenSchema } from '../utils/validation.schemas';
@@ -9,11 +9,22 @@ import { authHealthMonitor } from '../services/auth-health-monitor.service';
 import { fail } from '../utils/api-response';
 import { ErrorCodes } from '@classwaves/shared';
 import { logger } from '../utils/logger';
+import { shouldBypassGoogleAuthValidation } from '../utils/auth-dev-fallback.utils';
 
 const router = Router();
 
+const googleAuthValidator = validate(googleAuthSchema);
+
+function conditionalValidateGoogleAuth(req: Request, res: Response, next: NextFunction) {
+  if (shouldBypassGoogleAuthValidation(req)) {
+    logger.debug('Skipping Google auth validation for dev fallback path');
+    return next();
+  }
+  return googleAuthValidator(req, res, next);
+}
+
 // Google OAuth callback (optimized)
-router.post('/google', validate(googleAuthSchema), optimizedGoogleAuthHandler);
+router.post('/google', conditionalValidateGoogleAuth, optimizedGoogleAuthHandler);
 
 // Token refresh (now uses secure rotation under the hood)
 router.post('/refresh', validate(refreshTokenSchema), rotateTokens);

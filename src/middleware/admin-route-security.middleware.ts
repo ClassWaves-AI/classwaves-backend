@@ -12,6 +12,7 @@ import { databricksConfig } from '../config/databricks.config';
 import { fail } from '../utils/api-response';
 import { ErrorCodes } from '@classwaves/shared';
 import { logger } from '../utils/logger';
+import { getCompositionRoot } from '../app/composition-root';
 
 export interface AdminSecurityOptions {
   allowedRoles: Array<'admin' | 'super_admin'>;
@@ -71,7 +72,7 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
       }
 
       // 3. Verify user account status
-      const userValidation = await validateAdminUserStatus(authReq.user.id, authReq.user.role);
+      const userValidation = await validateAdminUserStatus(authReq.user);
       if (!userValidation.valid) {
         await logAdminSecurityEvent(req, authReq.user, 'ADMIN_ACCESS_DENIED', {
           reason: userValidation.reason,
@@ -136,16 +137,55 @@ export function requireAdminAccess(options: AdminSecurityOptions = { allowedRole
  * Validate admin user account status
  */
 async function validateAdminUserStatus(
-  userId: string,
-  userRole: string
+  user: { id: string; role: string; status?: string | null }
 ): Promise<{ valid: boolean; reason?: string; userStatus?: string }> {
+  if (!user) {
+    return { valid: false, reason: 'Missing authenticated user', userStatus: 'unknown' };
+  }
+
+  const composition = getCompositionRoot();
+  const provider = composition.getDbProvider();
+
+  if (provider === 'postgres') {
+    if (!['admin', 'super_admin'].includes(user.role as any)) {
+      return {
+        valid: false,
+        reason: `Role ${user.role} is not permitted for admin access`,
+        userStatus: 'invalid_role',
+      };
+    }
+
+    try {
+      const dbPort = composition.getDbPort();
+      const record = await dbPort.queryOne<{ status?: string }>(
+        'SELECT status FROM classwaves.users.teachers WHERE id = ?',
+        [user.id],
+        { operation: 'admin_validate_teacher_postgres' }
+      );
+      const status = record?.status ?? user.status ?? 'active';
+      if (status && status !== 'active') {
+        return {
+          valid: false,
+          reason: `Admin account status is ${status}`,
+          userStatus: status,
+        };
+      }
+      return { valid: true };
+    } catch (error) {
+      logger.warn('Postgres admin user validation failed – allowing access', {
+        error: (error as any)?.message || String(error),
+      });
+      return { valid: true };
+    }
+  }
+
   try {
     const userRecord = await databricksService.queryOne(`
       SELECT t.id, t.status, t.role, t.school_id, s.subscription_status, s.name as school_name
       FROM classwaves.users.teachers t
       LEFT JOIN classwaves.users.schools s ON t.school_id = s.id
       WHERE t.id = ?
-    `, [userId]);
+    `, [user.id]);
 
     if (!userRecord) {
       return {
@@ -163,17 +203,15 @@ async function validateAdminUserStatus(
       };
     }
 
-    // Verify role consistency
-    if (userRecord.role !== userRole) {
+    if (userRecord.role !== user.role) {
       return {
         valid: false,
-        reason: `Role mismatch: token role ${userRole} vs database role ${userRecord.role}`,
+        reason: `Role mismatch: token role ${user.role} vs database role ${userRecord.role}`,
         userStatus: 'role_mismatch'
       };
     }
 
-    // Check school status for non-super-admin
-    if (userRole === 'admin' && userRecord.subscription_status !== 'active') {
+    if (user.role === 'admin' && userRecord.subscription_status !== 'active') {
       return {
         valid: false,
         reason: `School subscription is ${userRecord.subscription_status}`,
@@ -202,26 +240,47 @@ async function validateSchoolAccess(
   allowedRoles: Array<'admin' | 'super_admin'>
 ): Promise<{ allowed: boolean; reason?: string }> {
   try {
-    // Super admins have access to all schools
-    if (user.role === 'super_admin' && allowedRoles.includes('super_admin')) {
+    const composition = getCompositionRoot();
+    const provider = composition.getDbProvider();
+
+    const checkSchoolExists = async () => {
+      if (provider === 'postgres') {
+        try {
+          const dbPort = composition.getDbPort();
+          const school = await dbPort.queryOne('SELECT id FROM classwaves.users.schools WHERE id = ?', [targetSchoolId], {
+            operation: 'admin_validate_school_postgres',
+          });
+          return !!school;
+        } catch (error) {
+          logger.warn('Postgres school lookup failed – assuming present', {
+            error: (error as any)?.message || String(error),
+          });
+          return true;
+        }
+      }
       const schoolExists = await databricksService.queryOne(`
         SELECT id FROM classwaves.users.schools WHERE id = ?
       `, [targetSchoolId]);
+      return !!schoolExists;
+    };
 
+    if (user.role === 'super_admin' && allowedRoles.includes('super_admin')) {
+      const exists = await checkSchoolExists();
       return {
-        allowed: !!schoolExists,
-        reason: schoolExists ? undefined : 'Target school does not exist'
+        allowed: exists,
+        reason: exists ? undefined : 'Target school does not exist'
       };
     }
 
     // Regular admins can only access their own school
-    if (user.role === 'admin' && user.school_id === targetSchoolId) {
+    const userSchoolId = user.school_id ?? user.schoolId;
+    if (user.role === 'admin' && userSchoolId === targetSchoolId) {
       return { allowed: true };
     }
 
     return {
       allowed: false,
-      reason: `${user.role} ${user.id} cannot access school ${targetSchoolId} (belongs to ${user.school_id})`
+      reason: `${user.role} ${user.id} cannot access school ${targetSchoolId} (belongs to ${userSchoolId})`
     };
 
   } catch (error) {

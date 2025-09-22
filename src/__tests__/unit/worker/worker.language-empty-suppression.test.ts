@@ -1,10 +1,11 @@
 import * as client from 'prom-client'
-import { processAudioJob } from '../../../workers/audio-stt.worker'
 
-jest.mock('../../../services/openai-whisper.service', () => ({
-  openAIWhisperService: {
-    transcribeBuffer: jest.fn().mockResolvedValue({ text: ' ' }),
-  },
+const mockProvider = {
+  transcribeBuffer: jest.fn().mockResolvedValue({ text: ' ' }),
+}
+
+jest.mock('../../../services/stt.provider', () => ({
+  getSttProvider: jest.fn(() => mockProvider),
 }))
 
 jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
@@ -16,15 +17,17 @@ jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
   }),
 }))
 
+import { processAudioJob } from '../../../workers/audio-stt.worker'
+
 describe('Worker language hint + empty transcript suppression', () => {
   beforeEach(() => {
     jest.resetModules()
     process.env.STT_LANGUAGE_HINT = 'en'
+    mockProvider.transcribeBuffer = jest.fn().mockResolvedValue({ text: ' ' })
   })
 
   it('suppresses empty transcripts and passes language hint', async () => {
-    const { openAIWhisperService } = await import('../../../services/openai-whisper.service')
-    const spy = jest.spyOn(openAIWhisperService, 'transcribeBuffer')
+    mockProvider.transcribeBuffer.mockResolvedValueOnce({ text: ' ' })
 
     await processAudioJob({
       chunkId: 'c1',
@@ -37,9 +40,9 @@ describe('Worker language hint + empty transcript suppression', () => {
       audioB64: Buffer.from('x').toString('base64'),
     } as any)
 
-    expect(spy).toHaveBeenCalled()
+    expect(mockProvider.transcribeBuffer).toHaveBeenCalled()
     // Assert language hint was passed
-    const args = spy.mock.calls[0]
+    const args = mockProvider.transcribeBuffer.mock.calls[0]
     expect(args[2]).toMatchObject({ language: 'en' })
 
     // Prom counter should exist; exact value depends on global registry state
@@ -47,4 +50,3 @@ describe('Worker language hint + empty transcript suppression', () => {
     expect(ctr).toBeDefined()
   })
 })
-

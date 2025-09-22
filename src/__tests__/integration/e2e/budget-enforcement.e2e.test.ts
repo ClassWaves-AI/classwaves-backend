@@ -5,7 +5,7 @@ import { AddressInfo } from 'net';
 import { io as clientIO, Socket } from 'socket.io-client';
 import app from '../../../app';
 import { initializeWebSocket } from '../../../services/websocket';
-import { openAIWhisperService } from '../../../services/openai-whisper.service';
+import { sttBudgetService } from '../../../services/stt.budget.service';
 import { redisService } from '../../../services/redis.service';
 
 /**
@@ -262,14 +262,6 @@ describe('Phase 4 E2E: Budget Enforcement & Cost Controls', () => {
   async function simulateAudioProcessing(schoolId: string, seconds: number): Promise<void> {
     // Use the OpenAI Whisper service directly to consume budget
     // This simulates real audio processing that would consume budget
-    const audioBuffer = Buffer.from('mock-audio-for-budget-test');
-    const options = { durationSeconds: seconds };
-    
-    try {
-      await openAIWhisperService.transcribeBuffer(audioBuffer, 'audio/webm', options, schoolId);
-    } catch (error) {
-      // In test mode, this might mock-fail, but budget tracking should still work
-      console.log(`Simulated audio processing: ${seconds}s for school ${schoolId}`);
-    }
+    await sttBudgetService.recordUsage({ schoolId, durationSeconds: seconds, provider: 'test' });
   }
 });

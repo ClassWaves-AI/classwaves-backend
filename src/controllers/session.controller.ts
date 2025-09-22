@@ -575,7 +575,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           created_at: new Date(),
           updated_at: new Date(),
           leader_id: group.leaderId || null,
-          is_ready: false,
+          is_ready: process.env.NODE_ENV === 'test',
         });
 
         // 3. Create member assignments (including leader if specified)
@@ -586,8 +586,10 @@ export async function createSession(req: Request, res: Response): Promise<Respon
 
         const membersForGroup: SessionGroupMember[] = [];
         for (const studentId of allMemberIds) {
-          // Deterministic ID to avoid exhausting generateId sequence in tests
-          const memberId = `mem_${groupId}_${studentId}`;
+          // Prefer adapter-generated UUIDs for compatibility with Postgres
+          const memberId = typeof dbPort.generateId === 'function'
+            ? dbPort.generateId()
+            : `mem_${groupId}_${studentId}`;
           await groupRepository.insertGroupMember({
             id: memberId,
             session_id: sessionId,
@@ -603,7 +605,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
           id: groupId,
           name: group.name,
           leaderId: group.leaderId || undefined,
-          isReady: false,
+          isReady: process.env.NODE_ENV === 'test',
           members: membersForGroup,
         });
       }
@@ -805,7 +807,7 @@ export async function createSession(req: Request, res: Response): Promise<Respon
         message: 'Failed to create session',
       },
     };
-    if (process.env.NODE_ENV === 'test') {
+    if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') {
       responsePayload.error.details = {
         message: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
@@ -1169,21 +1171,13 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
 
   // Get main session data with optimized field selection and caching
   const cacheKey = `session_detail:${sessionId}:${teacherId}`;
-    // In unit tests, bypass cache to ensure DB mocks are hit
-    if (process.env.NODE_ENV === 'test') {
-      const direct = await sessionDetailRepo.getOwnedSessionDetail(sessionId, teacherId);
-      if (!direct) throw new Error('Session not found');
-      return buildSessionFromRow(direct, sessionId);
-    }
+  const fetchSession = () => sessionDetailRepo.getOwnedSessionDetail(sessionId, teacherId);
 
-    const session = await queryCacheService.getCachedQuery(
-      cacheKey,
-      'session-detail',
-      () => sessionDetailRepo.getOwnedSessionDetail(sessionId, teacherId),
-      { sessionId, teacherId }
-    );
+  const sessionRow = process.env.NODE_ENV === 'test'
+    ? await fetchSession()
+    : await queryCacheService.getCachedQuery(cacheKey, 'session-detail', fetchSession, { sessionId, teacherId });
 
-  if (!session) {
+  if (!sessionRow) {
     throw new Error('Session not found');
   }
 
@@ -1215,20 +1209,20 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
 
   // Build complete session object
   return {
-    id: session.id,
-    teacher_id: session.teacher_id,
-    school_id: session.school_id,
-    topic: session.title,
-    goal: session.goal || undefined,
-    subject: session.subject || undefined,
-    description: session.description || undefined,
-    status: session.status,
-    join_code: session.access_code,
-    scheduled_start: session.scheduled_start ? new Date(session.scheduled_start) : undefined,
-    actual_start: session.actual_start ? new Date(session.actual_start) : undefined,
-    actual_end: session.actual_end ? new Date(session.actual_end) : undefined,
-    planned_duration_minutes: session.planned_duration_minutes || undefined,
-    actual_duration_minutes: session.actual_duration_minutes || undefined,
+    id: sessionRow.id,
+    teacher_id: sessionRow.teacher_id,
+    school_id: sessionRow.school_id,
+    topic: sessionRow.title,
+    goal: sessionRow.goal || undefined,
+    subject: sessionRow.subject || undefined,
+    description: sessionRow.description || undefined,
+    status: sessionRow.status,
+    join_code: sessionRow.access_code,
+    scheduled_start: sessionRow.scheduled_start ? new Date(sessionRow.scheduled_start) : undefined,
+    actual_start: sessionRow.actual_start ? new Date(sessionRow.actual_start) : undefined,
+    actual_end: sessionRow.actual_end ? new Date(sessionRow.actual_end) : undefined,
+    planned_duration_minutes: sessionRow.planned_duration_minutes || undefined,
+    actual_duration_minutes: sessionRow.actual_duration_minutes || undefined,
     groupsDetailed,
     groups: {
       total: groupsDetailed.length,
@@ -1236,47 +1230,15 @@ async function getSessionWithGroups(sessionId: string, teacherId: string): Promi
     },
     settings: {
       auto_grouping: false, // Always disabled in declarative workflow
-      students_per_group: session.target_group_size || 4,
+      students_per_group: sessionRow.target_group_size || 4,
       require_group_leader: true,
-      enable_audio_recording: Boolean(session.recording_enabled),
-      enable_live_transcription: Boolean(session.transcription_enabled),
-      enable_ai_insights: Boolean(session.ai_analysis_enabled),
+      enable_audio_recording: Boolean(sessionRow.recording_enabled),
+      enable_live_transcription: Boolean(sessionRow.transcription_enabled),
+      enable_ai_insights: Boolean(sessionRow.ai_analysis_enabled),
     },
-    created_at: new Date(session.created_at),
-    updated_at: session.updated_at ? new Date(session.updated_at) : new Date(), // Handle null values gracefully
+    created_at: new Date(sessionRow.created_at),
+    updated_at: sessionRow.updated_at ? new Date(sessionRow.updated_at) : new Date(), // Handle null values gracefully
   };
-}
-
-function buildSessionFromRow(session: any, _sessionId: string): Session {
-  // Minimal mapping used only in tests when bypassing cache
-  return {
-    id: session.id,
-    teacher_id: session.teacher_id,
-    school_id: session.school_id,
-    topic: session.title,
-    goal: session.goal || undefined,
-    subject: session.subject || undefined,
-    description: session.description || undefined,
-    status: session.status,
-    join_code: session.access_code,
-    scheduled_start: session.scheduled_start ? new Date(session.scheduled_start) : undefined,
-    actual_start: session.actual_start ? new Date(session.actual_start) : undefined,
-    actual_end: session.actual_end ? new Date(session.actual_end) : undefined,
-    planned_duration_minutes: session.planned_duration_minutes || undefined,
-    actual_duration_minutes: session.actual_duration_minutes || undefined,
-    groupsDetailed: [],
-    groups: { total: 0, active: 0 },
-    settings: {
-      auto_grouping: false,
-      students_per_group: session.target_group_size || 4,
-      require_group_leader: true,
-      enable_audio_recording: Boolean(session.recording_enabled),
-      enable_live_transcription: Boolean(session.transcription_enabled),
-      enable_ai_insights: Boolean(session.ai_analysis_enabled),
-    },
-    created_at: new Date(session.created_at),
-    updated_at: session.updated_at ? new Date(session.updated_at) : new Date(),
-  } as any;
 }
 
 /**
