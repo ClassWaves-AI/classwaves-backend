@@ -4,6 +4,46 @@ import { getCompositionRoot } from '../app/composition-root';
 import { v4 as uuidv4 } from 'uuid';
 import { composeDisplayName } from '../utils/name.utils';
 import { logger } from '../utils/logger';
+import { databricksService } from '../services/databricks.service';
+
+function coerceIso(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string' && value.length > 0) return value;
+  const parsed = new Date(value as string);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+async function mirrorStudentToDatabricks(student: any | null): Promise<void> {
+  if (!student) return;
+  const composition = getCompositionRoot();
+  if (composition.getDbProvider() !== 'postgres') return;
+
+  try {
+    const record = {
+      id: student.id,
+      display_name: student.display_name,
+      school_id: student.school_id,
+      email: student.email ?? null,
+      grade_level: student.grade_level ?? null,
+      status: student.status ?? 'active',
+      has_parental_consent: student.has_parental_consent ?? false,
+      consent_date: student.consent_date ?? null,
+      parent_email: student.parent_email ?? null,
+      email_consent: student.email_consent ?? false,
+      data_sharing_consent: student.data_sharing_consent ?? false,
+      audio_recording_consent: student.audio_recording_consent ?? false,
+      teacher_verified_age: student.teacher_verified_age ?? null,
+      coppa_compliant: student.coppa_compliant ?? null,
+      updated_at: coerceIso(student.updated_at) ?? new Date().toISOString(),
+      created_at: coerceIso(student.created_at) ?? new Date().toISOString(),
+    };
+
+    await databricksService.upsert('classwaves.users.students', { id: record.id }, record);
+  } catch (mirrorError) {
+    logger.debug('Roster: databricks mirror skipped', mirrorError instanceof Error ? mirrorError.message : mirrorError);
+  }
+}
 
 /**
  * GET /api/v1/roster
@@ -51,9 +91,12 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
       const firstName = nameParts[0] || '';
       const lastName = nameParts.slice(1).join(' ') || '';
       
-      // Determine consent status (legacy heuristic remains)
-      let consentStatus = 'none';
-      if (student.has_parental_consent) {
+      // Determine consent status with teacher verification precedence
+      // If teacher verified age (13+), parental consent is not required
+      let consentStatus: 'none' | 'required' | 'granted' | 'expired' = 'none';
+      if (student.teacher_verified_age === true) {
+        consentStatus = 'none';
+      } else if (student.has_parental_consent) {
         consentStatus = 'granted';
       } else if (student.parent_email) {
         consentStatus = 'required';
@@ -65,6 +108,7 @@ export async function listStudents(req: Request, res: Response): Promise<Respons
         lastName,
         gradeLevel: student.grade_level || '',
         studentId: student.id, // Use ID as studentId for now
+        studentEmail: student.email || '',
         parentEmail: student.parent_email,
         status: student.status,
         consentStatus,
@@ -121,14 +165,18 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       lastName,
       preferredName,
       gradeLevel,
+      studentEmail,
       parentEmail,
       isUnderConsentAge = false,
       hasParentalConsent = false,
-      dataConsentGiven = false,
-      audioConsentGiven = false
+      dataConsentGiven = true,
+      audioConsentGiven = true,
+      emailConsentGiven = true,
     } = req.body;
     
     const name = composeDisplayName({ given: firstName, family: lastName, preferred: preferredName });
+    const normalizedStudentEmail = typeof studentEmail === 'string' && studentEmail.trim().length > 0 ? studentEmail.trim() : null;
+    const normalizedParentEmail = typeof parentEmail === 'string' && parentEmail.trim().length > 0 ? parentEmail.trim() : null;
 
     // Simplified COPPA compliance logic
     if (isUnderConsentAge && !hasParentalConsent) {
@@ -161,14 +209,15 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
       id: studentId,
       display_name: name,
       school_id: school.id,
-      email: null,
+      email: normalizedStudentEmail,
       grade_level: gradeLevel || null,
       status: 'active',
       has_parental_consent: hasParentalConsent,
       consent_date: hasParentalConsent ? now : null,
-      parent_email: parentEmail || null,
+      parent_email: normalizedParentEmail,
       data_sharing_consent: dataConsentGiven,
       audio_recording_consent: audioConsentGiven,
+      email_consent: emailConsentGiven,
       created_at: now,
       updated_at: now,
     });
@@ -176,13 +225,18 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     // Align new consent fields with initial creation state
     try {
       const newFields: Record<string, any> = {};
+      // 13 or older: teacher verifies age; COPPA not required
       if (isUnderConsentAge === false) {
         newFields.teacher_verified_age = true;
         newFields.coppa_compliant = true;
       }
+      // Under 13 with parental consent: mark COPPA compliant
       if (hasParentalConsent === true) {
-        newFields.email_consent = true;
         newFields.coppa_compliant = true;
+      }
+      // Email consent is independent; do not infer from presence of a student email
+      if (emailConsentGiven === true) {
+        newFields.email_consent = true;
       }
       if (Object.keys(newFields).length) {
         newFields.updated_at = now;
@@ -201,6 +255,7 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
 
     // Get the created student
     const createdStudent = await rosterRepo.getStudentWithSchool(studentId);
+    await mirrorStudentToDatabricks(createdStudent);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
@@ -235,18 +290,25 @@ export async function createStudent(req: Request, res: Response): Promise<Respon
     } else if (createdStudent.parent_email) {
       consentStatus = 'required';
     }
-    
+    const derivedIsUnderAge = createdStudent.teacher_verified_age === true ? false : Boolean(createdStudent.parent_email);
+
     const transformedStudent = {
       id: createdStudent.id,
       firstName, // Use the firstName from request body
       lastName,  // Use the lastName from request body
       gradeLevel: createdStudent.grade_level || '',
       studentId: createdStudent.id,
+      studentEmail: createdStudent.email || '',
       parentEmail: createdStudent.parent_email,
       status: createdStudent.status,
       consentStatus,
       consentDate: createdStudent.consent_date,
-      isUnderConsentAge, // Use the value from request body
+      isUnderConsentAge: derivedIsUnderAge,
+      emailConsentGiven: createdStudent.email_consent === true,
+      dataConsentGiven: createdStudent.data_sharing_consent === true,
+      audioConsentGiven: createdStudent.audio_recording_consent === true,
+      teacherVerifiedAge: createdStudent.teacher_verified_age === true,
+      coppaCompliant: createdStudent.coppa_compliant === true,
       createdAt: createdStudent.created_at,
       updatedAt: createdStudent.updated_at,
     };
@@ -297,6 +359,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
       lastName,
       preferredName,
       email,
+      studentEmail,
       gradeLevel,
       parentEmail,
       status,
@@ -325,17 +388,20 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
         updateValues.push(combined);
       }
     }
-    if (email !== undefined) {
+    const normalizedEmailInput = studentEmail !== undefined ? studentEmail : email;
+    if (normalizedEmailInput !== undefined) {
+      const trimmedEmail = typeof normalizedEmailInput === 'string' ? normalizedEmailInput.trim() : normalizedEmailInput;
       updateFields.push('email = ?');
-      updateValues.push(email);
+      updateValues.push(trimmedEmail && typeof trimmedEmail === 'string' && trimmedEmail.length > 0 ? trimmedEmail : null);
     }
     if (gradeLevel !== undefined) {
       updateFields.push('grade_level = ?');
       updateValues.push(gradeLevel);
     }
     if (parentEmail !== undefined) {
+      const trimmedParent = typeof parentEmail === 'string' ? parentEmail.trim() : parentEmail;
       updateFields.push('parent_email = ?');
-      updateValues.push(parentEmail);
+      updateValues.push(trimmedParent && typeof trimmedParent === 'string' && trimmedParent.length > 0 ? trimmedParent : null);
     }
     if (status !== undefined) {
       updateFields.push('status = ?');
@@ -425,6 +491,7 @@ export async function updateStudent(req: Request, res: Response): Promise<Respon
 
     // Get the updated student
     const updatedStudent = await rosterRepoUpdate.getStudentWithSchool(studentId);
+    await mirrorStudentToDatabricks(updatedStudent);
 
     // Log audit event (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');

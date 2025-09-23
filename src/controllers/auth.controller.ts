@@ -19,6 +19,7 @@ import { logger } from '../utils/logger';
 import { recordAuthDevFallback } from '../metrics/auth.metrics';
 import { getDevAuthFallbackDecision } from '../utils/auth-dev-fallback.utils';
 import { isLocalDbEnabled } from '../config/feature-flags';
+import { getCompositionRoot } from '../app/composition-root';
 
 let cachedGoogleClient: OAuth2Client | null = null;
 function getGoogleClient(): OAuth2Client {
@@ -77,6 +78,38 @@ function buildDevAuthFallbackIdentity(): { teacher: Teacher; school: School } {
   return { teacher, school };
 }
 
+async function upsertLocalDbIdentity(teacher: Teacher, school: School): Promise<void> {
+  if (!isLocalDbEnabled()) return;
+
+  try {
+    const composition = getCompositionRoot();
+    if (composition.getDbProvider() !== 'postgres') return;
+    const db = composition.getDbPort();
+
+    await db.upsert('users.schools', ['id'], {
+      id: school.id,
+      name: school.name,
+      domain: school.domain,
+      created_at: school.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await db.upsert('users.teachers', ['id'], {
+      id: teacher.id,
+      email: teacher.email,
+      name: teacher.name,
+      school_id: teacher.school_id ?? school.id,
+      created_at: teacher.created_at ?? new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.warn('Failed to upsert dev identity into local Postgres', {
+      userId: teacher.id,
+      schoolId: school.id,
+      error: (error as Error)?.message || String(error),
+    });
+  }
+}
+
 async function handleDevAuthFallback(
   req: Request,
   res: Response,
@@ -107,6 +140,10 @@ async function handleDevAuthFallback(
     await storeSessionOptimized(sessionId, teacher, school, req);
   } catch (error) {
     logger.error('Failed to store secure session during dev auth fallback', { error: (error as Error)?.message || String(error) });
+  }
+
+  if (isLocalDbEnabled()) {
+    await upsertLocalDbIdentity(teacher, school);
   }
 
   if (isDatabricksMockEnabled()) {

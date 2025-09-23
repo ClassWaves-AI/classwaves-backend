@@ -7,6 +7,7 @@ import { ok, fail, ErrorCodes } from '../utils/api-response';
 import { validateSchoolDomain } from '../utils/validation.schemas';
 import { logger } from '../utils/logger';
 import { v4 as uuid } from 'uuid';
+import { z } from 'zod';
 
 /**
  * GET /api/v1/admin/schools
@@ -744,5 +745,67 @@ export async function updateDistrict(req: Request, res: Response): Promise<Respo
   } catch (error) {
     logger.error('Error updating district', { error: (error as any)?.message || String(error) })
     return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update district', 500)
+  }
+}
+
+/**
+ * POST /api/v1/admin/students/mark-13plus
+ * Mark a student as 13+ (teacher_verified_age) by email.
+ * - Admin: operates within own school
+ * - Super Admin: may target a specific school via body.schoolId
+ */
+export async function markStudentThirteenPlus(req: Request, res: Response): Promise<Response> {
+  try {
+    const authReq = req as AuthRequest;
+    const actor = authReq.user!;
+    const isSuper = actor.role === 'super_admin';
+
+    const Body = z.object({
+      email: z.string().email('Invalid email'),
+      verified: z.boolean().default(true).optional(),
+      schoolId: z.string().optional(),
+    });
+    const parsed = Body.safeParse(req.body);
+    if (!parsed.success) {
+      return fail(res, ErrorCodes.INVALID_INPUT, 'Invalid input', 400);
+    }
+    const { email, verified = true, schoolId } = parsed.data;
+
+    const targetSchoolId = isSuper && schoolId ? schoolId : (authReq.school?.id || '');
+    if (!targetSchoolId) {
+      return fail(res, ErrorCodes.INVALID_INPUT, 'School context is required', 400);
+    }
+
+    const rosterRepo = getCompositionRoot().getRosterRepository();
+    const student = await rosterRepo.findStudentByEmailInSchool(targetSchoolId, email);
+    if (!student) {
+      return fail(res, ErrorCodes.NOT_FOUND, 'Student not found in school', 404);
+    }
+
+    const update: Record<string, any> = { teacher_verified_age: !!verified, updated_at: new Date().toISOString() };
+    if (verified) update.coppa_compliant = true;
+    await rosterRepo.updateStudentFields(student.id, update);
+
+    // Audit (best-effort)
+    try {
+      const { auditLogPort } = await import('../utils/audit.port.instance');
+      auditLogPort.enqueue({
+        actorId: actor.id,
+        actorType: 'admin',
+        eventType: 'student_age_marked_13plus',
+        eventCategory: 'compliance',
+        resourceType: 'student',
+        resourceId: student.id,
+        schoolId: targetSchoolId,
+        description: `admin:${actor.id} set teacher_verified_age=${verified ? 'true' : 'false'} for ${email}`,
+        complianceBasis: 'coppa',
+        affectedStudentIds: [student.id],
+      }).catch(() => {});
+    } catch {}
+
+    return ok(res, { studentId: student.id, teacher_verified_age: !!verified, coppa_compliant: verified ? true : undefined });
+  } catch (error) {
+    logger.error('❌ Failed to mark student 13+:', error);
+    return fail(res, ErrorCodes.INTERNAL_ERROR, 'Failed to update student age verification', 500);
   }
 }

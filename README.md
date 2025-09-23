@@ -1037,6 +1037,7 @@ The backend now supports a local Postgres provider for faster offline iteration.
 4. **Optional reset**: `npm run db:local:reset` drops known schemas and reapplies schema + seeds (also manifests-aware when the flag is enabled)
 5. **Open psql shell**: `npm run db:local:shell` (uses Docker exec; Ctrl+D to exit)
 6. **Run backend against Postgres**: `npm run dev:local` (sets `DB_PROVIDER=postgres` while reusing the standard dev startup script)
+7. **Force Databricks for a session**: `npm run dev:dbx` (overrides any `.env` flags and exports `DB_PROVIDER=databricks` so this run always hits the warehouse)
 
 Notes:
 - The local connection string defaults to `postgres://classwaves:classwaves@localhost:5433/classwaves_dev`. Override the host port by editing `docker-compose.yml` or exporting `DATABASE_URL` before running the scripts.
@@ -1045,6 +1046,27 @@ Notes:
 - Verify connectivity manually with `psql $DATABASE_URL -c 'select 1';` (or use `npm run db:local:shell`).
 - The Postgres adapter implements the shared DB port (`src/adapters/db/postgres.adapter.ts`), rewrites `?` placeholders to `$n`, and emits Prometheus metrics (`classwaves_db_query_attempts_total`, `classwaves_db_query_failures_total`, `classwaves_db_query_duration_ms`) with `provider`/`operation` labels when `DB_PROVIDER=postgres`.
 - **Dev auth fallback**: In non-production, when Google OAuth env vars are absent or `cw.auth.dev_fallback_enabled=1`, `/api/v1/auth/google` issues tokens for the seeded dev teacher/school. The flow sets `degradedMode=true`, records `classwaves_auth_dev_fallback_total{environment,trigger}`, and stores a secure session so the frontend can proceed without Google credentials.
+- The startup script automatically frees the configured `PORT` (defaults to 3000) before launching Nodemon, so lingering dev servers never block restarts.
+- When the provider is Databricks (for example via `npm run dev:dbx`), the script skips the Postgres defaults and simply logs that `DATABASE_URL` is unused.
+
+##### Configure `.env.local` for Postgres vs. Databricks
+
+Copy `.env.example` to `.env.local` (or update your existing file) and flip these keys when switching providers:
+
+- **Local Postgres mode**
+  - `DB_PROVIDER=postgres`
+  - `DATABASE_URL=postgres://classwaves:classwaves@localhost:5433/classwaves_dev` (adjust host/port if you changed the compose mapping)
+  - `DB_SSL=0` (Postgres container is local-only; TLS is unnecessary)
+  - `CW_DB_USE_LOCAL_POSTGRES=1` (alias for `FeatureFlags.DB_USE_LOCAL_POSTGRES`; avoids having to set the dotted flag name in `.env`)
+  - Optional ergonomics: set `USE_LOCAL_DB=1` so shared scripts/exported helpers automatically opt into the Postgres provider, and `CW_AUTH_DEV_FALLBACK_ENABLED=1` if you want to force the dev auth fallback even when Google credentials are present.
+
+- **Databricks (default) mode**
+  - `DB_PROVIDER=databricks`
+  - Remove or set `CW_DB_USE_LOCAL_POSTGRES=0` and `USE_LOCAL_DB=0`
+  - Provide the warehouse credentials: `DATABRICKS_HOST`, `DATABRICKS_WORKSPACE_URL`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID`
+  - Leave `DATABASE_URL` untouched; it is ignored when the provider is Databricks but keeping the value simplifies future switches back to Postgres.
+
+After editing the `.env` file, restart the backend process so the composition root picks up the new provider. Logs will emit `db-provider-selected` with `provider="postgres"` or `provider="databricks"`; health metrics expose `classwaves_app_info{db_provider=...}` for additional verification. When you need a one-off warehouse run, `npm run dev:dbx` takes precedence over file-based flags for that shell invocation.
 
 ### Code Standards
 - **TypeScript**: Strict mode enabled

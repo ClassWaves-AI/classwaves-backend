@@ -67,7 +67,20 @@ export class DatabricksMockService {
   }
 
   async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
-    const trimmed = sql.trim();
+    let finalSql = sql;
+    if (params && params.length > 0) {
+      const parts = sql.split('?');
+      const expected = parts.length - 1;
+      const used = Math.min(expected, params.length);
+      let built = '';
+      for (let i = 0; i < used; i++) {
+        built += parts[i] + this.formatParam(params[i]);
+      }
+      built += parts.slice(used).join('?');
+      finalSql = built;
+    }
+
+    const trimmed = finalSql.trim();
 
     const fixture = DatabricksMockService.fixtures.find((entry) => entry.match.test(trimmed));
     if (fixture) {
@@ -474,6 +487,23 @@ export class DatabricksMockService {
     const numeric = Number(token);
     if (!Number.isNaN(numeric)) return numeric;
     return token;
+  }
+
+  private formatParam(param: any): string {
+    if (param === null || param === undefined) return 'NULL';
+    if (param instanceof Date) return `'${param.toISOString()}'`;
+    if (typeof param === 'string') return `'${param.replace(/'/g, "''")}'`;
+    if (typeof param === 'boolean') return param ? 'true' : 'false';
+    if (typeof param === 'number') return Number.isFinite(param) ? String(param) : 'NULL';
+    if (typeof param === 'object') {
+      try {
+        const json = JSON.stringify(param);
+        return json ? `'${json.replace(/'/g, "''")}'` : 'NULL';
+      } catch {
+        return `'${String(param).replace(/'/g, "''")}'`;
+      }
+    }
+    return `'${String(param).replace(/'/g, "''")}'`;
   }
 }
 

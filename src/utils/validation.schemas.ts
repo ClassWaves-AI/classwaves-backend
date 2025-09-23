@@ -137,11 +137,13 @@ export const createStudentSchema = z.object({
   firstName: z.string().min(1).max(50, 'First name must be 50 characters or less'),
   lastName: z.string().min(1).max(50, 'Last name must be 50 characters or less'),
   gradeLevel: z.string().max(20).optional(),
+  studentEmail: z.string().email('Invalid student email format').optional(),
   parentEmail: z.string().email('Invalid parent email format').optional(),
   isUnderConsentAge: z.boolean().optional(), // Is student under 13?
   hasParentalConsent: z.boolean().optional(), // If under 13, has consent been obtained?
-  dataConsentGiven: z.boolean().default(false),
-  audioConsentGiven: z.boolean().default(false),
+  dataConsentGiven: z.boolean().default(true),
+  audioConsentGiven: z.boolean().default(true),
+  emailConsentGiven: z.boolean().default(true),
 });
 
 export const updateStudentSchema = z.object({
@@ -150,6 +152,7 @@ export const updateStudentSchema = z.object({
   lastName: z.string().min(1).max(50).optional(),
   preferredName: z.string().min(1).max(50).optional(),
   email: z.string().email().optional(),
+  studentEmail: z.string().email().optional(),
   gradeLevel: z.string().max(20).optional(),
   parentEmail: z.string().email().optional(),
   status: z.enum(['active', 'inactive', 'deactivated']).optional(),

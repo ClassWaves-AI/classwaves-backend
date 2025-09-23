@@ -40,6 +40,7 @@ export interface RosterRepositoryPort {
 
   findStudentInSchool(studentId: string, schoolId: string): Promise<Pick<RosterStudent, 'id' | 'school_id' | 'status' | 'parent_email'> | null>;
   findStudentByNameInSchool(schoolId: string, displayName: string): Promise<{ id: string } | null>;
+  findStudentByEmailInSchool(schoolId: string, email: string): Promise<{ id: string } | null>;
 
   insertStudent(student: {
     id: string;
@@ -51,6 +52,7 @@ export interface RosterRepositoryPort {
     has_parental_consent: boolean;
     consent_date: string | null;
     parent_email: string | null;
+    email_consent: boolean;
     data_sharing_consent: boolean;
     audio_recording_consent: boolean;
     created_at: string;

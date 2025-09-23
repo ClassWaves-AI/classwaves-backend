@@ -68,6 +68,7 @@
     "audit": "node dist/workers/audit-log.worker.js",
     "dev:audit": "ts-node src/workers/audit-log.worker.ts",
     "dev:local": "DB_PROVIDER=postgres DATABASE_URL=${DATABASE_URL:-postgres://classwaves:classwaves@localhost:5433/classwaves_dev} DB_SSL=${DB_SSL:-0} DB_LOG_SQL=${DB_LOG_SQL:-0} npm run dev",
+    "dev:dbx": "DB_PROVIDER=databricks CW_DB_USE_LOCAL_POSTGRES=0 USE_LOCAL_DB=0 npm run dev",
     "audit:dlq:replay": "ts-node src/scripts/audit-dlq-replay.ts",
     "ai:whisper:validate": "ts-node src/scripts/validate-whisper.ts",
     "stt:worker": "ts-node src/workers/audio-stt.worker.ts",

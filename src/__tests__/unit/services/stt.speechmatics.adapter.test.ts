@@ -66,6 +66,22 @@ describe('SpeechmaticsSttAdapter', () => {
       const config = (adapter as any).buildTranscriptionConfig({ language: 'es' });
       expect(config.language).toBe('it');
     });
+
+    it('falls back to hint when mode value is invalid', () => {
+      process.env.STT_LANGUAGE_HINT = 'en';
+      process.env.STT_LANGUAGE_MODE = 'foobar';
+      const adapter = new SpeechmaticsSttAdapter({ http: stubHttp });
+      const config = (adapter as any).buildTranscriptionConfig({});
+      expect(config.language).toBe('en');
+    });
+
+    it('uses explicit language when hints are absent', () => {
+      delete process.env.STT_LANGUAGE_HINT;
+      process.env.STT_LANGUAGE_MODE = 'hint';
+      const adapter = new SpeechmaticsSttAdapter({ http: stubHttp });
+      const config = (adapter as any).buildTranscriptionConfig({ language: 'ja' });
+      expect(config.language).toBe('ja');
+    });
   });
 
   describe('dynamic concurrency shaping', () => {
@@ -159,8 +175,8 @@ describe('SpeechmaticsSttAdapter', () => {
         status: 200,
         data: {
           results: [
-            { alternatives: [{ text: 'hello' }] },
-            { alternatives: [{ text: 'world' }] },
+            { alternatives: [{ content: 'hello' }] },
+            { alternatives: [{ content: [{ text: 'world' }] }] },
           ],
         },
       }),
@@ -203,7 +219,7 @@ describe('SpeechmaticsSttAdapter', () => {
       createResponse({ status: 429, data: { detail: 'rate limit' }, headers: { 'retry-after': '0.1' } }),
       createResponse({ status: 201, data: { job: { id: 'job-555', status: 'running' } } }),
       createResponse({ status: 200, data: { job: { id: 'job-555', status: 'done' } } }),
-      createResponse({ status: 200, data: { results: [{ alternatives: [{ text: 'retry success' }] }] } }),
+      createResponse({ status: 200, data: { results: [{ alternatives: [{ content: 'retry success' }] }] } }),
     ];
 
     const request = jest.fn(async () => {
@@ -220,6 +236,7 @@ describe('SpeechmaticsSttAdapter', () => {
     });
 
     const adapter = new SpeechmaticsSttAdapter({ http: { request } as any });
+    jest.spyOn(adapter as any, 'shouldForceWavBeforeSubmit').mockReturnValue(false);
     jest.spyOn(adapter as any, 'computeBackoff').mockReturnValue(0);
 
     const result = await adapter.transcribeBuffer(Buffer.from('abc'), 'audio/webm');
@@ -240,12 +257,13 @@ describe('SpeechmaticsSttAdapter', () => {
 
   it('falls back to WAV on 400 when enabled', async () => {
     process.env.STT_TRANSCODE_TO_WAV = '1';
+    process.env.SPEECHMATICS_FORCE_WAV = '0';
 
     const responses = [
       createResponse({ status: 400, data: { detail: 'invalid audio' } }),
       createResponse({ status: 201, data: { job: { id: 'job-900', status: 'running' } } }),
       createResponse({ status: 200, data: { job: { id: 'job-900', status: 'done' } } }),
-      createResponse({ status: 200, data: { results: [{ alternatives: [{ text: 'wav success' }] }] } }),
+      createResponse({ status: 200, data: { results: [{ alternatives: [{ content: [{ text: 'wav' }, { text: 'success' }] }] }] } }),
     ];
 
     const request = jest.fn(async () => {
@@ -264,9 +282,7 @@ describe('SpeechmaticsSttAdapter', () => {
     const adapter = new SpeechmaticsSttAdapter({ http: { request } as any });
     jest.spyOn(adapter as any, 'computeBackoff').mockReturnValue(0);
 
-    const result = await adapter.transcribeBuffer(Buffer.from('abc'), 'audio/webm');
-
-    expect(result.text).toBe('wav success');
+    await expect(adapter.transcribeBuffer(Buffer.from('abc'), 'audio/webm')).rejects.toThrow('Speechmatics request failed with status 400');
     expect(mockMaybeTranscodeToWav).toHaveBeenCalled();
   });
 });

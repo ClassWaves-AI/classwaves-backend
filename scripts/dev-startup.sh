@@ -127,6 +127,49 @@ start_redis() {
     echo "✅ Redis is ready!"
 }
 
+ensure_port_free() {
+    local port="${PORT:-3000}"
+    echo "🧹 Ensuring port ${port} is free before starting the backend..."
+
+    if ! command -v lsof >/dev/null 2>&1; then
+        echo "⚠️  'lsof' not found; skipping automatic port cleanup. Please free port ${port} manually if the server fails to start."
+        return
+    fi
+
+    local pids
+    pids=$(lsof -ti tcp:"${port}" 2>/dev/null || true)
+
+    if [ -z "${pids}" ]; then
+        echo "✅ Port ${port} is already free."
+        return
+    fi
+
+    echo "⚠️  Port ${port} is in use by PID(s): ${pids}. Attempting to terminate..."
+    for pid in ${pids}; do
+        if kill "${pid}" >/dev/null 2>&1; then
+            echo "   Sent SIGTERM to ${pid}."
+        fi
+    done
+
+    sleep 1
+    pids=$(lsof -ti tcp:"${port}" 2>/dev/null || true)
+    if [ -n "${pids}" ]; then
+        echo "⛔️  Processes still holding port ${port}: ${pids}. Forcing termination..."
+        for pid in ${pids}; do
+            kill -9 "${pid}" >/dev/null 2>&1 || true
+        done
+        sleep 1
+    fi
+
+    pids=$(lsof -ti tcp:"${port}" 2>/dev/null || true)
+    if [ -n "${pids}" ]; then
+        echo "❌ Unable to free port ${port}. Please stop the listed processes manually and rerun the script."
+        exit 1
+    fi
+
+    echo "✅ Port ${port} is now free."
+}
+
 # Function to apply ClassWaves Redis configuration
 apply_redis_config() {
     echo "⚙️  Applying ClassWaves Redis configuration..."
@@ -150,10 +193,37 @@ start_backend() {
     # Start the development server
     # Ensure local dev uses Postgres provider by default (may be overridden by user env)
     export DB_PROVIDER=${DB_PROVIDER:-postgres}
-    export DATABASE_URL=${DATABASE_URL:-postgres://classwaves:classwaves@localhost:5433/classwaves_dev}
-    export DB_SSL=${DB_SSL:-0}
-    echo "🧭 DB Provider: $DB_PROVIDER"
-    echo "🔌 DATABASE_URL: ${DATABASE_URL}"
+
+    local provider_raw provider_lower
+    provider_raw="${DB_PROVIDER%%#*}"
+    provider_raw="$(printf '%s' "$provider_raw" | awk '{gsub(/^ +| +$/,"",$0); print}')"
+    if [ -z "$provider_raw" ]; then
+        provider_raw="postgres"
+    fi
+    export DB_PROVIDER="$provider_raw"
+
+    provider_lower="$(printf '%s' "$provider_raw" | tr '[:upper:]' '[:lower:]')"
+
+    if [[ "$provider_lower" == postgres* ]]; then
+        export DB_PROVIDER="postgres"
+        export DATABASE_URL=${DATABASE_URL:-postgres://classwaves:classwaves@localhost:5433/classwaves_dev}
+        export DB_SSL=${DB_SSL:-0}
+        echo "🧭 DB Provider: postgres"
+        echo "🔌 DATABASE_URL: ${DATABASE_URL}"
+    elif [[ "$provider_lower" == databricks* ]]; then
+        export DB_PROVIDER="databricks"
+        echo "🧭 DB Provider: databricks"
+        if [ -n "${DATABASE_URL:-}" ]; then
+            echo "ℹ️  DATABASE_URL is set but not used when provider=databricks"
+        else
+            echo "ℹ️  DATABASE_URL not required for provider=databricks"
+        fi
+    else
+        echo "🧭 DB Provider: $provider_raw"
+        echo "⚠️  Unrecognized DB provider. Continuing with default behavior; ensure DB_PROVIDER is set to 'postgres' or 'databricks'."
+    fi
+
+    ensure_port_free
     nodemon --exitcrash --signal SIGINT --exec ts-node src/server.ts
 }
 
