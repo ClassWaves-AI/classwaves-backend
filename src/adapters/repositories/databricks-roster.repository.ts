@@ -61,14 +61,19 @@ export class DatabricksRosterRepository implements RosterRepositoryPort {
     return (await databricksService.queryOne(sql, [schoolId, displayName])) as any;
   }
 
+  async findStudentByEmailInSchool(schoolId: string, email: string) {
+    const sql = `SELECT id FROM ${databricksConfig.catalog}.users.students WHERE school_id = ? AND lower(email) = lower(?)`;
+    return (await databricksService.queryOne(sql, [schoolId, email])) as any;
+  }
+
   async insertStudent(student: RosterStudent & { status: string; created_at: string; updated_at: string }) {
     const sql = `
       INSERT INTO ${databricksConfig.catalog}.users.students (
         id, display_name, school_id, email, grade_level, status,
         has_parental_consent, consent_date, parent_email,
-        data_sharing_consent, audio_recording_consent,
+        email_consent, data_sharing_consent, audio_recording_consent,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     await databricksService.query(sql, [
       student.id,
@@ -80,6 +85,7 @@ export class DatabricksRosterRepository implements RosterRepositoryPort {
       student.has_parental_consent,
       student.consent_date,
       student.parent_email,
+      student.email_consent,
       student.data_sharing_consent,
       student.audio_recording_consent,
       student.created_at,

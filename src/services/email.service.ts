@@ -131,7 +131,11 @@ export class EmailService {
     const compliant: EmailRecipient[] = [];
     for (const recipient of recipients) {
       try {
-        const compliance = await emailComplianceService.validateEmailConsent(recipient.studentId);
+        // Prefer internal validator to allow email+session fallback if ID lookup fails
+        const compliance = await this.validateEmailConsent(recipient.studentId, {
+          email: recipient.email,
+          sessionId: sessionData.sessionId,
+        });
         if (process.env.NODE_ENV !== 'production') {
           logger.debug('[EmailService.sendSessionInvitation] compliance result', { recipient: recipient.email, compliance });
         }
@@ -276,7 +280,7 @@ export class EmailService {
   /**
    * Validate email consent and COPPA compliance
    */
-  private async validateEmailConsent(studentId: string): Promise<EmailComplianceValidation> {
+  private async validateEmailConsent(studentId: string, opts?: { email?: string; sessionId?: string }): Promise<EmailComplianceValidation> {
     // Prefer new fields when available; avoid throwing on missing columns by checking schema
     try {
       // Prefer new fields; if schema-check helper is unavailable (mocked tests), try the new path directly
@@ -329,6 +333,57 @@ export class EmailService {
         logger.debug('[EmailService.validateEmailConsent] legacy-path result', { studentId, studentLegacy });
       }
       if (!studentLegacy) {
+        // Fallback: resolve by email within the same school as the session if provided
+        const email = opts?.email && String(opts.email).trim();
+        const sessionId = opts?.sessionId && String(opts.sessionId).trim();
+        if (email && sessionId) {
+          try {
+            const session = await databricksService.queryOne<any>(
+              `SELECT school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`,
+              [sessionId]
+            );
+            if (session?.school_id) {
+              // Try new-path columns by email+school
+              try {
+                const studentByEmail = await databricksService.queryOne<any>(
+                  `SELECT id, email_consent, coppa_compliant, teacher_verified_age 
+                   FROM classwaves.users.students WHERE lower(email) = lower(?) AND school_id = ? LIMIT 1`,
+                  [email, session.school_id]
+                );
+                if (process.env.NODE_ENV !== 'production') {
+                  logger.debug('[EmailService.validateEmailConsent] email+school (new)', { email, schoolId: session.school_id, studentByEmail });
+                }
+                if (studentByEmail) {
+                  if (studentByEmail.teacher_verified_age === true) {
+                    return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+                  }
+                  if (studentByEmail.coppa_compliant === false) {
+                    return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'coppa_verification_required_by_teacher' };
+                  }
+                  if (studentByEmail.email_consent !== true) {
+                    return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'email_consent_required' };
+                  }
+                  return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+                }
+              } catch { /* fallback to legacy */ }
+              // Legacy path by email+school
+              const legacyByEmail = await databricksService.queryOne<any>(
+                `SELECT id, has_parental_consent, parent_email 
+                 FROM classwaves.users.students WHERE lower(email) = lower(?) AND school_id = ? LIMIT 1`,
+                [email, session.school_id]
+              );
+              if (process.env.NODE_ENV !== 'production') {
+                logger.debug('[EmailService.validateEmailConsent] email+school (legacy)', { email, schoolId: session.school_id, legacyByEmail });
+              }
+              if (legacyByEmail) {
+                if (legacyByEmail.has_parental_consent === true) {
+                  return { canSendEmail: true, requiresParentalConsent: false, consentStatus: 'consented' };
+                }
+                return { canSendEmail: false, requiresParentalConsent: true, consentStatus: 'email_consent_required' };
+              }
+            }
+          } catch { /* ignore and fall through */ }
+        }
         return { canSendEmail: false, requiresParentalConsent: false, consentStatus: 'student_not_found' };
       }
       if (studentLegacy.has_parental_consent === true) {

@@ -8,6 +8,7 @@ import { maybeTranscodeToWav } from '../services/audio/transcode.util';
 import { sttBudgetService } from '../services/stt.budget.service';
 
 const SPEECHMATICS_PROVIDER_LABEL = { provider: 'speechmatics' } as const;
+const LANGUAGE_MODE_LABELS = ['hint', 'auto', 'fixed'] as const;
 
 type SpeechmaticsJobStatus = 'queued' | 'processing' | 'done' | 'rejected' | 'expired' | string;
 
@@ -691,9 +692,11 @@ export class SpeechmaticsSttAdapter implements SpeechToTextPort {
   }
 
   private get languageMode(): 'hint' | 'auto' | 'fixed' {
-    const raw = (process.env.STT_LANGUAGE_MODE || 'hint').toLowerCase();
-    if (raw === 'auto') return 'auto';
-    if (raw === 'fixed') return 'fixed';
+    const raw = (process.env.STT_LANGUAGE_MODE || 'hint').trim().toLowerCase();
+    if ((LANGUAGE_MODE_LABELS as ReadonlyArray<string>).includes(raw)) {
+      return raw as 'hint' | 'auto' | 'fixed';
+    }
+    logger.warn('speechmatics.language_mode.invalid', { provided: process.env.STT_LANGUAGE_MODE });
     return 'hint';
   }
 

@@ -23,6 +23,7 @@ import {
   inviteTeacherSchema,
 } from '../utils/validation.schemas';
 import { createUserRateLimiter } from '../middleware/rate-limit.middleware';
+import { markStudentThirteenPlus } from '../controllers/admin.controller';
 
 const router = Router();
 
@@ -51,6 +52,9 @@ router.post(
 
 // Observability SLIs (prompt delivery) — super_admin only
 router.get('/slis/prompt-delivery', requireRole(['super_admin']), getPromptDeliverySLI);
+
+// Roster maintenance helpers (admin/super_admin)
+router.post('/students/mark-13plus', requireRole(['admin', 'super_admin']), createUserRateLimiter('mark-13plus', 5, 60), markStudentThirteenPlus);
 
 // Districts (super_admin only)
 router.get('/districts', requireSuperAdmin(), listDistricts);

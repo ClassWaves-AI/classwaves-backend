@@ -533,25 +533,23 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // Join session room early so teacher sees presence even if DB is slow
+      // Prepare session room; join will occur after compliance checks
       const sessionRoom = `session:${sessionId}`;
       const sData = socket.data as SessionSocketData;
       if (!sData.joinedRooms) sData.joinedRooms = new Set();
-      await Promise.resolve((socket as any).join?.(sessionRoom));
-      sData.joinedRooms.add(sessionRoom);
-      sData.sessionId = sessionId;
 
       // Verify student is a participant in this session
       // Use dynamic import to ensure Jest spies intercept this call reliably
       const db = await import('../databricks.service');
+      // IMPORTANT: scope by this socket's student to avoid mixing participants
       const participant = await (db as any).databricksService.queryOne(
         `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
          FROM classwaves.sessions.participants p 
          LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
-         WHERE p.session_id = ?
+         WHERE p.session_id = ? AND p.student_id = ?
          ORDER BY p.join_time DESC
          LIMIT 1`,
-        [sessionId]
+        [sessionId, socket.data.userId]
       );
 
       if (!participant) {
@@ -598,7 +596,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // Already joined above
+      // Join session room now that compliance checks passed
+      await Promise.resolve((socket as any).join?.(sessionRoom));
+      sData.joinedRooms.add(sessionRoom);
+      sData.sessionId = sessionId;
+      // Already joined now
 
       // Also join group room if assigned
       if (participant.group_id) {

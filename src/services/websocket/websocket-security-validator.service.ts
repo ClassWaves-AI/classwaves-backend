@@ -9,6 +9,8 @@ import { Socket } from 'socket.io';
 import { databricksService } from '../databricks.service';
 import { redisService } from '../redis.service';
 import { logger } from '../../utils/logger';
+import { isLocalDbEnabled } from '../../config/feature-flags';
+import { getCompositionRoot } from '../../app/composition-root';
 
 export interface SecurityContext {
   userId: string;
@@ -261,6 +263,59 @@ export class WebSocketSecurityValidator {
     }
 
     try {
+      const composition = getCompositionRoot();
+      const provider = composition.getDbProvider();
+
+      if (provider === 'postgres') {
+        const db = composition.getDbPort();
+
+        if (securityContext.role === 'teacher' || securityContext.role === 'admin' || securityContext.role === 'super_admin') {
+          const teacherRow = await db.queryOne(
+            `SELECT id FROM users.teachers WHERE id = ? AND school_id = ? LIMIT 1`,
+            [securityContext.userId, securityContext.schoolId]
+          );
+
+          if (!teacherRow) {
+            return {
+              allowed: false,
+              reason: `Teacher ${securityContext.userId} is not associated with school ${securityContext.schoolId}`,
+              errorCode: 'SCHOOL_ACCESS_DENIED',
+              metadata: {
+                userId: securityContext.userId,
+                schoolId: securityContext.schoolId,
+                role: securityContext.role,
+                provider,
+              },
+            };
+          }
+        } else {
+          const studentRow = await db.queryOne(
+            `SELECT sgm.student_id
+             FROM sessions.student_group_members sgm
+             JOIN sessions.classroom_sessions cs ON cs.id = sgm.session_id
+             WHERE sgm.student_id = ? AND cs.school_id = ?
+             LIMIT 1`,
+            [securityContext.userId, securityContext.schoolId]
+          );
+
+          if (!studentRow) {
+            return {
+              allowed: false,
+              reason: `Student ${securityContext.userId} is not associated with school ${securityContext.schoolId}`,
+              errorCode: 'SCHOOL_ACCESS_DENIED',
+              metadata: {
+                userId: securityContext.userId,
+                schoolId: securityContext.schoolId,
+                role: securityContext.role,
+                provider,
+              },
+            };
+          }
+        }
+
+        return { allowed: true };
+      }
+
       let userQuery: string;
       if (securityContext.role === 'teacher' || securityContext.role === 'admin' || securityContext.role === 'super_admin') {
         userQuery = `
