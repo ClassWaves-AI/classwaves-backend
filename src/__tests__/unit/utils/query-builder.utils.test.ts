@@ -9,6 +9,7 @@ import {
   validateApiContractFields,
   logQueryOptimization,
 } from '../../../utils/query-builder.utils';
+import { logger } from '../../../utils/logger';
 
 describe('query-builder.utils', () => {
   it('buildSessionListQuery returns minimal optimization and qualified fields', () => {
@@ -52,7 +53,7 @@ describe('query-builder.utils', () => {
   });
 
   it('logQueryOptimization logs with correct structure', () => {
-    const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const spy = jest.spyOn(logger, 'debug').mockImplementation(() => {});
     logQueryOptimization('unit:endpoint', {
       fieldsSelected: 5,
       estimatedFieldsAvoided: 10,

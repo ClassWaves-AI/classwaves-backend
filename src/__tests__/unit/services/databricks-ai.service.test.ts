@@ -1,11 +1,11 @@
-import { DatabricksAIService } from '../../../services/databricks-ai.service';
-import { Tier1Options, Tier2Options } from '../../../types/ai-analysis.types';
+import type { Tier1Options, Tier2Options } from '../../../types/ai-analysis.types';
 
 // Mock fetch globally
 global.fetch = jest.fn();
 
 describe('DatabricksAIService', () => {
-  let service: DatabricksAIService;
+  let DatabricksAIService: typeof import('../../../services/databricks-ai.service').DatabricksAIService;
+  let service: InstanceType<typeof DatabricksAIService>;
   const mockFetch = fetch as jest.MockedFunction<typeof fetch>;
 
   const wrapDatabricksResponse = (payload: unknown) => ({
@@ -19,14 +19,15 @@ describe('DatabricksAIService', () => {
   });
 
 beforeEach(() => {
+  jest.resetModules();
   mockFetch.mockClear();
-  // Mock environment variables BEFORE constructing service
   process.env.DATABRICKS_HOST = 'https://test.databricks.com';
   process.env.DATABRICKS_TOKEN = 'test-token';
   process.env.AI_TIER1_ENDPOINT = '/serving-endpoints/tier1/invocations';
   process.env.AI_TIER2_ENDPOINT = '/serving-endpoints/tier2/invocations';
   process.env.AI_TIER1_TIMEOUT_MS = '2000';
   process.env.AI_TIER2_TIMEOUT_MS = '5000';
+  ({ DatabricksAIService } = require('../../../services/databricks-ai.service'));
   service = new DatabricksAIService();
 });
 

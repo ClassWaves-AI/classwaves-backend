@@ -15,7 +15,8 @@ describe('Auth Controller – minimal branches', () => {
     const res = createRes();
     await rotateTokens(req, res);
     expect(res.status).toHaveBeenCalledWith(400);
-    expect((res.json as any).mock.calls[0][0]).toHaveProperty('error', 'MISSING_REFRESH_TOKEN');
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload).toHaveProperty('error.code', 'INVALID_INPUT');
+    expect(payload).toHaveProperty('error.message', 'Refresh token is required for token rotation');
   });
 });
-

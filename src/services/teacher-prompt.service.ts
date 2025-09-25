@@ -1185,7 +1185,7 @@ export class TeacherPromptService {
     if (typeof label === 'string') {
       const trimmed = label.trim();
       if (!trimmed) {
-        return '';
+        return index >= 0 ? `Participant ${index + 1}` : '';
       }
       if (/^participant\s*\d+$/i.test(trimmed)) {
         return trimmed.replace(/\s+/g, ' ');

@@ -2,10 +2,37 @@ import { aiAnalysisTriggerService } from '../../../services/ai-analysis-trigger.
 
 // prom-client stub
 jest.mock('prom-client', () => {
-  const counters = new Map<string, any>();
-  class Counter { name: string; inc = jest.fn(); constructor(cfg: any){ this.name = cfg?.name; counters.set(this.name, this);} }
-  const register = { getSingleMetric: (n: string) => counters.get(n) };
-  return { Counter, register };
+  const metrics = new Map<string, any>();
+  class Counter {
+    name: string;
+    inc = jest.fn();
+    constructor(cfg: any) {
+      this.name = cfg?.name;
+      metrics.set(this.name, this);
+    }
+  }
+  class Histogram {
+    name: string;
+    observe = jest.fn();
+    constructor(cfg: any) {
+      this.name = cfg?.name;
+      metrics.set(this.name, this);
+    }
+  }
+  class Gauge {
+    name: string;
+    inc = jest.fn();
+    dec = jest.fn();
+    set = jest.fn();
+    constructor(cfg: any) {
+      this.name = cfg?.name;
+      metrics.set(this.name, this);
+    }
+  }
+  const register = {
+    getSingleMetric: (name: string) => metrics.get(name),
+  };
+  return { Counter, Histogram, Gauge, register };
 });
 
 // Redis flags set to ended

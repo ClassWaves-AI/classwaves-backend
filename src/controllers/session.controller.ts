@@ -96,6 +96,21 @@ async function getAccessCodeBySession(sessionId: string): Promise<string | null>
   }
 }
 
+const normalizeCount = (value: unknown, legacyKey: string): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value))) {
+    return Number(value);
+  }
+  if (value && typeof value === 'object' && legacyKey in (value as Record<string, unknown>)) {
+    const candidate = (value as Record<string, unknown>)[legacyKey];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
+    if (typeof candidate === 'string' && candidate.trim() !== '' && !Number.isNaN(Number(candidate))) {
+      return Number(candidate);
+    }
+  }
+  return 0;
+};
+
 /**
  * List sessions for the authenticated teacher
  * Uses industry-standard cache management with event-driven invalidation
@@ -1545,17 +1560,17 @@ export async function startSession(req: Request, res: Response): Promise<Respons
     }
     
     // Compute ready_groups_at_start from student_groups.is_ready - with retry and timeout
-    let readyGroupsAtStart: number;
-    let totalGroups: number;
     const groupRepo = getCompositionRoot().getGroupRepository();
-    readyGroupsAtStart = await RetryService.retryDatabaseOperation(
+    const readyGroupsResult = await RetryService.retryDatabaseOperation(
       () => groupRepo.countReady(sessionId),
       'count-ready-groups'
     );
-    totalGroups = await RetryService.retryDatabaseOperation(
+    const totalGroupsResult = await RetryService.retryDatabaseOperation(
       () => groupRepo.countTotal(sessionId),
       'count-total-groups'
     );
+    const readyGroupsAtStart = normalizeCount(readyGroupsResult, 'ready_groups_count');
+    const totalGroups = normalizeCount(totalGroupsResult, 'total_groups_count');
     const startedWithoutReadyGroups = readyGroupsAtStart < totalGroups;
 
     // SG-BE-01: Gate session start if not all groups are ready
@@ -1566,7 +1581,7 @@ export async function startSession(req: Request, res: Response): Promise<Respons
         'get-groups-basic'
       );
       const notReadyGroups = (allGroups || [])
-        .filter((g) => g.is_ready === false)
+        .filter((g) => g?.is_ready !== true)
         .map((g) => ({ id: g.id, name: g.name || null }));
 
       // SG-BE-04: Record session gating metric

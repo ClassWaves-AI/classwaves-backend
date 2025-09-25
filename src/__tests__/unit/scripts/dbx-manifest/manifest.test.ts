@@ -35,6 +35,6 @@ describe('buildSchemaManifest', () => {
   });
 
   it('records generated timestamp from the source document', () => {
-    expect(manifest.generatedAt).toBe('2025-09-17T15:54:03.576Z');
+    expect(manifest.generatedAt).toBe('2025-09-23T16:07:45.330Z');
   });
 });

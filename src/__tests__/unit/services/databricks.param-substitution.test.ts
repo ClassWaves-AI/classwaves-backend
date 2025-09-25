@@ -1,4 +1,4 @@
-import { getDatabricksService } from '../../../services/databricks.service';
+import { getDatabricksService, resetDatabricksServiceForTests } from '../../../services/databricks.service';
 
 describe('DatabricksService — parameter substitution hardening', () => {
   let capturedSql: string;
@@ -18,6 +18,16 @@ describe('DatabricksService — parameter substitution hardening', () => {
   beforeEach(() => {
     jest.restoreAllMocks();
     capturedSql = '';
+  });
+
+  beforeAll(async () => {
+    process.env.DATABRICKS_MOCK = '0';
+    await resetDatabricksServiceForTests();
+  });
+
+  afterAll(async () => {
+    delete process.env.DATABRICKS_MOCK;
+    await resetDatabricksServiceForTests();
   });
 
   it("preserves '?' inside parameter values and escapes quotes", async () => {

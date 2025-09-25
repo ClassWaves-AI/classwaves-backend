@@ -1,6 +1,16 @@
-import { getDatabricksService } from '../../../services/databricks.service';
+import { getDatabricksService, resetDatabricksServiceForTests } from '../../../services/databricks.service';
 
 describe('DatabricksService.batchInsert', () => {
+  beforeAll(async () => {
+    process.env.DATABRICKS_MOCK = '0';
+    await resetDatabricksServiceForTests();
+  });
+
+  afterAll(async () => {
+    delete process.env.DATABRICKS_MOCK;
+    await resetDatabricksServiceForTests();
+  });
+
   it('builds correct SQL and parameter order', async () => {
     const svc = getDatabricksService();
     const spy = jest.spyOn(svc, 'query').mockResolvedValueOnce([]);
@@ -18,5 +28,6 @@ describe('DatabricksService.batchInsert', () => {
     expect(params[1]).toBe('a1');
     // Later should contain row2 id
     expect(params).toContain('2');
+    spy.mockRestore();
   });
 });

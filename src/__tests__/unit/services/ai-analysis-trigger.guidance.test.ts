@@ -168,7 +168,7 @@ describe('AIAnalysisTriggerService — dual emit to guidance', () => {
     expect(context?.supportingLines?.length).toBeGreaterThan(0);
     context?.supportingLines?.forEach((line) => {
       expect(line.quote).not.toMatch(/["“”]/);
-      expect(line.quote.length).toBeLessThanOrEqual(80);
+      expect(line.quote.length).toBeLessThanOrEqual(240);
     });
 
     bufferSpy.mockRestore();

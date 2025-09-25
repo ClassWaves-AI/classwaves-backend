@@ -4,6 +4,22 @@ jest.mock('../../../workers/queue.audio-stt', () => ({
   getAudioSttQueue: async () => ({ add: jest.fn().mockResolvedValue({ id: 'job-1' }) }),
 }));
 
+jest.mock('../../../utils/idempotency.port.instance', () => {
+  const seen = new Set<string>();
+  return {
+    idempotencyPort: {
+      withIdempotency: jest.fn(async (key: string, _ttlMs: number, handler: () => Promise<unknown>) => {
+        if (seen.has(key)) {
+          return { executed: false };
+        }
+        seen.add(key);
+        const result = await handler();
+        return { executed: true, result };
+      }),
+    },
+  };
+});
+
 jest.mock('../../../services/redis.service', () => {
   const store = new Map<string, string>();
   const client = {

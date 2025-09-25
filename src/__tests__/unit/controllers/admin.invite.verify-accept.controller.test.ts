@@ -1,14 +1,16 @@
 import { Request, Response } from 'express'
 import { verifyInvite, acceptInvite } from '../../../controllers/admin.controller'
 
+const mockRedisClient = {
+  get: jest.fn(),
+  set: jest.fn(),
+  setex: jest.fn(),
+  del: jest.fn(),
+}
+
 jest.mock('../../../services/redis.service', () => ({
   redisService: {
-    getClient: () => ({
-      get: jest.fn(),
-      set: jest.fn(),
-      setex: jest.fn(),
-      del: jest.fn(),
-    }),
+    getClient: () => mockRedisClient,
   },
 }))
 
@@ -41,6 +43,13 @@ describe('Admin Invites – verify/accept', () => {
     issuedAt: new Date().toISOString(),
     version: 1,
   }
+
+  beforeEach(() => {
+    mockRedisClient.get.mockReset()
+    mockRedisClient.set.mockReset()
+    mockRedisClient.setex.mockReset()
+    mockRedisClient.del.mockReset()
+  })
 
   it('verify returns 410 when token missing/expired', async () => {
     const req = { params: { token } } as unknown as Request
@@ -86,4 +95,3 @@ describe('Admin Invites – verify/accept', () => {
     expect(res.status).toHaveBeenCalledWith(403)
   })
 })
-

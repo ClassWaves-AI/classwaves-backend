@@ -98,9 +98,20 @@ export class DatabricksSessionRepository implements SessionRepositoryPort {
   ): Promise<Array<SessionBasic & { group_count: number; student_count: number; participation_rate?: number; engagement_score?: number }>> {
     const sql = `
       SELECT
-        s.id, s.status, s.teacher_id, s.school_id,
-        s.title, s.description, s.goal, s.subject, s.target_group_size, s.scheduled_start, s.actual_start,
-        s.planned_duration_minutes, s.created_at, s.access_code,
+        s.id,
+        s.title,
+        s.description,
+        s.status,
+        s.teacher_id,
+        s.school_id,
+        s.target_group_size,
+        s.scheduled_start,
+        s.actual_start,
+        s.planned_duration_minutes,
+        s.created_at,
+        s.goal,
+        s.subject,
+        s.access_code,
         g.group_count,
         g.student_count,
         s.participation_rate,
