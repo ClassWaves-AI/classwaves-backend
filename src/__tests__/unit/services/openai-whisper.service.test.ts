@@ -11,9 +11,13 @@ jest.mock('../../../services/stt.budget.service', () => ({
 const { sttBudgetService } = require('../../../services/stt.budget.service');
 
 describe('OpenAIWhisperService', () => {
-  beforeEach(() => {
-    process.env.NODE_ENV = 'test';
-  });
+const originalNodeEnv = process.env.NODE_ENV;
+const originalSttProvider = process.env.STT_PROVIDER;
+
+beforeEach(() => {
+  process.env.NODE_ENV = 'test';
+  process.env.STT_PROVIDER = 'openai';
+});
 
   it('returns mock transcription in test env', async () => {
     const svc = new OpenAIWhisperService();
@@ -89,7 +93,13 @@ describe('OpenAIWhisperService', () => {
     spy.mockRestore();
   });
 
-  afterAll(async () => {
-    await redisService.disconnect();
-  });
+afterAll(async () => {
+  process.env.NODE_ENV = originalNodeEnv;
+  if (originalSttProvider === undefined) {
+    delete process.env.STT_PROVIDER;
+  } else {
+    process.env.STT_PROVIDER = originalSttProvider;
+  }
+  await redisService.disconnect();
+});
 });

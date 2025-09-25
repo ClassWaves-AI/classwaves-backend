@@ -70,29 +70,25 @@ describe('Validation Middleware', () => {
       };
 
       const middleware = validate(testSchema);
-      await middleware(mockReq as Request, mockRes as Response, mockNext);
+    await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(mockRes.status).toHaveBeenCalledWith(400);
-      expect(mockRes.json).toHaveBeenCalledWith({
-        error: 'VALIDATION_ERROR',
-        message: 'Invalid request data',
-        details: expect.arrayContaining([
-          expect.objectContaining({
-            field: 'name',
-            message: expect.any(String),
-          }),
-          expect.objectContaining({
-            field: 'age',
-            message: expect.any(String),
-          }),
-          expect.objectContaining({
-            field: 'email',
-            message: expect.any(String),
-          }),
-        ]),
-      });
-      expect(mockNext).not.toHaveBeenCalled();
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    const payload = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(payload.success).toBe(false);
+    expect(payload.error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Invalid request data',
     });
+    expect(payload.error.details.source).toBe('body');
+    expect(payload.error.details.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'name' }),
+        expect.objectContaining({ path: 'age' }),
+        expect.objectContaining({ path: 'email' }),
+      ])
+    );
+    expect(mockNext).not.toHaveBeenCalled();
+  });
 
     it('should handle missing required fields', async () => {
       mockReq.body = {
@@ -104,13 +100,13 @@ describe('Validation Middleware', () => {
       await middleware(mockReq as Request, mockRes as Response, mockNext);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
-      const response = (mockRes.json as jest.Mock).mock.calls[0][0];
-      expect(response.details).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ field: 'age' }),
-          expect.objectContaining({ field: 'email' }),
-        ])
-      );
+    const response = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(response.error.details.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'age' }),
+        expect.objectContaining({ path: 'email' }),
+      ])
+    );
     });
 
     it('should handle nested validation errors', async () => {
@@ -136,13 +132,13 @@ describe('Validation Middleware', () => {
       await middleware(mockReq as Request, mockRes as Response, mockNext);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
-      const response = (mockRes.json as jest.Mock).mock.calls[0][0];
-      expect(response.details).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ field: 'user.profile.name' }),
-          expect.objectContaining({ field: 'user.profile.age' }),
-        ])
-      );
+    const response = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(response.error.details.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'user.profile.name' }),
+        expect.objectContaining({ path: 'user.profile.age' }),
+      ])
+    );
     });
 
     it('should handle async validation', async () => {
@@ -163,13 +159,13 @@ describe('Validation Middleware', () => {
       await middleware(mockReq as Request, mockRes as Response, mockNext);
 
       expect(mockRes.status).toHaveBeenCalledWith(400);
-      const response = (mockRes.json as jest.Mock).mock.calls[0][0];
-      expect(response.details).toEqual([
-        expect.objectContaining({
-          field: 'username',
-          message: 'Username already taken',
-        }),
-      ]);
+    const response = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(response.error.details.issues).toEqual([
+      expect.objectContaining({
+        path: 'username',
+        message: 'Username already taken',
+      }),
+    ]);
     });
 
     it('should handle unexpected errors', async () => {
@@ -182,13 +178,14 @@ describe('Validation Middleware', () => {
       mockReq.body = { test: 'value' };
 
       const middleware = validate(errorSchema);
-      await middleware(mockReq as Request, mockRes as Response, mockNext);
+    await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(mockRes.status).toHaveBeenCalledWith(500);
-      expect(mockRes.json).toHaveBeenCalledWith({
-        error: 'INTERNAL_ERROR',
-        message: 'An unexpected error occurred',
-      });
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    const payload = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(payload.error).toMatchObject({
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred',
+    });
     });
   });
 
@@ -243,15 +240,14 @@ describe('Validation Middleware', () => {
         ),
       });
 
-      const middleware = validateQuery(strictSchema);
-      await middleware(mockReq as Request, mockRes as Response, mockNext);
+    const middleware = validateQuery(strictSchema);
+    await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(mockRes.status).toHaveBeenCalledWith(400);
-      expect(mockRes.json).toHaveBeenCalledWith({
-        error: 'VALIDATION_ERROR',
-        message: 'Invalid query parameters',
-        details: expect.any(Array),
-      });
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    const payload = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(payload.error.code).toBe('VALIDATION_ERROR');
+    expect(payload.error.details.source).toBe('query');
+    expect(Array.isArray(payload.error.details.issues)).toBe(true);
     });
   });
 
@@ -283,20 +279,18 @@ describe('Validation Middleware', () => {
         action: 'start',
       };
 
-      const middleware = validateParams(paramsSchema);
-      await middleware(mockReq as Request, mockRes as Response, mockNext);
+    const middleware = validateParams(paramsSchema);
+    await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(mockRes.status).toHaveBeenCalledWith(400);
-      expect(mockRes.json).toHaveBeenCalledWith({
-        error: 'VALIDATION_ERROR',
-        message: 'Invalid path parameters',
-        details: expect.arrayContaining([
-          expect.objectContaining({
-            field: 'id',
-            message: expect.any(String),
-          }),
-        ]),
-      });
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    const payload = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(payload.error.code).toBe('VALIDATION_ERROR');
+    expect(payload.error.details.source).toBe('params');
+    expect(payload.error.details.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'id' }),
+      ])
+    );
     });
 
     it('should reject invalid enum value', async () => {
@@ -308,16 +302,16 @@ describe('Validation Middleware', () => {
       const middleware = validateParams(paramsSchema);
       await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(mockRes.status).toHaveBeenCalledWith(400);
-      const response = (mockRes.json as jest.Mock).mock.calls[0][0];
-      expect(response.details).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            field: 'action',
-            message: expect.stringContaining('Invalid enum value'),
-          }),
-        ])
-      );
+    expect(mockRes.status).toHaveBeenCalledWith(400);
+    const response = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(response.error.details.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'action',
+          message: expect.stringContaining('Invalid option'),
+        }),
+      ])
+    );
     });
   });
 
@@ -369,20 +363,20 @@ describe('Validation Middleware', () => {
 
       mockReq.body = { email: 'invalid', age: 16 };
 
-      const middleware = validate(schema);
-      await middleware(mockReq as Request, mockRes as Response, mockNext);
+    const middleware = validate(schema);
+    await middleware(mockReq as Request, mockRes as Response, mockNext);
 
-      const response = (mockRes.json as jest.Mock).mock.calls[0][0];
-      expect(response.details).toEqual([
-        expect.objectContaining({
-          field: 'email',
-          message: 'Please provide a valid email address',
-        }),
-        expect.objectContaining({
-          field: 'age',
-          message: 'Must be at least 18 years old',
-        }),
-      ]);
-    });
+    const response = (mockRes.json as jest.Mock).mock.calls[0][0];
+    expect(response.error.details.issues).toEqual([
+      expect.objectContaining({
+        path: 'email',
+        message: 'Please provide a valid email address',
+      }),
+      expect.objectContaining({
+        path: 'age',
+        message: 'Must be at least 18 years old',
+      }),
+    ]);
   });
+});
 });

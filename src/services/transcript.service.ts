@@ -1,5 +1,5 @@
 import { redisService } from './redis.service';
-import { databricksService } from './databricks.service';
+import { getCompositionRoot } from '../app/composition-root';
 import { databricksConfig } from '../config/databricks.config';
 
 export interface TranscriptSegment { id: string; text: string; startTs: number; endTs: number }
@@ -18,7 +18,7 @@ export class TranscriptService {
     }
 
     // DB fallback if Redis empty or not covering requested time range
-    const canDb = process.env.NODE_ENV !== 'test' && process.env.DATABRICKS_ENABLED !== 'false' && !!databricksConfig.token;
+    const canDb = this.canUseDb();
     if (canDb && (!segments.length || since != null || until != null)) {
       const rows = await this.queryDb(sessionId, groupId, since, until);
       const mapped: TranscriptSegment[] = rows.map((r: any) => ({ id: String(r.id), text: String(r.content || ''), startTs: new Date(r.start_time).getTime(), endTs: new Date(r.end_time).getTime() }));
@@ -54,12 +54,39 @@ export class TranscriptService {
   }
 
   private async queryDb(sessionId: string, groupId: string, since?: number, until?: number): Promise<any[]> {
+    const db = getCompositionRoot().getDbPort();
+    const table = this.resolveTableFqn('sessions.transcriptions');
     const where: string[] = ['session_id = ?', 'group_id = ?'];
     const params: any[] = [sessionId, groupId];
     if (typeof since === 'number') { where.push('end_time >= ?'); params.push(new Date(since)); }
     if (typeof until === 'number') { where.push('start_time <= ?'); params.push(new Date(until)); }
-    const sql = `SELECT id, content, start_time, end_time FROM ${databricksConfig.catalog}.sessions.transcriptions WHERE ${where.join(' AND ')} ORDER BY start_time`;
-    try { return await databricksService.query(sql, params); } catch { return []; }
+    const sql = `SELECT id, content, start_time, end_time FROM ${table} WHERE ${where.join(' AND ')} ORDER BY start_time`;
+    try { return await db.query(sql, params); } catch { return []; }
+  }
+
+  private canUseDb(): boolean {
+    if (process.env.NODE_ENV === 'test') return false;
+    try {
+      const provider = getCompositionRoot().getDbProvider();
+      if (provider === 'postgres') return true;
+      if (provider === 'databricks') {
+        if (process.env.DATABRICKS_ENABLED === 'false') return false;
+        return !!databricksConfig.token;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveTableFqn(base: string): string {
+    try {
+      const provider = getCompositionRoot().getDbProvider();
+      if (provider === 'databricks') return `${databricksConfig.catalog}.${base}`;
+      return base;
+    } catch {
+      return base;
+    }
   }
 }
 

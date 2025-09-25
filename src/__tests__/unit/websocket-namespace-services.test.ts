@@ -13,6 +13,7 @@ import { Socket } from 'socket.io';
 import { SessionsNamespaceService } from '../../services/websocket/sessions-namespace.service';
 import { GuidanceNamespaceService } from '../../services/websocket/guidance-namespace.service';
 import { NamespaceBaseService } from '../../services/websocket/namespace-base.service';
+import { getCompositionRoot } from '../../app/composition-root';
 
 // Mock Socket.IO namespace
 const createMockNamespace = () => ({
@@ -47,6 +48,8 @@ const createMockSocket = (data: any = {}) => ({
   })
 } as any);
 
+const getCompositionRootMock = getCompositionRoot as unknown as jest.Mock;
+
 describe('WebSocket Namespace Services', () => {
   let sessionsNamespace: any;
   let guidanceNamespace: any;
@@ -54,6 +57,22 @@ describe('WebSocket Namespace Services', () => {
   beforeEach(() => {
     sessionsNamespace = createMockNamespace();
     guidanceNamespace = createMockNamespace();
+    getCompositionRootMock.mockReset();
+    getCompositionRootMock.mockReturnValue({
+      getDbPort: () => ({
+        queryOne: jest.fn(),
+      }),
+      getDbProvider: () => 'databricks',
+      getRosterRepository: () => ({
+        getStudentWithSchool: jest.fn().mockResolvedValue(null),
+      }),
+      getSessionRepository: () => ({
+        getBasic: jest.fn().mockResolvedValue({ status: 'active' }),
+      }),
+      getGroupRepository: () => ({
+        groupExistsInSession: jest.fn().mockResolvedValue(true),
+      }),
+    });
   });
 
   describe('NamespaceBaseService', () => {
@@ -536,19 +555,8 @@ describe('WebSocket Namespace Services', () => {
       const toMock = jest.fn().mockReturnValue({ emit: jest.fn() });
       ns.to = toMock;
 
-      // Instantiate service
-      const service = new SessionsNamespaceService(ns as any);
-
-      // Prepare mock socket with student role
-      const socket: any = createMockSocket({ role: 'student' });
-      socket.join = jest.fn();
-
-      // Mock databricksService.queryOne:
-      //  1) participant row with group assignment
-      //  2) student consent record to satisfy COPPA gate (teacher_verified_age=true)
-      const db = require('../../services/databricks.service');
-      const q1 = jest
-        .spyOn(db.databricksService, 'queryOne')
+      const queryOneMock = jest
+        .fn()
         .mockResolvedValueOnce({
           id: 'participant-1',
           session_id: 'session-1',
@@ -562,6 +570,27 @@ describe('WebSocket Namespace Services', () => {
           coppa_compliant: true,
           has_parental_consent: true,
         });
+
+      const rosterRepoMock = {
+        getStudentWithSchool: jest.fn().mockResolvedValue(null),
+      };
+
+      getCompositionRootMock.mockReturnValue({
+        getDbPort: () => ({ queryOne: queryOneMock }),
+        getDbProvider: () => 'databricks',
+        getRosterRepository: () => rosterRepoMock,
+        getSessionRepository: () => ({
+          getBasic: jest.fn().mockResolvedValue({ id: 'session-1', status: 'active' }),
+        }),
+        getGroupRepository: () => ({ groupExistsInSession: jest.fn().mockResolvedValue(true) }),
+      });
+
+      // Instantiate service
+      const service = new SessionsNamespaceService(ns as any);
+
+      // Prepare mock socket with student role
+      const socket: any = createMockSocket({ role: 'student' });
+      socket.join = jest.fn();
 
       // Call private method via bracket notation
       await (service as any).handleStudentSessionJoin(socket, { sessionId: 'session-1' });
@@ -582,3 +611,6 @@ describe('WebSocket Namespace Services', () => {
     });
   });
 });
+jest.mock('../../app/composition-root', () => ({
+  getCompositionRoot: jest.fn(),
+}));

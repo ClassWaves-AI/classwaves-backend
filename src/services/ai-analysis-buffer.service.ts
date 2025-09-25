@@ -9,7 +9,10 @@
  */
 
 import { databricksService } from './databricks.service';
+import { contextEpisodesService } from './context-episodes.service';
+import type { GuidanceTranscriptLine, GuidanceWindowSelection } from './ports/guidance-context.port';
 import type { Tier1Insights, Tier2Insights, PromptContextQuote } from '../types/ai-analysis.types';
+import { isGuidanceEpisodesEnabled } from '../config/feature-flags';
 import { logger } from '../utils/logger';
 
 // Validation moved to edges (routes/controllers/websocket). This service assumes
@@ -55,6 +58,22 @@ interface ContextQuote {
   speakerLabel: string;
   text: string;
   timestamp: number;
+  sequence?: number;
+}
+
+interface ContextWindowOptions {
+  goal?: string;
+  domainTerms?: string[];
+  now?: number;
+}
+
+interface ContextWindowResult {
+  aligned: ContextQuote[];
+  current: ContextQuote[];
+  tangent: ContextQuote[];
+  drift: GuidanceWindowSelection['drift'];
+  inputQuality: GuidanceWindowSelection['inputQuality'];
+  feature: 'legacy' | 'episodes';
 }
 
 // ============================================================================
@@ -114,10 +133,21 @@ export class AIAnalysisBufferService {
     cleanupIntervalMs: parseInt(process.env.AI_BUFFER_CLEANUP_INTERVAL_MS || '30000'),
   };
 
-  private readonly contextConfig = {
-    maxChars: Math.max(200, Math.min(2400, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS || '1200'))),
-    windowUtteranceLimit: Math.max(1, Math.min(8, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_LINES || '6')))
-  };
+  private readonly contextConfig = (() => {
+    const maxChars = Math.max(200, Math.min(2400, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_CHARS || '1200', 10)));
+    const windowUtteranceLimit = Math.max(1, Math.min(8, parseInt(process.env.AI_GUIDANCE_CONTEXT_MAX_LINES || '6', 10)));
+    const episodeWindowMinutes = Math.max(
+      4,
+      Math.min(10, Number.parseFloat(process.env.AI_GUIDANCE_EPISODE_MAX_MINUTES ?? '6'))
+    );
+    const episodeWindowMs = Math.round(episodeWindowMinutes * 60_000);
+    return {
+      maxChars,
+      windowUtteranceLimit,
+      episodeWindowMinutes,
+      episodeWindowMs,
+    } as const;
+  })();
 
   constructor() {
     // Start automatic cleanup process (skip in test to avoid open handles)
@@ -252,28 +282,72 @@ export class AIAnalysisBufferService {
    * Build sanitized transcript slices for contextual prompts (aligned vs tangent windows).
    * Returns empty arrays when buffers are unavailable or below minimum threshold.
    */
-  getContextWindows(sessionId: string, groupId: string): {
-    aligned: ContextQuote[];
-    tangent: ContextQuote[];
-  } {
-    const buffers = this.tier1Buffers;
+  getContextWindows(sessionId: string, groupId: string, options?: ContextWindowOptions): ContextWindowResult {
     const bufferKey = `${sessionId}:${groupId}`;
-    const buffer = buffers.get(bufferKey);
-
+    const buffer = this.tier1Buffers.get(bufferKey);
+    const useEpisodes = isGuidanceEpisodesEnabled();
     if (!buffer || buffer.transcripts.length === 0) {
-      return { aligned: [], tangent: [] };
+      return this.buildEmptyContextWindow(useEpisodes ? 'episodes' : 'legacy');
     }
 
     const sanitized = buffer.transcripts
       .slice()
       .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
-      .map((entry, idx) => this.sanitizeTranscriptEntry(entry.content, entry.timestamp, idx))
+      .map((entry, idx) => this.sanitizeTranscriptEntry(entry.content, entry.timestamp, idx, entry.sequenceNumber))
       .filter((line): line is ContextQuote => Boolean(line));
 
     if (sanitized.length === 0) {
-      return { aligned: [], tangent: [] };
+      return this.buildEmptyContextWindow(useEpisodes ? 'episodes' : 'legacy');
     }
 
+    if (!useEpisodes) {
+      return this.buildLegacyContextWindow(sanitized);
+    }
+
+    const transcriptLines: GuidanceTranscriptLine[] = sanitized.map((quote, idx) => ({
+      text: quote.text,
+      timestamp: quote.timestamp,
+      speakerLabel: quote.speakerLabel,
+      sequence: Number.isFinite(quote.sequence) ? Number(quote.sequence) : idx,
+      sttConfidence: 0.75,
+    }));
+
+    const episodes = contextEpisodesService.buildEpisodes(
+      transcriptLines,
+      options?.goal,
+      options?.domainTerms,
+      this.contextConfig.episodeWindowMinutes
+    );
+
+    const selection = contextEpisodesService.selectWindows(
+      episodes,
+      options?.goal,
+      options?.now ?? Date.now(),
+      {
+        maxChars: this.contextConfig.maxChars,
+        maxLines: this.contextConfig.windowUtteranceLimit,
+        windowMs: this.contextConfig.episodeWindowMs,
+      }
+    );
+
+    const aligned = this.toContextQuotes(selection.aligned);
+    const current = this.toContextQuotes(selection.current);
+
+    if (aligned.length === 0 && current.length === 0) {
+      return this.buildLegacyContextWindow(sanitized);
+    }
+
+    return {
+      aligned,
+      current,
+      tangent: current,
+      drift: selection.drift,
+      inputQuality: selection.inputQuality,
+      feature: 'episodes',
+    };
+  }
+
+  private buildLegacyContextWindow(sanitized: ContextQuote[]): ContextWindowResult {
     const maxChars = this.contextConfig.maxChars;
     const lineLimit = this.contextConfig.windowUtteranceLimit;
 
@@ -309,7 +383,74 @@ export class AIAnalysisBufferService {
       usedChars = projected;
     }
 
-    return { aligned, tangent };
+    return {
+      aligned,
+      current: tangent,
+      tangent,
+      drift: this.emptyDriftMetrics(),
+      inputQuality: this.legacyInputQuality(sanitized),
+      feature: 'legacy',
+    };
+  }
+
+  private buildEmptyContextWindow(feature: 'legacy' | 'episodes'): ContextWindowResult {
+    return {
+      aligned: [],
+      current: [],
+      tangent: [],
+      drift: this.emptyDriftMetrics(),
+      inputQuality: {
+        sttConfidence: 0,
+        coverage: 0,
+        alignmentDelta: 0,
+        episodeCount: 0,
+      },
+      feature,
+    };
+  }
+
+  private legacyInputQuality(sanitized: ContextQuote[]): GuidanceWindowSelection['inputQuality'] {
+    if (!Array.isArray(sanitized) || sanitized.length === 0) {
+      return {
+        sttConfidence: 0,
+        coverage: 0,
+        alignmentDelta: 0,
+        episodeCount: 0,
+      };
+    }
+    const first = sanitized[0];
+    const last = sanitized[sanitized.length - 1];
+    const span = Math.max(0, last.timestamp - first.timestamp);
+    const coverage = this.contextConfig.episodeWindowMs > 0
+      ? Math.max(0, Math.min(1, span / this.contextConfig.episodeWindowMs))
+      : 0;
+    return {
+      sttConfidence: 0.75,
+      coverage,
+      alignmentDelta: 0,
+      episodeCount: 1,
+    };
+  }
+
+  private emptyDriftMetrics(): GuidanceWindowSelection['drift'] {
+    return {
+      alignmentDelta: 0,
+      persistentMs: 0,
+      priorAlignment: 0,
+      currentAlignment: 0,
+      lastAlignedAt: null,
+    };
+  }
+
+  private toContextQuotes(lines: GuidanceTranscriptLine[]): ContextQuote[] {
+    return lines
+      .filter((line) => typeof line?.text === 'string' && line.text.trim().length > 0)
+      .map((line) => ({
+        speakerLabel: line.speakerLabel ?? '',
+        text: line.text.trim(),
+        timestamp: line.timestamp,
+        sequence: line.sequence,
+      }));
   }
 
   /**
@@ -742,7 +883,12 @@ export class AIAnalysisBufferService {
     }
   }
 
-  private sanitizeTranscriptEntry(content: string, timestamp: Date, fallbackIndex: number): ContextQuote | null {
+  private sanitizeTranscriptEntry(
+    content: string,
+    timestamp: Date,
+    fallbackIndex: number,
+    sequenceNumber?: number
+  ): ContextQuote | null {
     const normalized = typeof content === 'string' ? content.trim() : '';
     if (!normalized) return null;
 
@@ -756,10 +902,13 @@ export class AIAnalysisBufferService {
 
     const timestampMs = Number.isFinite(timestamp?.getTime?.()) ? timestamp.getTime() : Date.now();
 
+    const sequence = Number.isFinite(sequenceNumber) ? Number(sequenceNumber) : fallbackIndex;
+
     return {
       speakerLabel: `Participant ${fallbackIndex + 1}`,
       text,
-      timestamp: timestampMs
+      timestamp: timestampMs,
+      sequence,
     };
   }
 

@@ -87,6 +87,50 @@ export function getGuidanceContextQualityHistogram() {
   );
 }
 
+const EPISODE_COUNT_BUCKETS = [1, 2, 3, 4, 6, 8];
+
+export function getGuidanceEpisodeCountHistogram() {
+  return getOrCreateHistogram(
+    'guidance_context_episode_count',
+    'Episode count considered for guidance context selection',
+    EPISODE_COUNT_BUCKETS,
+    [] as const
+  );
+}
+
+const EPISODE_SELECTION_LATENCY_BUCKETS = [5, 10, 20, 35, 50, 80, 120, 200, 400];
+
+export function getGuidanceContextSelectionLatencyHistogram() {
+  return getOrCreateHistogram(
+    'guidance_context_selection_latency_ms',
+    'Latency for constructing episode-aware guidance windows',
+    EPISODE_SELECTION_LATENCY_BUCKETS,
+    [] as const
+  );
+}
+
+const DRIFT_PERSISTENCE_BUCKETS = [5, 10, 20, 30, 45, 60, 90, 120];
+
+export function getGuidanceDriftPersistenceHistogram() {
+  return getOrCreateHistogram(
+    'guidance_drift_persistence_seconds',
+    'Duration that drift persisted before gating prompted action',
+    DRIFT_PERSISTENCE_BUCKETS,
+    [] as const
+  );
+}
+
+const ALIGNMENT_DELTA_BUCKETS = [0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.6, 0.8, 1];
+
+export function getGuidanceContextAlignmentDeltaHistogram() {
+  return getOrCreateHistogram(
+    'guidance_context_alignment_delta',
+    'Alignment delta between aligned and current guidance episodes',
+    ALIGNMENT_DELTA_BUCKETS,
+    [] as const
+  );
+}
+
 export function getGuidanceRedisUnavailableCounter() {
   return getOrCreateCounter(
     'guidance_redis_unavailable_total',

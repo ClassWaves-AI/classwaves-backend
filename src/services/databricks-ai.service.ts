@@ -136,12 +136,9 @@ export class DatabricksAIService {
    */
   private buildTier1Prompt(transcripts: string[], options: Tier1Options): string {
     const combinedTranscript = transcripts.join(' ').trim();
-    const escapedTranscript = combinedTranscript.replace(/`/g, '\`');
     const ctx = this.sanitizeSessionContext(options.sessionContext);
     const ctxJson = JSON.stringify(ctx);
-    const escapedCtx = ctxJson.replace(/`/g, '\`');
     const evidenceJson = options.evidenceWindows ? JSON.stringify(options.evidenceWindows, null, 2) : null;
-    const escapedEvidence = evidenceJson ? evidenceJson.replace(/`/g, '\`') : null;
     const summaryLimit = Math.max(80, Math.min(400, parseInt(process.env.AI_GUIDANCE_CONTEXT_SUMMARY_MAX_CHARS || '160', 10)));
     const topicLimit = Math.max(40, Math.min(120, parseInt(process.env.AI_GUIDANCE_TOPIC_MAX_CHARS || '60', 10)));
     const supportingLinesMax = Math.max(1, Math.min(5, parseInt(process.env.AI_GUIDANCE_SUPPORTING_LINES_MAX || '3', 10)));
@@ -154,14 +151,14 @@ export class DatabricksAIService {
 - Transcript Length: ${combinedTranscript.length} characters
 
 **INTENDED SESSION CONTEXT (sanitized JSON):**
-${escapedCtx}
+${ctxJson}
 
-${escapedEvidence ? `**EVIDENCE WINDOWS (sanitized JSON with aligned/tangent quotes):**
-${escapedEvidence}
+${evidenceJson ? `**EVIDENCE WINDOWS (sanitized JSON with aligned/tangent quotes):**
+${evidenceJson}
 ` : ''}
 
 **TRANSCRIPT TO ANALYZE:**
-${escapedTranscript}
+${combinedTranscript}
 
 **ANALYSIS REQUIREMENTS:**
 Provide a JSON response with exactly this structure (omit optional fields when you cannot estimate them confidently):
@@ -446,7 +443,7 @@ Return only valid JSON with no additional text.`;
 
     const goalLine = input.sessionGoal ? `Session goal: ${input.sessionGoal}` : 'Session goal: (not provided)';
 
-    return `You are WaveListener Guidance, an instructional coach generating actionable teacher prompts.\n\n${goalLine}\nTier-1 drift signals:\n${formatDrift()}\n\nAligned discussion window (paraphrased transcripts):\n${formatWindow('Aligned window', input.aligned)}\n\nCurrent discussion window (paraphrased transcripts):\n${formatWindow('Current window', input.current)}\n\nDomain terms to preserve exactly: ${domainTerms}.\nTitlecase substitutions: ${titlecaseTerms}.\n\nReturn STRICT JSON only with this shape:\n{\n  "actionLine": string,\n  "reason": string,\n  "priorTopic": string,\n  "currentTopic": string,\n  "contextSummary": string,\n  "transitionIdea": string,\n  "confidence": number\n}\n\nConstraints:\n- Paraphrase only; do not copy six or more consecutive words verbatim from inputs.\n- No names, speaker labels, quotation marks, markdown, or bullet formatting.\n- actionLine: imperative teacher guidance, ${budgets.actionLine.min}-${budgets.actionLine.max} characters.\n- reason: neutral tone explaining drift vs. goal, ${budgets.reason.min}-${budgets.reason.max} characters.\n- priorTopic/currentTopic: <= ${budgets.topicMax} characters each, short noun phrases (title or sentence case).\n- contextSummary: single cohesive paragraph, ${budgets.contextSummary.min}-${budgets.contextSummary.max} characters.\n- transitionIdea: next step to recenter discussion, ${budgets.transition.min}-${budgets.transition.max} characters.\n- confidence: number between 0 and 1.\n- If unsure, estimate confidently but keep fields non-empty; otherwise return an error.\n`;
+    return `You are WaveListener Guidance, an instructional coach generating actionable teacher prompts.\n\n${goalLine}\nTier-1 drift signals:\n${formatDrift()}\n\nAligned discussion window (discussion that was on-goal):\n${formatWindow('Aligned window', input.aligned)}\n\nCurrent discussion window (drifting or shallow talk):\n${formatWindow('Current window', input.current)}\n\nDomain terms to preserve exactly: ${domainTerms}.\nTitlecase substitutions: ${titlecaseTerms}.\n\nIf either window is empty or there is insufficient contrast to justify a prompt, respond with the exact JSON: {"error":"insufficient_evidence"}.\n\nOtherwise return STRICT JSON with exactly these fields (no extras):\n{\n  "actionLine": string,\n  "reason": string,\n  "priorTopic": string,\n  "currentTopic": string,\n  "contextSummary": string,\n  "transitionIdea": string,\n  "confidence": number\n}\n\nConstraints:\n- Highlight the difference between priorTopic and currentTopic; they must not be identical.\n- Paraphrase only; do not copy six or more consecutive words verbatim from inputs.\n- No names, speaker labels, quotation marks, markdown, or bullet formatting.\n- actionLine: imperative teacher guidance, ${budgets.actionLine.min}-${budgets.actionLine.max} characters.\n- reason: neutral tone explaining drift vs. goal, ${budgets.reason.min}-${budgets.reason.max} characters.\n- priorTopic/currentTopic: <= ${budgets.topicMax} characters each, short noun phrases (title or sentence case).\n- contextSummary: single cohesive paragraph, ${budgets.contextSummary.min}-${budgets.contextSummary.max} characters, contrasting aligned vs. current talk.\n- transitionIdea: next step to recenter discussion, ${budgets.transition.min}-${budgets.transition.max} characters.\n- confidence: number between 0 and 1.\n- Never invent evidence or speculate beyond the provided windows.\n`;
   }
 
   private compileTitlecasePatterns(pairs: Array<{ match: string; replacement: string }>): Array<{ regex: RegExp; replacement: string }> {
@@ -595,6 +592,9 @@ Return only valid JSON with no additional text.`;
     const strict = options.strict !== false;
 
     try {
+      if (raw && typeof (raw as any).error === 'string') {
+        throw new Error(String((raw as any).error));
+      }
       const descriptor: PromptContextDescriptor = {};
 
       const actionLine = this.prepareGuidanceField(raw, 'actionLine', options.budgets.actionLine, {
@@ -641,6 +641,14 @@ Return only valid JSON with no additional text.`;
       });
       if (currentTopic) {
         descriptor.currentTopic = currentTopic;
+      }
+
+      if (
+        descriptor.priorTopic &&
+        descriptor.currentTopic &&
+        descriptor.priorTopic.trim().toLowerCase() === descriptor.currentTopic.trim().toLowerCase()
+      ) {
+        throw new Error('priorTopic and currentTopic must differ');
       }
 
       const contextSummary = this.prepareGuidanceField(raw, 'contextSummary', options.budgets.contextSummary, {
@@ -814,10 +822,8 @@ Return only valid JSON with no additional text.`;
    */
   private buildTier2Prompt(transcripts: string[], options: Tier2Options): string {
     const combinedTranscript = transcripts.join('\n\n').trim();
-    const escapedTranscript = combinedTranscript.replace(/`/g, '\`');
     const ctx = this.sanitizeSessionContext(options.sessionContext);
     const ctxJson = JSON.stringify(ctx);
-    const escapedCtx = ctxJson.replace(/`/g, '\`');
     const scope = options.groupId ? 'group' : 'session';
     
     return `You are an expert educational AI conducting deep analysis of classroom group discussions.
@@ -831,10 +837,10 @@ Return only valid JSON with no additional text.`;
 - Total Transcript Length: ${combinedTranscript.length} characters
 
 **INTENDED SESSION CONTEXT (sanitized JSON):**
-${escapedCtx}
+${ctxJson}
 
 **TRANSCRIPT TO ANALYZE:**
-${escapedTranscript}
+${combinedTranscript}
 
 **ANALYSIS REQUIREMENTS:**
 Provide a comprehensive JSON response with exactly this structure:

@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "id": "seminar_cross_talk_fallback",
+    "title": "Seminar with cross talk using legacy window selection",
+    "description": "Group toggles episode flag off to exercise fallback context path.",
+    "goal": "Students critique composition techniques in community mural designs.",
+    "subject": "art",
+    "gradeBand": "9",
+    "domainTerms": [
+      "composition",
+      "contrast",
+      "focal point"
+    ],
+    "driftProfile": "mixed",
+    "driftNotes": "Episodes disabled; harness should confirm legacy selection still surfaces quotes.",
+    "tags": [
+      "tier1",
+      "fallback"
+    ]
+  },
+  "featureFlags": {
+    "cwGuidanceEpisodesEnabled": false
+  },
+  "playback": {
+    "msBetweenLines": 4300
+  },
+  "expectations": {
+    "tier1": {
+      "expectedPromptCount": 1,
+      "expectedCategories": [
+        "redirection"
+      ],
+      "gating": "mixed",
+      "summaryIncludes": [
+        "focus"
+      ],
+      "why": {
+        "alignmentDeltaMin": 0.28,
+        "driftSecondsMin": 18
+      }
+    },
+    "tier2": {
+      "expectedInsightCount": 0
+    }
+  },
+  "transcript": [
+    {
+      "timestamp": 0,
+      "text": "Which mural sketch keeps the viewer focused on the community story?",
+      "speakerLabel": "Teacher",
+      "sequence": 1,
+      "sttConfidence": 0.95
+    },
+    {
+      "timestamp": 3900,
+      "text": "The design with the diagonal lines pulls my eye to the center.",
+      "speakerLabel": "Student 1",
+      "sequence": 2,
+      "sttConfidence": 0.92
+    },
+    {
+      "timestamp": 7800,
+      "text": "I like the version with bright neon arrows even if it is off theme.",
+      "speakerLabel": "Student 2",
+      "sequence": 3,
+      "sttConfidence": 0.91
+    },
+    {
+      "timestamp": 11800,
+      "text": "Neon arrows scream electric festival, not the neighborhood story.",
+      "speakerLabel": "Student 3",
+      "sequence": 4,
+      "sttConfidence": 0.9
+    },
+    {
+      "timestamp": 15900,
+      "text": "But the arrows would look amazing on the basketball court wall!",
+      "speakerLabel": "Student 2",
+      "sequence": 5,
+      "sttConfidence": 0.89
+    },
+    {
+      "timestamp": 20100,
+      "text": "Bring it back\u2014how do the arrows support or distract from our goal?",
+      "speakerLabel": "Teacher",
+      "sequence": 6,
+      "sttConfidence": 0.94
+    },
+    {
+      "timestamp": 24000,
+      "text": "They distract because they compete with the portraits.",
+      "speakerLabel": "Student 1",
+      "sequence": 7,
+      "sttConfidence": 0.92
+    },
+    {
+      "timestamp": 28100,
+      "text": "Keeping the focal point on neighborhood faces tells the story better.",
+      "speakerLabel": "Student 3",
+      "sequence": 8,
+      "sttConfidence": 0.93
+    },
+    {
+      "timestamp": 32200,
+      "text": "Exactly. Note that observation for our design brief.",
+      "speakerLabel": "Teacher",
+      "sequence": 9,
+      "sttConfidence": 0.95
+    }
+  ]
+}

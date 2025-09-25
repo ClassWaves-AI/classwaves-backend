@@ -32,7 +32,7 @@ describe('audio.window.controller guardrails (REST min-interval)', () => {
       .set('Authorization', `Bearer ${authToken}`)
       .field('sessionId', sessionId)
       .field('groupId', groupId)
-      .field('chunkId', 'c-1')
+      .field('chunkId', 'chunk-0001')
       .field('startTs', String(startTs))
       .field('endTs', String(endTs))
       .attach('audio', audioBuf, { filename: 'a.webm', contentType: 'audio/webm' });
@@ -45,7 +45,7 @@ describe('audio.window.controller guardrails (REST min-interval)', () => {
       .set('Authorization', `Bearer ${authToken}`)
       .field('sessionId', sessionId)
       .field('groupId', groupId)
-      .field('chunkId', 'c-2')
+      .field('chunkId', 'chunk-0002')
       .field('startTs', String(startTs))
       .field('endTs', String(endTs))
       .attach('audio', audioBuf, { filename: 'b.webm', contentType: 'audio/webm' });
@@ -54,4 +54,3 @@ describe('audio.window.controller guardrails (REST min-interval)', () => {
     try { const j = r2.body; expect(j && j.ok === false && j.error === 'RATE_LIMITED').toBe(true); } catch { /* intentionally ignored: best effort cleanup */ }
   });
 });
-

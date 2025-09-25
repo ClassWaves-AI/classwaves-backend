@@ -113,6 +113,33 @@ $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_group_membership
   ON sessions.student_group_members(group_id, student_id);
 
+-- Participants (mirror of production subset)
+CREATE TABLE IF NOT EXISTS sessions.participants (
+  id uuid PRIMARY KEY,
+  session_id uuid REFERENCES sessions.classroom_sessions(id) ON DELETE CASCADE,
+  group_id uuid REFERENCES sessions.student_groups(id) ON DELETE SET NULL,
+  student_id uuid,
+  anonymous_id uuid,
+  display_name text,
+  join_time timestamptz,
+  leave_time timestamptz,
+  is_active boolean DEFAULT true,
+  device_type text,
+  browser_info text,
+  connection_quality text,
+  can_speak boolean DEFAULT true,
+  can_hear boolean DEFAULT true,
+  is_muted boolean DEFAULT false,
+  total_speaking_time_seconds integer,
+  message_count integer,
+  interaction_count integer,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_participants_session ON sessions.participants(session_id);
+CREATE INDEX IF NOT EXISTS idx_participants_group ON sessions.participants(group_id);
+
 -- Users
 CREATE TABLE IF NOT EXISTS users.teachers (
   id uuid PRIMARY KEY,
@@ -169,11 +196,21 @@ ALTER TABLE users.students ALTER COLUMN status SET DEFAULT 'active';
 ALTER TABLE users.students ALTER COLUMN created_at SET DEFAULT now();
 ALTER TABLE users.students ALTER COLUMN updated_at SET DEFAULT now();
 
-ALTER TABLE users.students
-  ADD CONSTRAINT fk_students_school
-  FOREIGN KEY (school_id)
-  REFERENCES users.schools(id)
-  ON DELETE SET NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'fk_students_school'
+      AND conrelid = 'users.students'::regclass
+  ) THEN
+    ALTER TABLE users.students
+      ADD CONSTRAINT fk_students_school
+      FOREIGN KEY (school_id)
+      REFERENCES users.schools(id)
+      ON DELETE SET NULL;
+  END IF;
+END;
+$$;
 
 CREATE INDEX IF NOT EXISTS idx_students_school ON users.students(school_id);
 

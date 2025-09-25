@@ -494,7 +494,7 @@ export class DatabricksService {
           const used = Math.min(expected, params.length);
 
           if (expected !== params.length) {
-            const tableMatch = /(insert\s+into|update|from)\s+([a-zA-Z0-9_\.]+)/i.exec(sql);
+            const tableMatch = /(insert\s+into|update|from)\s+([a-zA-Z0-9_.]+)/i.exec(sql);
             const tableRef = tableMatch?.[2] || 'unknown';
             const preview = sql.replace(/\s+/g, ' ').slice(0, 120);
             logger.warn('⚠️ Databricks param count mismatch', {
@@ -1478,9 +1478,10 @@ export const isDatabricksMockEnabled = (): boolean => {
 };
 
 export const getDatabricksService = (): DatabricksServiceLike => {
-  if (!databricksServiceInstance) {
-    mockState = shouldUseMock();
-    databricksServiceInstance = mockState ? databricksMockService : new DatabricksService();
+  const desiredMockState = shouldUseMock();
+  if (!databricksServiceInstance || mockState !== desiredMockState) {
+    mockState = desiredMockState;
+    databricksServiceInstance = desiredMockState ? databricksMockService : new DatabricksService();
   }
   return databricksServiceInstance;
 };
@@ -1514,4 +1515,20 @@ export const databricksService = {
   batchAuthOperations: (googleUser: any, domain: string): Promise<{ school: any; teacher: any }> =>
     getDatabricksService().batchAuthOperations(googleUser, domain),
   // STT removed
+};
+
+/**
+ * Test helper enabling suites to clear the cached instance and flip between
+ * the mock and concrete implementations on demand.
+ */
+export const resetDatabricksServiceForTests = async (): Promise<void> => {
+  if (databricksServiceInstance && typeof (databricksServiceInstance as any).disconnect === 'function') {
+    try {
+      await (databricksServiceInstance as any).disconnect();
+    } catch {
+      // Swallow disconnect issues; test isolation is best-effort
+    }
+  }
+  databricksServiceInstance = null;
+  mockState = null;
 };

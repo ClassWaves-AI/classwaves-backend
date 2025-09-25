@@ -42,6 +42,7 @@ describe('stt.provider', () => {
     const provider = getSttProvider();
     expect(provider).toBe(customProvider);
     clearSttProviderOverride();
+    delete process.env.STT_PROVIDER;
     expect(getSttProvider()).toBe(openAIWhisperService);
   });
 });

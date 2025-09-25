@@ -37,7 +37,14 @@ export class DbGroupRepository implements GroupRepositoryPort {
 
   async getMembersBySession(sessionId: string): Promise<Array<{ group_id: string; student_id: string; name: string | null }>> {
     const sql = `
-      SELECT m.group_id, m.student_id, COALESCE(s.display_name, s.name) AS name
+      SELECT 
+        m.group_id,
+        m.student_id,
+        COALESCE(
+          s.display_name,
+          NULLIF(s.preferred_name, ''),
+          NULLIF(TRIM(CONCAT_WS(' ', s.given_name, s.family_name)), '')
+        ) AS name
       FROM ${MEMBERS_TABLE} m
       LEFT JOIN ${STUDENTS_TABLE} s ON m.student_id = s.id
       WHERE m.session_id = ?
@@ -51,7 +58,11 @@ export class DbGroupRepository implements GroupRepositoryPort {
         sg.id AS group_id,
         sg.name AS group_name,
         sg.leader_id,
-        COALESCE(s.display_name, s.name) AS leader_name,
+        COALESCE(
+          s.display_name,
+          NULLIF(s.preferred_name, ''),
+          NULLIF(TRIM(CONCAT_WS(' ', s.given_name, s.family_name)), '')
+        ) AS leader_name,
         s.email AS leader_email
       FROM ${GROUP_TABLE} sg
       JOIN ${STUDENTS_TABLE} s ON sg.leader_id = s.id
@@ -69,11 +80,19 @@ export class DbGroupRepository implements GroupRepositoryPort {
         sg.id AS group_id,
         sg.name AS group_name,
         sg.leader_id,
-        COALESCE(s.display_name, s.name) AS leader_name,
+        COALESCE(
+          s.display_name,
+          NULLIF(s.preferred_name, ''),
+          NULLIF(TRIM(CONCAT_WS(' ', s.given_name, s.family_name)), '')
+        ) AS leader_name,
         s.email AS leader_email
       FROM ${GROUP_TABLE} sg
       JOIN ${STUDENTS_TABLE} s ON sg.leader_id = s.id
-      WHERE sg.session_id = ? AND COALESCE(s.display_name, s.name) = ?
+      WHERE sg.session_id = ? AND COALESCE(
+          s.display_name,
+          NULLIF(s.preferred_name, ''),
+          NULLIF(TRIM(CONCAT_WS(' ', s.given_name, s.family_name)), '')
+        ) = ?
     `;
     return this.db.query<{ group_id: string; group_name: string; leader_id: string; leader_name: string; leader_email: string | null }>(
       sql,

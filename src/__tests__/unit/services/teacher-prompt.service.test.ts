@@ -309,6 +309,19 @@ describe('TeacherPromptService', () => {
 
       const originalEnv = process.env.NODE_ENV;
       process.env.NODE_ENV = 'development';
+      const mockDbPort = {
+        update: jest.fn().mockResolvedValue(undefined),
+        insert: jest.fn().mockResolvedValue(undefined),
+        queryOne: jest.fn().mockResolvedValue(null),
+        query: jest.fn(),
+        tableHasColumns: jest.fn().mockResolvedValue(true),
+      };
+      jest.spyOn(service as any, 'getDbPort').mockReturnValue(mockDbPort);
+      jest.spyOn(service as any, 'getPromptFromDatabase').mockResolvedValue({
+        prompt_category: 'redirection',
+        prompt_message: 'Encourage deeper thinking. Try asking: "Why do you think that?"',
+        generated_at: new Date().toISOString(),
+      });
       await service.recordPromptInteraction(prompts[0].id, mockContext.sessionId, mockContext.teacherId, 'used');
       process.env.NODE_ENV = originalEnv;
 

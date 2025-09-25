@@ -1,6 +1,10 @@
 import crypto from 'crypto';
-import { databricksService } from './databricks.service';
+import type { DbProvider } from '@classwaves/shared';
 import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
+import type { DbPort } from './ports/db.port';
+import { getCompositionRoot } from '../app/composition-root';
+import { databricksConfig } from '../config/databricks.config';
+import { normalizeTableFqn } from '../adapters/db/fqn.utils';
 
 /**
  * AI Insights Persistence Service
@@ -9,6 +13,10 @@ import type { Tier1Insights, Tier2Insights } from '../types/ai-analysis.types';
  * - Uses database existence check to avoid duplicate writes on retries
  */
 export class AIInsightsPersistenceService {
+  private cachedDbPort: DbPort | null = null;
+  private cachedProvider: DbProvider | null = null;
+  private cachedTableRefs: { select: string; insert: string } | null = null;
+
   /**
    * Persist Tier1 insights for a group within a session, idempotently.
    * Returns true if persisted, false if a duplicate was detected.
@@ -19,16 +27,19 @@ export class AIInsightsPersistenceService {
     insights: Tier1Insights
   ): Promise<boolean> {
     const key = this.buildIdempotencyKey('tier1', sessionId, groupId, insights.analysisTimestamp);
+    const db = this.getDbPort();
+    const tableRefs = this.getTableRefs();
 
     // Fast path: skip if already present
-    const exists = await databricksService.queryOne<{ id: string }>(
-      `SELECT id FROM ${this.tablePath()} WHERE id = ? LIMIT 1`,
-      [key]
+    const exists = await db.queryOne<{ id: string }>(
+      `SELECT id FROM ${tableRefs.select} WHERE id = ? LIMIT 1`,
+      [key],
+      { operation: 'analysis_results.select_existing' }
     );
     if (exists?.id) return false;
 
     const processingMs = Number(insights?.metadata?.processingTimeMs ?? 0);
-    await databricksService.insert('analysis_results', {
+    await db.insert(tableRefs.insert, {
       id: key,
       session_id: sessionId,
       analysis_type: 'tier1',
@@ -37,8 +48,9 @@ export class AIInsightsPersistenceService {
       result_data: JSON.stringify({ ...insights, groupId }),
       confidence_score: insights.confidence,
       model_version: insights?.metadata?.modelVersion || 'databricks',
+      group_id: groupId,
       created_at: new Date(),
-    });
+    }, { operation: 'analysis_results.insert_tier1' });
     return true;
   }
 
@@ -52,15 +64,18 @@ export class AIInsightsPersistenceService {
     groupId: string
   ): Promise<boolean> {
     const key = this.buildIdempotencyKey('tier2', sessionId, groupId, insights.analysisTimestamp);
+    const db = this.getDbPort();
+    const tableRefs = this.getTableRefs();
 
-    const exists = await databricksService.queryOne<{ id: string }>(
-      `SELECT id FROM ${this.tablePath()} WHERE id = ? LIMIT 1`,
-      [key]
+    const exists = await db.queryOne<{ id: string }>(
+      `SELECT id FROM ${tableRefs.select} WHERE id = ? LIMIT 1`,
+      [key],
+      { operation: 'analysis_results.select_existing' }
     );
     if (exists?.id) return false;
 
     const processingMs = Number(insights?.metadata?.processingTimeMs ?? 0);
-    await databricksService.insert('analysis_results', {
+    await db.insert(tableRefs.insert, {
       id: key,
       session_id: sessionId,
       analysis_type: 'tier2',
@@ -71,7 +86,7 @@ export class AIInsightsPersistenceService {
       model_version: insights?.metadata?.modelVersion || 'databricks',
       group_id: groupId,
       created_at: new Date(),
-    });
+    }, { operation: 'analysis_results.insert_tier2' });
     return true;
   }
 
@@ -85,10 +100,31 @@ export class AIInsightsPersistenceService {
     return crypto.createHash('sha1').update(base).digest('hex');
   }
 
-  private tablePath(): string {
-    // Mirrors databricksService.getSchemaForTable('analysis_results') mapping
-    // Avoid importing config directly to keep this focused and testable
-    return `classwaves.ai_insights.analysis_results`;
+  private getDbPort(): DbPort {
+    if (!this.cachedDbPort) {
+      this.cachedDbPort = getCompositionRoot().getDbPort();
+    }
+    return this.cachedDbPort;
+  }
+
+  private getDbProvider(): DbProvider {
+    if (!this.cachedProvider) {
+      this.cachedProvider = getCompositionRoot().getDbProvider();
+    }
+    return this.cachedProvider;
+  }
+
+  private getTableRefs(): { select: string; insert: string } {
+    if (this.cachedTableRefs) {
+      return this.cachedTableRefs;
+    }
+
+    const provider = this.getDbProvider();
+    const catalog = databricksConfig.catalog || 'classwaves';
+    const select = provider === 'postgres' ? 'ai_insights.analysis_results' : `${catalog}.ai_insights.analysis_results`;
+    const normalized = normalizeTableFqn(select);
+    this.cachedTableRefs = { select, insert: `${normalized.schema}.${normalized.table}` };
+    return this.cachedTableRefs;
   }
 }
 

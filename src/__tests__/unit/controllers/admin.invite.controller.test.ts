@@ -14,6 +14,8 @@ jest.mock('../../../services/redis.service', () => ({
   redisService: {
     getClient: () => ({
       set: jest.fn().mockResolvedValue('OK'),
+      setex: jest.fn().mockResolvedValue('OK'),
+      get: jest.fn().mockResolvedValue(null),
     }),
   },
 }))
@@ -31,10 +33,26 @@ describe('Admin Controller – inviteTeacher', () => {
     process.env.NODE_ENV = 'test'
   })
 
-  it('rejects non-admin roles', async () => {
+  it('allows teacher role invites for teacher users', async () => {
     const req = {
       body: { email: 'new.teacher@example.edu', role: 'teacher' },
       user: { role: 'teacher', id: 't-1' },
+      school: { id: 'sch_1' },
+      ip: '127.0.0.1',
+      headers: {},
+    } as unknown as Request
+    const res = createRes()
+    await inviteTeacher(req, res)
+    expect(res.status).toHaveBeenCalledWith(201)
+    const payload = (res.json as any).mock.calls[0][0]
+    expect(payload.success).toBe(true)
+    expect(payload.data.inviteToken).toBeDefined()
+  })
+
+  it('rejects admin role invites from non-super admins', async () => {
+    const req = {
+      body: { email: 'new.admin@example.edu', role: 'admin' },
+      user: { role: 'admin', id: 'a-1' },
       school: { id: 'sch_1' },
       ip: '127.0.0.1',
       headers: {},
@@ -79,4 +97,3 @@ describe('Admin Controller – inviteTeacher', () => {
     expect(payload.data.inviteToken).toBeDefined()
   })
 })
-

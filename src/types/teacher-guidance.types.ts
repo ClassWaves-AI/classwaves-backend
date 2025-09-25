@@ -51,6 +51,11 @@ export interface TeacherPrompt {
   };
   bridgingPrompt?: string;
   onTrackSummary?: string;
+  why?: {
+    alignmentDelta?: number;
+    driftSeconds?: number;
+    inputQuality?: number;
+  };
   
   // Effectiveness
   effectivenessScore?: number;

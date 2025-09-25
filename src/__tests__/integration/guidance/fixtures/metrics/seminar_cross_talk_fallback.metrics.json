@@ -1,0 +1,22 @@
+{
+  "guidance_context_alignment_delta": {
+    "count": 0,
+    "sum": 0,
+    "buckets": []
+  },
+  "guidance_context_episode_count": {
+    "count": 0,
+    "sum": 0,
+    "buckets": []
+  },
+  "guidance_context_selection_latency_ms": {
+    "count": 0,
+    "sum": 0,
+    "buckets": []
+  },
+  "guidance_drift_persistence_seconds": {
+    "count": 0,
+    "sum": 0,
+    "buckets": []
+  }
+}

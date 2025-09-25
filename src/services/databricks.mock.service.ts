@@ -345,7 +345,7 @@ export class DatabricksMockService {
     return rows.filter((row) => {
       let paramIndex = 0;
       return conditions.every((condition) => {
-        const eqMatch = condition.match(/([a-z0-9_\.]+)\s*=\s*\?/i);
+        const eqMatch = condition.match(/([a-z0-9_.]+)\s*=\s*\?/i);
         if (eqMatch) {
           const field = eqMatch[1].split('.').pop() as string;
           const expected = params[paramIndex++];
@@ -361,13 +361,13 @@ export class DatabricksMockService {
   }
 
   private handleAlterTable(sql: string): void {
-    const match = sql.match(/alter\s+table\s+([a-z0-9_\.]+)\s+add\s+columns\s*\((.+)\)/i);
+    const match = sql.match(/alter\s+table\s+([a-z0-9_.]+)\s+add\s+columns\s*\((.+)\)/i);
     if (!match) {
       return;
     }
     const tableRef = DatabricksMockService.normalizeTable(match[1]);
     const columnsExpr = match[2];
-    const columnRegex = /([a-z0-9_]+)\s+[a-z0-9_<>\[\]]+/gi;
+    const columnRegex = /([a-z0-9_]+)\s+[a-z0-9_<>[\]]+/gi;
     let colMatch: RegExpExecArray | null;
     const keyVariants = this.expandTableRefs(tableRef);
     while ((colMatch = columnRegex.exec(columnsExpr)) !== null) {
@@ -380,7 +380,7 @@ export class DatabricksMockService {
   }
 
   private handleDropTable(sql: string): void {
-    const match = sql.match(/drop\s+table\s+(if\s+exists\s+)?([a-z0-9_\.]+)/i);
+    const match = sql.match(/drop\s+table\s+(if\s+exists\s+)?([a-z0-9_.]+)/i);
     if (!match) {
       return;
     }
@@ -429,11 +429,11 @@ export class DatabricksMockService {
   }
 
   private handleCreateTable(sql: string): void {
-    const match = sql.match(/create\s+table\s+(if\s+not\s+exists\s+)?([a-z0-9_\.]+)\s*\(([^;]+)\)/i);
+    const match = sql.match(/create\s+table\s+(if\s+not\s+exists\s+)?([a-z0-9_.]+)\s*\(([^;]+)\)/i);
     if (!match) return;
     const tableRef = DatabricksMockService.normalizeTable(match[2]);
     const body = match[3];
-    const columnRegex = /([a-z0-9_]+)\s+[a-z0-9_<>\[\]]+/gi;
+    const columnRegex = /([a-z0-9_]+)\s+[a-z0-9_<>[\]]+/gi;
     let colMatch: RegExpExecArray | null;
     const columnSet = new Set<string>();
     while ((colMatch = columnRegex.exec(body)) !== null) {
@@ -449,7 +449,7 @@ export class DatabricksMockService {
   }
 
   private handleInsert(sql: string): void {
-    const match = sql.match(/insert\s+into\s+([a-z0-9_\.]+)\s*\(([^)]+)\)\s*values\s*\(([^)]+)\)/i);
+    const match = sql.match(/insert\s+into\s+([a-z0-9_.]+)\s*\(([^)]+)\)\s*values\s*\(([^)]+)\)/i);
     if (!match) return;
     const tableRef = DatabricksMockService.normalizeTable(match[1]);
     const columns = match[2].split(',').map((col) => col.trim().replace(/[`"']/g, '').toLowerCase());
@@ -463,7 +463,7 @@ export class DatabricksMockService {
   }
 
   private handleDelete(sql: string): void {
-    const match = sql.match(/delete\s+from\s+([a-z0-9_\.]+)\s+where\s+([a-z0-9_\.]+)\s*=\s*('?[^\s;]+'?)/i);
+    const match = sql.match(/delete\s+from\s+([a-z0-9_.]+)\s+where\s+([a-z0-9_.]+)\s*=\s*('?[^\s;]+'?)/i);
     if (!match) return;
     const tableRef = DatabricksMockService.normalizeTable(match[1]);
     const column = match[2].split('.').pop() as string;

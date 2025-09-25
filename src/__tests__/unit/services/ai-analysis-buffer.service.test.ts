@@ -183,7 +183,9 @@ describe('AIAnalysisBufferService', () => {
 
       const windows = service.getContextWindows(sessionId, groupId);
 
+      expect(windows.feature).toBe('legacy');
       expect(windows.tangent.length).toBeGreaterThan(0);
+      expect(windows.current).toEqual(windows.tangent);
       expect(windows.aligned.length).toBeGreaterThan(0);
 
       const allQuotes = [...windows.tangent, ...windows.aligned].map((line) => line.text);
@@ -203,6 +205,10 @@ describe('AIAnalysisBufferService', () => {
       const empty = service.getContextWindows(sessionId, groupId);
       expect(empty.aligned).toEqual([]);
       expect(empty.tangent).toEqual([]);
+      expect(empty.current).toEqual([]);
+      expect(empty.feature).toBe('legacy');
+      expect(empty.drift.alignmentDelta).toBe(0);
+      expect(empty.inputQuality.episodeCount).toBe(0);
     });
 
     it('respects line and character limits when building windows', async () => {
@@ -219,6 +225,7 @@ describe('AIAnalysisBufferService', () => {
       const windows = service.getContextWindows(sessionId, groupId);
 
       expect(windows.tangent).toHaveLength(2);
+      expect(windows.feature).toBe('legacy');
       expect(windows.aligned).toHaveLength(2);
 
       expect(windows.aligned[0].text).toContain('energy transfer');
@@ -242,10 +249,38 @@ describe('AIAnalysisBufferService', () => {
 
       const windows = service.getContextWindows(sessionId, groupId);
 
+      expect(windows.feature).toBe('legacy');
       expect(windows.tangent).toHaveLength(1);
       expect(windows.tangent[0].text).toContain('weekend plans');
       expect(windows.aligned).toHaveLength(1);
       expect(windows.aligned[0].text).toContain('stay aligned');
+    });
+
+    it('returns episode-aware windows with drift metrics when flag enabled', async () => {
+      await service.shutdown();
+      process.env.CW_GUIDANCE_EPISODES_ENABLED = '1';
+      service = new AIAnalysisBufferService();
+
+      await service.bufferTranscription(groupId, sessionId, 'Participant A: We are outlining chloroplast structure and energy transfer.');
+      await service.bufferTranscription(groupId, sessionId, 'Participant B: This supports the photosynthesis goal around light reactions.');
+      await service.bufferTranscription(groupId, sessionId, 'Participant C: Switching gears to lunch plans and weekend events.');
+      await service.bufferTranscription(groupId, sessionId, 'Participant D: Still on the game strategy instead of chloroplast roles.');
+
+      const windows = service.getContextWindows(sessionId, groupId, {
+        goal: 'chloroplast energy transfer light reactions',
+        domainTerms: ['chloroplast', 'photosynthesis'],
+      });
+
+      expect(windows.feature).toBe('episodes');
+      expect(windows.current.length).toBeGreaterThan(0);
+      expect(windows.aligned.length).toBeGreaterThan(0);
+      expect(windows.drift.alignmentDelta).toBeGreaterThan(0);
+      expect(windows.drift.persistentMs).toBeGreaterThanOrEqual(0);
+      expect(windows.inputQuality.episodeCount).toBeGreaterThanOrEqual(1);
+
+      await service.shutdown();
+      delete process.env.CW_GUIDANCE_EPISODES_ENABLED;
+      service = new AIAnalysisBufferService();
     });
   });
 });

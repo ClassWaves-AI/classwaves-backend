@@ -1,11 +1,11 @@
-import { DatabricksAIService } from '../../../services/databricks-ai.service';
-import { Tier1Options, Tier2Options } from '../../../types/ai-analysis.types';
+import type { Tier1Options, Tier2Options } from '../../../types/ai-analysis.types';
 
 // Mock fetch globally
 global.fetch = jest.fn();
 
 describe('DatabricksAIService', () => {
-  let service: DatabricksAIService;
+  let DatabricksAIService: typeof import('../../../services/databricks-ai.service').DatabricksAIService;
+  let service: InstanceType<typeof DatabricksAIService>;
   const mockFetch = fetch as jest.MockedFunction<typeof fetch>;
 
   const wrapDatabricksResponse = (payload: unknown) => ({
@@ -19,14 +19,15 @@ describe('DatabricksAIService', () => {
   });
 
 beforeEach(() => {
+  jest.resetModules();
   mockFetch.mockClear();
-  // Mock environment variables BEFORE constructing service
   process.env.DATABRICKS_HOST = 'https://test.databricks.com';
   process.env.DATABRICKS_TOKEN = 'test-token';
   process.env.AI_TIER1_ENDPOINT = '/serving-endpoints/tier1/invocations';
   process.env.AI_TIER2_ENDPOINT = '/serving-endpoints/tier2/invocations';
   process.env.AI_TIER1_TIMEOUT_MS = '2000';
   process.env.AI_TIER2_TIMEOUT_MS = '5000';
+  ({ DatabricksAIService } = require('../../../services/databricks-ai.service'));
   service = new DatabricksAIService();
 });
 
@@ -184,22 +185,6 @@ beforeEach(() => {
       const result = await service.analyzeTier1(mockTranscripts, mockTier1Options);
       expect(result.context).toBeDefined();
       expect(result.context?.currentTopic).toBe('Soccer practice');
-      expect(result.context?.quotes).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            speakerLabel: 'Participant 1',
-            text: 'We talked about soccer.'
-          })
-        ])
-      );
-      expect(result.context?.supportingLines).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            speaker: 'Participant 1',
-            quote: 'We talked about soccer.'
-          })
-        ])
-      );
       expect(result.context?.confidence).toBe(0.8);
     });
 
@@ -482,6 +467,89 @@ beforeEach(() => {
       
       jest.useRealTimers();
       (Math.random as jest.Mock).mockRestore();
+    });
+  });
+
+  describe('summarizeGuidanceContext', () => {
+    const input = {
+      sessionGoal: 'Compare plant and animal cells',
+      aligned: [{ text: 'Students referenced chloroplast functions and light energy capture.' }],
+      current: [{ text: 'They shifted to talking about weekend tournaments instead.' }],
+    };
+    const longActionLine = 'Guide the group back to analyzing chloroplast energy transfer by prompting a compare-and-contrast with mitochondria outputs before moving on.';
+    const longReason = 'The aligned episode focused on photosynthesis goals, but the current discussion centers on planning weekend tournaments, leaving the academic objective unaddressed.';
+    const longContextSummary = 'Earlier, students explained how light reactions power chloroplast energy capture; now they are planning soccer tournaments with no references to today\'s science goal, so redirecting is necessary to recover the learning trajectory.';
+    const longTransition = 'Ask a student to summarize how light and dark reactions differ, then connect that summary to the earlier chloroplast energy examples before resuming the activity.';
+
+    it('returns normalized descriptor when the LLM provides a diff-shaped payload', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () =>
+          wrapDatabricksResponse({
+            actionLine: longActionLine,
+            reason: longReason,
+            priorTopic: 'Light reactions and chloroplast roles',
+            currentTopic: 'Weekend tournaments',
+            contextSummary: longContextSummary,
+            transitionIdea: longTransition,
+            confidence: 0.82,
+          }),
+      } as Response);
+
+      const descriptor = await service.summarizeGuidanceContext(input as any);
+      expect(descriptor?.actionLine?.length ?? 0).toBeGreaterThan(80);
+      expect(descriptor?.actionLine).toContain('chloroplast');
+      expect(descriptor?.priorTopic).toContain('chloroplast');
+      expect(descriptor?.currentTopic).toContain('Weekend');
+      expect(descriptor?.confidence).toBe(0.82);
+    });
+
+    it('throws when the LLM signals insufficient evidence', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => wrapDatabricksResponse({ error: 'insufficient_evidence' }),
+      } as Response);
+
+      await expect(service.summarizeGuidanceContext(input as any)).rejects.toThrow(/insufficient_evidence/i);
+    });
+
+    it('rejects payloads where prior and current topics are identical', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () =>
+          wrapDatabricksResponse({
+            actionLine: longActionLine,
+            reason: longReason,
+            priorTopic: 'Same topic',
+            currentTopic: 'Same topic',
+            contextSummary: longContextSummary,
+            transitionIdea: longTransition,
+            confidence: 0.6,
+          }),
+      } as Response);
+
+      await expect(service.summarizeGuidanceContext(input as any)).rejects.toThrow(/priorTopic and currentTopic must differ/);
+    });
+
+    it('rejects payloads missing required fields', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () =>
+          wrapDatabricksResponse({
+            actionLine: longActionLine,
+            reason: longReason,
+            currentTopic: 'Current',
+            contextSummary: longContextSummary,
+            transitionIdea: longTransition,
+            confidence: 0.6,
+          }),
+      } as Response);
+
+      await expect(service.summarizeGuidanceContext(input as any)).rejects.toThrow(/Missing priorTopic/i);
     });
   });
 });

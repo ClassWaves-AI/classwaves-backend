@@ -82,16 +82,17 @@ describe('Guidance Analytics Controller', () => {
         success: true,
         data: expect.objectContaining({
           analytics: expect.objectContaining({
-          teacherId: 'teacher-1',
-          promptMetrics: expect.objectContaining({
-            totalGenerated: 0,
-            totalAcknowledged: 0,
-            totalUsed: 0,
-            totalDismissed: 0,
-            acknowledgmentRate: 0,
-            usageRate: 0
-          })
-        })
+            teacherId: 'teacher-1',
+            promptMetrics: expect.objectContaining({
+              totalGenerated: 0,
+              totalAcknowledged: 0,
+              totalUsed: 0,
+              totalDismissed: 0,
+              acknowledgmentRate: 0,
+              usageRate: 0,
+            }),
+          }),
+        }),
       }));
 
       // Audit enqueue recorded
@@ -146,13 +147,14 @@ describe('Guidance Analytics Controller', () => {
         success: true,
         data: expect.objectContaining({
           analytics: expect.objectContaining({
-          sessionId: 'session-1',
-          overview: expect.any(Object),
-          guidanceActivity: expect.any(Object),
-          aiAnalysis: expect.any(Object),
-          timeline: expect.any(Array),
-          successMetrics: expect.any(Object)
-        })
+            sessionId: 'session-1',
+            overview: expect.any(Object),
+            guidanceActivity: expect.any(Object),
+            aiAnalysis: expect.any(Object),
+            timeline: expect.any(Array),
+            successMetrics: expect.any(Object),
+          }),
+        }),
       }));
 
       // Ensure audit enqueue is invoked within the analytics operation wrapper

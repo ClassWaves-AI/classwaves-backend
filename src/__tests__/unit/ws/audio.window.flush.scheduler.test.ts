@@ -34,6 +34,7 @@ describe('WS: server-driven audio window flush scheduler', () => {
 
   afterEach(() => {
     try { socket?.disconnect() } catch { /* intentionally ignored: best effort cleanup */ }
+    client.register.resetMetrics()
   })
 
   it('emits periodic audio:window:flush events while stream is active', async () => {
@@ -48,7 +49,7 @@ describe('WS: server-driven audio window flush scheduler', () => {
     await new Promise(r => setTimeout(r, 30))
     socket.emit('audio:stream:start', { groupId })
 
-    await new Promise(r => setTimeout(r, 600))
+    await new Promise(r => setTimeout(r, 1300))
 
     // End stream to stop scheduler
     socket.emit('audio:stream:end', { groupId })

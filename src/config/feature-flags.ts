@@ -34,3 +34,9 @@ export function isAuthDevFallbackEnabled(): boolean {
   if (isLocalDbEnabled()) return true;
   return false;
 }
+
+export function isGuidanceEpisodesEnabled(): boolean {
+  if (isTruthy(process.env[FeatureFlags.GUIDANCE_EPISODES_ENABLED])) return true;
+  if (isTruthy(process.env.CW_GUIDANCE_EPISODES_ENABLED)) return true;
+  return false;
+}

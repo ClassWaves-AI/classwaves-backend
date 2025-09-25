@@ -141,9 +141,9 @@ export const createStudentSchema = z.object({
   parentEmail: z.string().email('Invalid parent email format').optional(),
   isUnderConsentAge: z.boolean().optional(), // Is student under 13?
   hasParentalConsent: z.boolean().optional(), // If under 13, has consent been obtained?
-  dataConsentGiven: z.boolean().default(true),
-  audioConsentGiven: z.boolean().default(true),
-  emailConsentGiven: z.boolean().default(true),
+  dataConsentGiven: z.boolean().default(false),
+  audioConsentGiven: z.boolean().default(false),
+  emailConsentGiven: z.boolean().optional(),
 });
 
 export const updateStudentSchema = z.object({

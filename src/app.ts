@@ -26,6 +26,7 @@ import audioUploadRoutes from './routes/audio-upload.routes';
 import guidanceAnalyticsRoutes from './routes/guidance-analytics.routes';
 import analyticsMonitoringRoutes from './routes/analytics-monitoring.routes';
 import transcriptsRoutes from './routes/transcripts.routes';
+import guidanceFixturesRoutes from './routes/guidance-fixtures.routes';
 
 import healthRoutes from './routes/health.routes';
 import debugRoutes from './routes/debug.routes';
@@ -520,6 +521,7 @@ app.use('/api/v1/analytics', guidanceAnalyticsRoutes);
 app.use('/api/v1/analytics/monitoring', analyticsMonitoringRoutes);
 app.use('/api/v1/audio', audioUploadRoutes);
 app.use('/api/v1/transcripts', transcriptsRoutes);
+app.use('/api/v1/dev/guidance/fixtures', guidanceFixturesRoutes);
 app.use('/api/v1/health', healthRoutes);
 app.use('/api/v1/debug', debugRoutes);
 

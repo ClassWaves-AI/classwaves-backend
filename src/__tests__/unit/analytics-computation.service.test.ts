@@ -87,7 +87,8 @@ describe('AnalyticsComputationService', () => {
       created_at: '2024-01-01T10:00:00Z',
       first_member_joined: '2024-01-01T10:05:00Z',
       member_count: 4, // member1, member2, member3, member4
-      engagement_rate: 0.75 // 3 active out of 4 = 0.75
+      engagement_rate: 0.75, // 3 active out of 4 = 0.75
+      engagement_score: 0.75,
     },
     {
       id: 'group2',
@@ -95,7 +96,8 @@ describe('AnalyticsComputationService', () => {
       created_at: '2024-01-01T10:00:00Z',
       first_member_joined: '2024-01-01T10:07:00Z',
       member_count: 3, // member5, member6, member7
-      engagement_rate: 0.33 // 1 active out of 3 = 0.33
+      engagement_rate: 0.33, // 1 active out of 3 = 0.33
+      engagement_score: 0.33,
     }
   ];
 
@@ -608,9 +610,9 @@ describe('AnalyticsComputationService', () => {
           .mockResolvedValueOnce(mockPlannedVsActualData); // Planned vs actual data
 
       mockDatabricksService.query.mockImplementation((sql: string) => {
-        if (/sessions\.student_group_members/i.test(sql)) return Promise.reject(new Error('Session overview query failed'));
         if (/analytics\.group_analytics/i.test(sql)) return Promise.resolve(mockGroupPerformanceData as any);
         if (/sessions\.participants/i.test(sql)) return Promise.resolve(mockParticipantsData as any);
+        if (/sessions\.student_group_members/i.test(sql)) return Promise.reject(new Error('Session overview query failed'));
         return Promise.resolve([]);
       });
 

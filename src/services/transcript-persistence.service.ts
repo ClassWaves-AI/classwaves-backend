@@ -1,16 +1,28 @@
 import { redisService } from './redis.service';
-import { databricksService } from './databricks.service';
 import { databricksConfig } from '../config/databricks.config';
+import { getCompositionRoot } from '../app/composition-root';
 
 export interface SegmentLike { id: string; text: string; startTs: number; endTs: number }
 
 function canUseDb(): boolean {
-  // Explicit enable overrides test gating
-  if (process.env.DATABRICKS_ENABLED === 'true') return true;
+  // Disable in test to avoid external dependencies
   if (process.env.NODE_ENV === 'test') return false;
-  if (process.env.DATABRICKS_ENABLED === 'false') return false;
-  // When token exists, we consider DB enabled
-  return !!databricksConfig.token;
+  // Use configured DB provider
+  try {
+    const provider = getCompositionRoot().getDbProvider();
+    if (provider === 'postgres') return true;
+    // For Databricks provider, require token and not explicitly disabled
+    if (provider === 'databricks') {
+      if (process.env.DATABRICKS_ENABLED === 'false') return false;
+      return !!databricksConfig.token;
+    }
+  } catch {
+    // Fallback to previous behavior
+    if (process.env.DATABRICKS_ENABLED === 'true') return true;
+    if (process.env.DATABRICKS_ENABLED === 'false') return false;
+    return !!databricksConfig.token;
+  }
+  return false;
 }
 
 function buildRow(sessionId: string, groupId: string, seg: SegmentLike) {
@@ -59,12 +71,18 @@ export class TranscriptPersistenceService {
     if (newIds.length === 0) return 0;
     const idSet = new Set(newIds);
     const toInsert = segments.filter(s => idSet.has(s.id)).map(s => buildRow(ctx.sessionId, ctx.groupId, s));
-    // Insert in batches
+    // Insert in batches using DB port (transactional for efficiency)
+    const db = getCompositionRoot().getDbPort();
+    const table = this.resolveTableFqn('sessions.transcriptions');
     const BATCH = 100;
-    for (let i = 0; i < toInsert.length; i += BATCH) {
-      const slice = toInsert.slice(i, i + BATCH);
-      await databricksService.batchInsert('sessions.transcriptions', slice);
-    }
+    await db.withTransaction(async (tx) => {
+      for (let i = 0; i < toInsert.length; i += BATCH) {
+        const slice = toInsert.slice(i, i + BATCH);
+        for (const row of slice) {
+          await tx.insert(table, row, { operation: 'insert_transcription' });
+        }
+      }
+    });
     return toInsert.length;
   }
 
@@ -74,11 +92,13 @@ export class TranscriptPersistenceService {
     const unique = Array.from(new Set(ids));
     const missing: string[] = [];
     const CHUNK = 200;
+    const db = getCompositionRoot().getDbPort();
+    const table = this.resolveTableFqn('sessions.transcriptions');
     for (let i = 0; i < unique.length; i += CHUNK) {
       const chunk = unique.slice(i, i + CHUNK);
       const placeholders = chunk.map(() => '?').join(',');
-      const sql = `SELECT id FROM ${databricksConfig.catalog}.sessions.transcriptions WHERE id IN (${placeholders})`;
-      const rows = await databricksService.query<{ id: string }>(sql, chunk);
+      const sql = `SELECT id FROM ${table} WHERE id IN (${placeholders})`;
+      const rows = await db.query<{ id: string }>(sql, chunk, { operation: 'select_transcription_ids' });
       const existing = new Set(rows.map(r => String(r.id)));
       for (const id of chunk) if (!existing.has(String(id))) missing.push(id);
     }
@@ -100,6 +120,21 @@ export class TranscriptPersistenceService {
     let total = 0;
     for (const k of keys) total += await this.flushKey(k);
     return total;
+  }
+
+  private resolveTableFqn(base: string): string {
+    try {
+      const provider = getCompositionRoot().getDbProvider();
+      if (provider === 'databricks') {
+        // Databricks expects catalog-prefixed FQN
+        return `${databricksConfig.catalog}.${base}`;
+      }
+      // Postgres uses schema.table
+      return base;
+    } catch {
+      // Fallback to base
+      return base;
+    }
   }
 }
 

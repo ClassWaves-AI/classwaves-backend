@@ -64,7 +64,7 @@ describe('GuidanceNamespaceService emitsFailed metrics', () => {
     const svc = new GuidanceNamespaceService(ns);
 
     const sessionId = 'sess-2';
-    const payload = { sessionId, insights: { a: 1 }, timestamp: new Date().toISOString() };
+    const payload = { sessionId, groupId: 'group-1', insights: { a: 1 }, timestamp: new Date().toISOString() };
     svc.emitTier2Insight(sessionId, payload);
 
     const client: any = require('prom-client');

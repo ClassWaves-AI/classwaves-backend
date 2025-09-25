@@ -1,0 +1,104 @@
+{
+  "metadata": {
+    "id": "history_recovery_loop",
+    "title": "Historical inquiry recovers after sidebar",
+    "description": "Students swap to concert talk before reconnecting to civil rights case study.",
+    "goal": "Students analyze primary sources from the 1963 March on Washington.",
+    "subject": "history",
+    "gradeBand": "10",
+    "domainTerms": [
+      "primary source",
+      "civil rights",
+      "March on Washington"
+    ],
+    "driftProfile": "recovery",
+    "driftNotes": "Temporary drift followed by successful teacher redirection and summary recovery.",
+    "tags": [
+      "tier1",
+      "recovery"
+    ]
+  },
+  "featureFlags": {
+    "cwGuidanceEpisodesEnabled": true
+  },
+  "playback": {
+    "msBetweenLines": 4400
+  },
+  "expectations": {
+    "tier1": {
+      "expectedPromptCount": 1,
+      "expectedCategories": [
+        "redirection"
+      ],
+      "gating": "recovery",
+      "summaryIncludes": [
+        "recover"
+      ],
+      "why": {
+        "alignmentDeltaMin": 0.3,
+        "driftSecondsMin": 25
+      }
+    },
+    "tier2": {
+      "expectedInsightCount": 0
+    }
+  },
+  "transcript": [
+    {
+      "timestamp": 0,
+      "text": "What details in the speech highlight coalition building?",
+      "speakerLabel": "Teacher",
+      "sequence": 1,
+      "sttConfidence": 0.96
+    },
+    {
+      "timestamp": 4100,
+      "text": "King names groups like labor unions and faith leaders.",
+      "speakerLabel": "Student 1",
+      "sequence": 2,
+      "sttConfidence": 0.93
+    },
+    {
+      "timestamp": 8300,
+      "text": "I heard the school choir is covering the song from the march.",
+      "speakerLabel": "Student 2",
+      "sequence": 3,
+      "sttConfidence": 0.9
+    },
+    {
+      "timestamp": 12500,
+      "text": "We should go to the concert together, tickets drop Friday.",
+      "speakerLabel": "Student 3",
+      "sequence": 4,
+      "sttConfidence": 0.89
+    },
+    {
+      "timestamp": 16800,
+      "text": "Pause the concert planning; connect back to the primary source question.",
+      "speakerLabel": "Teacher",
+      "sequence": 5,
+      "sttConfidence": 0.95
+    },
+    {
+      "timestamp": 21100,
+      "text": "Right, the speech names many groups to show unity.",
+      "speakerLabel": "Student 2",
+      "sequence": 6,
+      "sttConfidence": 0.92
+    },
+    {
+      "timestamp": 25400,
+      "text": "It also references the Constitution to emphasize shared ideals.",
+      "speakerLabel": "Student 1",
+      "sequence": 7,
+      "sttConfidence": 0.93
+    },
+    {
+      "timestamp": 29600,
+      "text": "Good\u2014note how the language invites multiple audiences to stay engaged.",
+      "speakerLabel": "Teacher",
+      "sequence": 8,
+      "sttConfidence": 0.96
+    }
+  ]
+}

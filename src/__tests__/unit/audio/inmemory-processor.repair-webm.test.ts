@@ -23,6 +23,8 @@ describe('InMemoryAudioProcessor WebM fragment repair (WS flag)', () => {
     const headered = Buffer.concat([EBML, Buffer.from('HEADER'), CLUSTER, Buffer.from('H1')]);
     // Ingest headered first to cache header
     await (p as any).ingestGroupAudioChunk(groupId, headered, 'audio/webm;codecs=opus', sessionId);
+    const cachedHeader = (p as any).webmHeaders.get(groupId);
+    expect(cachedHeader?.length).toBeGreaterThan(0);
 
     // Next fragment: junk + cluster + payload (no header)
     const frag = Buffer.concat([ Buffer.from('JUNKJUNK'), CLUSTER, Buffer.from('PAYLOAD') ]);
@@ -30,10 +32,11 @@ describe('InMemoryAudioProcessor WebM fragment repair (WS flag)', () => {
 
     expect(calls.length).toBeGreaterThanOrEqual(1);
     const buf = calls[calls.length - 1].buffer;
-    // Extract header length from the combined buffer using EBML+HEADER length
-    const headerLen = buf.indexOf(CLUSTER);
-    expect(headerLen).toBeGreaterThan(0);
-    // Assert the first occurrence of cluster equals header end (aligned)
-    expect(buf.indexOf(CLUSTER)).toBe(headerLen);
+    // Header bytes cached for subsequent fragments
+    expect(cachedHeader?.length).toBeGreaterThan(0);
+    // Cluster should now begin at start of buffer (header trimmed to avoid duplication)
+    expect(buf.indexOf(CLUSTER)).toBe(0);
+    // Junk prefix should be removed
+    expect(buf.includes(Buffer.from('JUNKJUNK'))).toBe(false);
   });
 });

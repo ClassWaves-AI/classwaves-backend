@@ -26,7 +26,11 @@ describe('requireRole middleware', () => {
     mw(req as any, res as any, next as any);
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'FORBIDDEN' }));
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: false,
+        error: expect.objectContaining({ code: 'INSUFFICIENT_PERMISSIONS' }),
+      })
+    );
   });
 });
-

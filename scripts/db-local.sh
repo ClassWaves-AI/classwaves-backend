@@ -107,6 +107,7 @@ is_truthy() {
 }
 
 manifest_enabled() {
+  # Prefer explicit env flags
   local candidates=(
     "${CW_DBX_MANIFEST_ENABLED:-}"
     "${DBX_MANIFEST_ENABLED:-}"
@@ -117,7 +118,12 @@ manifest_enabled() {
       return 0
     fi
   done
-  return 1
+  # If a generated schema already exists, prefer using it for parity
+  if [ -f "${GENERATED_SCHEMA_FILE}" ]; then
+    return 0
+  fi
+  # Default to manifest-enabled for parity with production schema
+  return 0
 }
 
 ensure_manifest_generated() {

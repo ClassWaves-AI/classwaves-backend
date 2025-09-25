@@ -9,7 +9,6 @@ import {
   joinSession,
   getSessionAnalytics
 } from '../../../controllers/session.controller';
-import { databricksService } from '../../../services/databricks.service';
 import { websocketService } from '../../../services/websocket';
 import { redisService } from '../../../services/redis.service';
 import { RetryService } from '../../../services/retry.service';
@@ -24,17 +23,22 @@ import {
 import { AuthRequest } from '../../../types/auth.types';
 
 // Mock all services
-jest.mock('../../../services/databricks.service');
 jest.mock('../../../utils/audit.port.instance', () => ({
   auditLogPort: { enqueue: jest.fn().mockResolvedValue(undefined) }
 }));
 jest.mock('../../../services/websocket');
 // Mock namespaced WebSocket service to capture emits from controller
 const emitToSessionMock = jest.fn();
+const emitToGroupMock = jest.fn();
+const stopFlushSchedulersMock = jest.fn();
+const resetTranscriptMergeStateMock = jest.fn();
 jest.mock('../../../services/websocket/namespaced-websocket.service', () => ({
   getNamespacedWebSocketService: () => ({
     getSessionsService: () => ({
       emitToSession: emitToSessionMock,
+      emitToGroup: emitToGroupMock,
+      stopFlushSchedulersForSession: stopFlushSchedulersMock,
+      resetTranscriptMergeStateForGroups: resetTranscriptMergeStateMock,
     })
   })
 }));
@@ -42,6 +46,181 @@ jest.mock('../../../services/redis.service');
 jest.mock('../../../utils/analytics-logger');
 jest.mock('../../../services/retry.service');
 jest.mock('../../../services/query-cache.service');
+jest.mock('../../../services/analytics-query-router.service', () => ({
+  analyticsQueryRouterService: {
+    logSessionEvent: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+jest.mock('../../../utils/idempotency.port.instance', () => ({
+  idempotencyPort: {
+    withIdempotency: jest.fn(async (_key: string, _ttl: number, fn: () => Promise<any>) => fn()),
+  },
+}));
+jest.mock('../../../utils/cache.port.instance', () => ({
+  cachePort: {
+    set: jest.fn().mockResolvedValue(undefined),
+    get: jest.fn().mockResolvedValue(null),
+  },
+}));
+jest.mock('../../../services/cache-event-bus.service', () => ({
+  cacheEventBus: {
+    sessionStatusChanged: jest.fn().mockResolvedValue(undefined),
+    sessionUpdated: jest.fn().mockResolvedValue(undefined),
+    sessionDeleted: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+jest.mock('../../../services/secure-jwt.service', () => ({
+  SecureJWTService: {
+    generateStudentToken: jest.fn().mockResolvedValue('mock-student-token'),
+  },
+}));
+jest.mock('prom-client', () => {
+  const counters: Record<string, any> = {};
+  const histograms: Record<string, any> = {};
+  const gauges: Record<string, any> = {};
+  class Counter {
+    name: string;
+    inc: jest.Mock;
+    constructor(config: { name: string }) {
+      this.name = config.name;
+      this.inc = jest.fn();
+      counters[this.name] = this;
+    }
+  }
+  class Histogram {
+    name: string;
+    observe: jest.Mock;
+    constructor(config: { name: string }) {
+      this.name = config.name;
+      this.observe = jest.fn();
+      histograms[this.name] = this;
+    }
+  }
+  class Gauge {
+    name: string;
+    set: jest.Mock;
+    constructor(config: { name: string }) {
+      this.name = config.name;
+      this.set = jest.fn();
+      gauges[this.name] = this;
+    }
+  }
+  return {
+    register: {
+      getSingleMetric: jest.fn((name: string) => counters[name] || histograms[name] || gauges[name]),
+    },
+    Counter,
+    Histogram,
+    Gauge,
+  };
+});
+jest.mock('../../../services/analytics-computation.service', () => ({
+  analyticsComputationService: {
+    computeSessionAnalytics: jest.fn().mockResolvedValue({}),
+    emitAnalyticsFinalized: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+jest.mock('../../../services/transcript-persistence.service', () => ({
+  transcriptPersistenceService: {
+    flushSession: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+jest.mock('../../../services/audio/InMemoryAudioProcessor', () => ({
+  inMemoryAudioProcessor: {
+    flushGroups: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+jest.mock('../../../services/summary-synthesis.service', () => ({
+  summarySynthesisService: {
+    runSummariesForSession: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+const { analyticsQueryRouterService } = require('../../../services/analytics-query-router.service');
+const { cacheEventBus } = require('../../../services/cache-event-bus.service');
+const { SecureJWTService } = require('../../../services/secure-jwt.service');
+const { transcriptPersistenceService } = require('../../../services/transcript-persistence.service');
+const { analyticsComputationService } = require('../../../services/analytics-computation.service');
+const { inMemoryAudioProcessor } = require('../../../services/audio/InMemoryAudioProcessor');
+const { summarySynthesisService } = require('../../../services/summary-synthesis.service');
+
+const mockSessionRepository = {
+  insertSession: jest.fn(),
+  getOwnedSessionBasic: jest.fn(),
+  getOwnedSessionLifecycle: jest.fn(),
+  updateOnStart: jest.fn(),
+  updateFields: jest.fn(),
+  updateStatus: jest.fn(),
+  listSessionsForTeacher: jest.fn(),
+  getTeacherSessions: jest.fn(),
+  getBasic: jest.fn(),
+  getByAccessCode: jest.fn(),
+  countActiveSessionsForTeacher: jest.fn(),
+  countTodaySessionsForTeacher: jest.fn(),
+};
+
+const mockGroupRepository = {
+  insertGroup: jest.fn(),
+  insertGroupMember: jest.fn(),
+  countReady: jest.fn(),
+  countTotal: jest.fn(),
+  getGroupsBasic: jest.fn(),
+  getMembersBySession: jest.fn(),
+  findLeaderAssignmentByEmail: jest.fn(),
+  findLeaderAssignmentByName: jest.fn(),
+  countTotalStudentsForTeacher: jest.fn(),
+};
+
+const mockParticipantRepository = {
+  insertParticipant: jest.fn(),
+  listActiveBySession: jest.fn(),
+};
+
+const mockAnalyticsRepository = {
+  getPlannedVsActual: jest.fn(),
+  upsertSessionMetrics: jest.fn(),
+};
+
+const mockSessionStatsRepository = {
+  getEndSessionStats: jest.fn(),
+};
+
+const mockRosterRepository = {
+  findStudentByEmail: jest.fn(),
+  findStudentByName: jest.fn(),
+  getStudentBasicById: jest.fn(),
+};
+
+const mockSessionDetailRepository = {
+  getOwnedSessionDetail: jest.fn(),
+};
+
+const mockDbPort = {
+  generateId: jest.fn(() => `mock-id-${Math.random().toString(36).slice(2, 10)}`),
+};
+
+const mockComplianceRepository = {
+  hasParentalConsentByStudentName: jest.fn(),
+};
+
+const mockEmailPort = {
+  sendSessionInvitation: jest.fn(),
+};
+
+jest.mock('../../../app/composition-root', () => ({
+  getCompositionRoot: jest.fn(() => ({
+    getSessionRepository: () => mockSessionRepository,
+    getGroupRepository: () => mockGroupRepository,
+    getParticipantRepository: () => mockParticipantRepository,
+    getAnalyticsRepository: () => mockAnalyticsRepository,
+    getSessionStatsRepository: () => mockSessionStatsRepository,
+    getRosterRepository: () => mockRosterRepository,
+    getSessionDetailRepository: () => mockSessionDetailRepository,
+    getComplianceRepository: () => mockComplianceRepository,
+    getEmailPort: () => mockEmailPort,
+    getDbPort: () => mockDbPort,
+  })),
+}));
 
 describe('Session Controller', () => {
   let mockReq: Partial<Request>;
@@ -57,6 +236,57 @@ describe('Session Controller', () => {
   beforeEach(() => {
     mockRes = createMockResponse();
     jest.clearAllMocks();
+    for (const repo of [
+      mockSessionRepository,
+      mockGroupRepository,
+      mockParticipantRepository,
+      mockAnalyticsRepository,
+      mockRosterRepository,
+      mockSessionDetailRepository,
+      mockComplianceRepository,
+      mockSessionStatsRepository,
+    ]) {
+      Object.values(repo).forEach((fn) => {
+        if (typeof fn === 'function' && 'mockReset' in fn) {
+          (fn as jest.Mock).mockReset();
+        }
+      });
+    }
+    mockDbPort.generateId.mockReset().mockImplementation(() => `mock-id-${Math.random().toString(36).slice(2, 10)}`);
+    mockSessionDetailRepository.getOwnedSessionDetail.mockResolvedValue(null);
+    mockComplianceRepository.hasParentalConsentByStudentName.mockResolvedValue(true);
+    mockEmailPort.sendSessionInvitation.mockReset().mockResolvedValue({ sent: [], failed: [] });
+    mockSessionStatsRepository.getEndSessionStats.mockResolvedValue({ total_groups: 0, total_students: 0, total_transcriptions: 0 });
+    analyticsQueryRouterService.logSessionEvent.mockReset().mockResolvedValue(undefined);
+    cacheEventBus.sessionStatusChanged.mockReset().mockResolvedValue(undefined);
+    cacheEventBus.sessionUpdated.mockReset().mockResolvedValue(undefined);
+    cacheEventBus.sessionDeleted.mockReset().mockResolvedValue(undefined);
+    emitToSessionMock.mockReset();
+    emitToGroupMock.mockReset();
+    stopFlushSchedulersMock.mockReset();
+    resetTranscriptMergeStateMock.mockReset();
+    (SecureJWTService.generateStudentToken as jest.Mock).mockReset().mockResolvedValue('mock-student-token');
+    if (!(redisService as any).get) (redisService as any).get = jest.fn();
+    if (!(redisService as any).set) (redisService as any).set = jest.fn();
+    (redisService.get as jest.Mock).mockReset().mockResolvedValue(null);
+    (redisService.set as jest.Mock).mockReset().mockResolvedValue(undefined);
+    (queryCacheService.invalidateCache as jest.Mock).mockReset().mockResolvedValue(undefined);
+    (queryCacheService.upsertCachedQuery as jest.Mock)?.mockReset?.();
+    (RetryService.retryDatabaseOperation as jest.Mock).mockReset();
+    (RetryService.withRetry as jest.Mock).mockReset();
+    (RetryService.retryRedisOperation as jest.Mock).mockReset();
+    transcriptPersistenceService.flushSession.mockReset().mockResolvedValue(undefined);
+    analyticsComputationService.computeSessionAnalytics.mockReset().mockResolvedValue({});
+    analyticsComputationService.emitAnalyticsFinalized.mockReset().mockResolvedValue(undefined);
+    summarySynthesisService.runSummariesForSession.mockReset().mockResolvedValue(undefined);
+    inMemoryAudioProcessor.flushGroups.mockReset().mockResolvedValue(undefined);
+    if (!(websocketService as any).emitToSession) (websocketService as any).emitToSession = jest.fn();
+    if (!(websocketService as any).endSession) (websocketService as any).endSession = jest.fn();
+    if (!(websocketService as any).notifySessionUpdate) (websocketService as any).notifySessionUpdate = jest.fn();
+    (websocketService.emitToSession as jest.Mock).mockReset().mockResolvedValue(undefined);
+    (websocketService.endSession as jest.Mock).mockReset();
+    (websocketService.notifySessionUpdate as jest.Mock).mockReset();
+    (websocketService as any).io = undefined;
   });
 
   describe('Declarative Session Creation', () => {
@@ -85,32 +315,25 @@ describe('Session Controller', () => {
       const mockSessionId = 'session-456';
       const mockGroupIds = ['group-1', 'group-2', 'group-3'];
       
-      // Mock database operations
-      (databricksService.generateId as jest.Mock)
+      mockDbPort.generateId
         .mockReturnValueOnce(mockSessionId)
         .mockReturnValueOnce(mockGroupIds[0])
         .mockReturnValueOnce(mockGroupIds[1])
-        .mockReturnValueOnce(mockGroupIds[2]);
-      
-      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+        .mockReturnValueOnce(mockGroupIds[2])
+        .mockReturnValue('member-id');
+
+      mockSessionRepository.insertSession.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroup.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroupMember.mockResolvedValue(undefined);
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
-
-      expect(mockRes.status).toHaveBeenCalledWith(201);
-      expect(mockRes.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          data: expect.objectContaining({
-            session: expect.objectContaining({
-              id: mockSessionId,
-              topic: sessionData.topic,
-              groupsDetailed: expect.arrayContaining([
-                expect.objectContaining({ name: 'Group A', leaderId: 'student-1' })
-              ])
-            })
-          })
-        })
+      expect(mockSessionRepository.insertSession).toHaveBeenCalledWith(
+        expect.objectContaining({ id: mockSessionId, title: sessionData.topic })
       );
+      expect(mockGroupRepository.insertGroup).toHaveBeenCalledTimes(3);
+      expect(mockGroupRepository.insertGroupMember).toHaveBeenCalled();
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      expect(mockRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
 
     it('should track group membership with student_group_members table', async () => {
@@ -135,51 +358,22 @@ describe('Session Controller', () => {
       const mockSessionId = 'session-membership-test';
       const mockGroupIds = ['group-dev', 'group-qa'];
       
-      (databricksService.generateId as jest.Mock)
+      mockDbPort.generateId
         .mockReturnValueOnce(mockSessionId)
         .mockReturnValueOnce(mockGroupIds[0])
-        .mockReturnValueOnce(mockGroupIds[1]);
-      
-      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+        .mockReturnValueOnce(mockGroupIds[1])
+        .mockReturnValue('member-id');
+
+      mockSessionRepository.insertSession.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroup.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroupMember.mockResolvedValue(undefined);
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
 
       // Verify student_group_members inserts for Dev Team (3 members: leader + 2 members)
-      expect(databricksService.insert).toHaveBeenCalledWith(
-        'student_group_members',
-        expect.objectContaining({
-          session_id: mockSessionId,
-          group_id: mockGroupIds[0],
-          student_id: 'leader-1'
-        })
-      );
-      
-      expect(databricksService.insert).toHaveBeenCalledWith(
-        'student_group_members',
-        expect.objectContaining({
-          session_id: mockSessionId,
-          group_id: mockGroupIds[0],
-          student_id: 'dev-1'
-        })
-      );
-
-      // Verify student_group_members inserts for QA Team (4 members: leader + 3 members)
-      expect(databricksService.insert).toHaveBeenCalledWith(
-        'student_group_members',
-        expect.objectContaining({
-          session_id: mockSessionId,
-          group_id: mockGroupIds[1],
-          student_id: 'leader-2'
-        })
-      );
-      
-      expect(databricksService.insert).toHaveBeenCalledWith(
-        'student_group_members',
-        expect.objectContaining({
-          session_id: mockSessionId,
-          group_id: mockGroupIds[1],
-          student_id: 'qa-3'
-        })
+      const memberCalls = mockGroupRepository.insertGroupMember.mock.calls.map(([payload]) => payload);
+      expect(memberCalls.map((m) => m.student_id)).toEqual(
+        expect.arrayContaining(['leader-1', 'dev-1', 'leader-2', 'qa-3'])
       );
 
       expect(mockRes.status).toHaveBeenCalledWith(201);
@@ -220,9 +414,9 @@ describe('Session Controller', () => {
         body: sessionData,
       });
 
-      (databricksService.insert as jest.Mock)
-        .mockResolvedValueOnce(true) // session creation
-        .mockRejectedValueOnce(new Error('Student not found')); // group creation fails
+      mockSessionRepository.insertSession.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroup.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroupMember.mockRejectedValueOnce(new Error('Student not found'));
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
 
@@ -249,26 +443,26 @@ describe('Session Controller', () => {
         body: sessionData,
       });
 
-      (databricksService.insert as jest.Mock).mockResolvedValue(true);
+      mockSessionRepository.insertSession.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroup.mockResolvedValue(undefined);
+      mockGroupRepository.insertGroupMember.mockResolvedValue(undefined);
+      mockAnalyticsRepository.upsertSessionMetrics.mockResolvedValue(undefined);
+      (analyticsQueryRouterService.logSessionEvent as jest.Mock).mockResolvedValue(undefined);
 
       await createSession(mockReq as AuthRequest, mockRes as Response);
 
-      // Should upsert analytics metrics (updated implementation)
-      expect(databricksService.upsert).toHaveBeenCalledWith(
-        'session_metrics',
-        { session_id: expect.any(String) },
+      expect(mockAnalyticsRepository.upsertSessionMetrics).toHaveBeenCalledWith(
+        expect.any(String),
         expect.objectContaining({
           planned_groups: 2,
-          average_group_size: 2, // from 4 total members / 2 groups
+          average_group_size: 2,
         })
       );
-      
-      expect(databricksService.insert).toHaveBeenCalledWith(
-        'session_events',
-        expect.objectContaining({
-          event_type: 'configured',
-          payload: expect.stringContaining('numberOfGroups')
-        })
+      expect(analyticsQueryRouterService.logSessionEvent).toHaveBeenCalledWith(
+        expect.any(String),
+        mockTeacher.id,
+        'configured',
+        expect.objectContaining({ groupPlan: sessionData.groupPlan })
       );
     });
   });
@@ -280,23 +474,19 @@ describe('Session Controller', () => {
         params: { sessionId },
       });
 
-      const mockSession = {
+      mockSessionDetailRepository.getOwnedSessionDetail.mockResolvedValueOnce({
         id: sessionId,
         teacher_id: mockTeacher.id,
         school_id: mockTeacher.school_id,
         title: 'Math Class',
         subject: 'Mathematics',
-        grade_level: 5,
         status: 'active',
-        created_at: new Date(),
-        student_count: 15,
-      };
-
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
+        groupsDetailed: [],
+      });
+      mockGroupRepository.getGroupsBasic.mockResolvedValueOnce([]);
+      mockGroupRepository.getMembersBySession.mockResolvedValueOnce([]);
 
       await getSession(mockReq as AuthRequest, mockRes as Response);
-
-      expect(databricksService.queryOne).toHaveBeenCalled();
 
       expect(mockRes.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -304,8 +494,8 @@ describe('Session Controller', () => {
           data: expect.objectContaining({
             session: expect.objectContaining({
               id: sessionId,
-              topic: mockSession.title,
-              status: mockSession.status,
+              topic: 'Math Class',
+              status: 'active',
             })
           })
         })
@@ -317,7 +507,7 @@ describe('Session Controller', () => {
         params: { id: 'non-existent' },
       });
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(null);
+      mockSessionDetailRepository.getOwnedSessionDetail.mockResolvedValueOnce(null);
 
       await getSession(mockReq as AuthRequest, mockRes as Response);
 
@@ -330,14 +520,7 @@ describe('Session Controller', () => {
         params: { sessionId },
       });
 
-      const mockSession = {
-        id: sessionId,
-        teacher_id: 'different-teacher',
-        school_id: 'different-school',
-        session_name: 'Math Class',
-      };
-
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(null);
+      mockSessionDetailRepository.getOwnedSessionDetail.mockResolvedValueOnce(null);
 
       await getSession(mockReq as AuthRequest, mockRes as Response);
 
@@ -366,28 +549,20 @@ describe('Session Controller', () => {
         school_id: mockTeacher.school_id,
       };
 
-      const mockStudent = {
-        id: 'student-456',
-        display_name: joinData.studentName,
-      };
-
-      // Mock session lookup
-      (databricksService.queryOne as jest.Mock)
-        .mockResolvedValueOnce(mockSession);
-      (databricksService.insert as jest.Mock).mockResolvedValueOnce(undefined);
+      mockSessionRepository.getByAccessCode.mockResolvedValueOnce(mockSession);
+      mockGroupRepository.findLeaderAssignmentByEmail.mockResolvedValueOnce([]);
+      mockGroupRepository.findLeaderAssignmentByName.mockResolvedValueOnce([]);
+      mockParticipantRepository.insertParticipant.mockResolvedValueOnce(undefined);
+      (SecureJWTService.generateStudentToken as jest.Mock).mockResolvedValueOnce('mock-student-token');
 
       // Mock Redis age check
       (redisService.get as jest.Mock).mockResolvedValueOnce(null);
 
       await joinSession(mockReq as Request, mockRes as Response);
 
-      // Age storage is optional; no assertion
-
-      // No websocket assertion for join in new contract
-
       expect(mockRes.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          token: expect.any(String),
+          token: 'mock-student-token',
           student: expect.objectContaining({
             id: expect.any(String),
             displayName: joinData.studentName,
@@ -411,7 +586,7 @@ describe('Session Controller', () => {
       });
 
       // Ensure session exists so we hit COPPA branch
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce({ id: 'session-123', access_code: 'ABC123', status: 'active' });
+      mockSessionRepository.getByAccessCode.mockResolvedValueOnce({ id: 'session-123', access_code: 'ABC123', status: 'active' });
 
       await joinSession(mockReq as Request, mockRes as Response);
 
@@ -440,8 +615,8 @@ describe('Session Controller', () => {
         status: 'active',
       };
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
-      (databricksService.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
+      mockSessionRepository.getByAccessCode.mockResolvedValueOnce(mockSession);
+      mockComplianceRepository.hasParentalConsentByStudentName.mockResolvedValueOnce(false);
 
       await joinSession(mockReq as Request, mockRes as Response);
 
@@ -465,7 +640,7 @@ describe('Session Controller', () => {
         status: 'ended',
       };
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
+      mockSessionRepository.getByAccessCode.mockResolvedValueOnce(mockSession);
 
       await joinSession(mockReq as Request, mockRes as Response);
 
@@ -513,7 +688,7 @@ describe('Session Controller', () => {
       });
 
       // Should not update session status when gated
-      expect(databricksService.update).not.toHaveBeenCalled();
+      expect(mockSessionRepository.updateOnStart).not.toHaveBeenCalled();
     });
 
     it('should start session when all groups are ready (SG-BE-01)', async () => {
@@ -546,16 +721,13 @@ describe('Session Controller', () => {
       (RetryService.retryRedisOperation as jest.Mock).mockResolvedValue(true);
       (RetryService.withRetry as jest.Mock).mockResolvedValue(true);
 
-      // Mock other services
-      (databricksService.update as jest.Mock).mockResolvedValue(true);
-      (databricksService.recordAuditLog as jest.Mock).mockResolvedValue(true);
-      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(true);
-
       // Mock WebSocket service
       const mockEmit = jest.fn();
       const mockTo = jest.fn().mockReturnValue({ emit: mockEmit });
       (websocketService.io as any) = { to: mockTo };
       (websocketService.emitToSession as jest.Mock) = jest.fn().mockResolvedValue(true);
+
+      (mockSessionRepository.updateOnStart as jest.Mock).mockResolvedValue(true);
 
       await startSession(mockReq as AuthRequest, mockRes as Response);
 
@@ -589,39 +761,25 @@ describe('Session Controller', () => {
       // Ensure callbacks passed to RetryService are executed
       (RetryService.retryDatabaseOperation as jest.Mock).mockImplementation(async (op: any) => await op());
       (RetryService.withRetry as jest.Mock).mockImplementation(async (op: any) => await op());
+      (RetryService.retryRedisOperation as jest.Mock).mockImplementation(async (op: any) => await op());
 
-      // Mock DB responses used inside callbacks
-      (databricksService.queryOne as jest.Mock)
-        .mockResolvedValueOnce(mockSession) // verify-session-ownership
-        .mockResolvedValueOnce({ ready_groups_count: 2 }) // count-ready-groups
-        .mockResolvedValueOnce({ total_groups_count: 2 }); // count-total-groups
+      mockSessionRepository.getOwnedSessionBasic.mockResolvedValue(mockSession);
+      mockGroupRepository.countReady.mockResolvedValue(2);
+      mockGroupRepository.countTotal.mockResolvedValue(2);
+      mockGroupRepository.getGroupsBasic.mockResolvedValue([]);
+      mockSessionRepository.updateOnStart.mockResolvedValue(undefined);
+      mockSessionRepository.getBasic.mockResolvedValue({ ...mockSession, status: 'active' });
+      mockSessionDetailRepository.getOwnedSessionDetail.mockResolvedValueOnce({ ...mockSession, status: 'active', groupsDetailed: [], groups: [] });
+      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(undefined);
 
-      // Mock other required services
-      (databricksService.update as jest.Mock).mockResolvedValue(true);
-      (databricksService.insert as jest.Mock).mockResolvedValue(true);
-      (databricksService.queryOne as jest.Mock).mockResolvedValue(mockSession);
-
-      // Mock websocket service
       (websocketService.io as any) = { to: jest.fn().mockReturnValue({ emit: jest.fn() }) };
+      (websocketService.emitToSession as jest.Mock).mockResolvedValue(undefined);
 
-      // Mock query cache service
-      (queryCacheService.invalidateCache as jest.Mock).mockResolvedValue(true);
+      await startSession(mockReq as AuthRequest, mockRes as Response);
 
-      // Add error handling to see what's failing
-      try {
-        await startSession(mockReq as AuthRequest, mockRes as Response);
-      } catch (error) {
-        console.error('startSession error:', error);
-        throw error;
-      }
-
-      expect(databricksService.update).toHaveBeenCalledWith(
-        'classroom_sessions',
+      expect(mockSessionRepository.updateOnStart).toHaveBeenCalledWith(
         sessionId,
-        expect.objectContaining({
-          status: 'active',
-          actual_start: expect.any(Date)
-        })
+        expect.any(Date)
       );
 
       expect(mockRes.json).toHaveBeenCalledWith(
@@ -650,13 +808,14 @@ describe('Session Controller', () => {
         status: 'active'
       };
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
-      (databricksService.update as jest.Mock).mockResolvedValue(true);
+      mockSessionRepository.getOwnedSessionBasic.mockResolvedValueOnce(mockSession);
+      mockSessionRepository.updateFields.mockResolvedValueOnce(undefined);
+      mockSessionRepository.getBasic.mockResolvedValueOnce({ ...mockSession, status: 'paused' });
+      mockSessionDetailRepository.getOwnedSessionDetail.mockResolvedValueOnce(null);
 
       await updateSession(mockReq as AuthRequest, mockRes as Response);
 
-      expect(databricksService.update).toHaveBeenCalledWith(
-        'classroom_sessions',
+      expect(mockSessionRepository.updateFields).toHaveBeenCalledWith(
         sessionId,
         expect.objectContaining({ status: 'paused' })
       );
@@ -675,13 +834,14 @@ describe('Session Controller', () => {
         actual_start: new Date(Date.now() - 30 * 60 * 1000) // 30 minutes ago
       };
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
-      (databricksService.update as jest.Mock).mockResolvedValue(true);
+      mockSessionRepository.getOwnedSessionLifecycle.mockResolvedValueOnce(mockSession);
+      mockSessionRepository.updateFields.mockResolvedValueOnce(undefined);
+      mockSessionRepository.updateStatus.mockResolvedValueOnce(undefined);
+      mockGroupRepository.getGroupsBasic.mockResolvedValueOnce([]);
 
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
-      expect(databricksService.update).toHaveBeenCalledWith(
-        'classroom_sessions',
+      expect(mockSessionRepository.updateFields).toHaveBeenCalledWith(
         sessionId,
         expect.objectContaining({
           status: 'ended',
@@ -689,6 +849,7 @@ describe('Session Controller', () => {
           actual_duration_minutes: expect.any(Number)
         })
       );
+      expect(mockSessionRepository.updateStatus).toHaveBeenCalledWith(sessionId, 'ended');
     });
   });
 
@@ -706,10 +867,10 @@ describe('Session Controller', () => {
         status: 'active',
       };
 
-      (databricksService.queryOne as jest.Mock)
-        .mockResolvedValueOnce(mockSession)
-        .mockResolvedValueOnce({ total_groups: 0, total_students: 0, total_transcriptions: 0 });
-      (databricksService.updateSessionStatus as jest.Mock).mockResolvedValueOnce(true);
+      mockSessionRepository.getOwnedSessionLifecycle.mockResolvedValueOnce(mockSession);
+      mockSessionRepository.updateFields.mockResolvedValueOnce(undefined);
+      mockSessionRepository.updateStatus.mockResolvedValueOnce(undefined);
+      mockGroupRepository.getGroupsBasic.mockResolvedValueOnce([]);
       (websocketService.endSession as jest.Mock).mockImplementation(() => {});
       (websocketService.notifySessionUpdate as jest.Mock).mockImplementation(() => {});
 
@@ -717,7 +878,11 @@ describe('Session Controller', () => {
       (mockRes as any).locals = { traceId: 'trace-end-123' };
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
-      expect(databricksService.updateSessionStatus).toHaveBeenCalledWith(sessionId, 'ended');
+      expect(mockSessionRepository.updateFields).toHaveBeenCalledWith(
+        sessionId,
+        expect.objectContaining({ status: 'ended' })
+      );
+      expect(mockSessionRepository.updateStatus).toHaveBeenCalledWith(sessionId, 'ended');
       // Namespaced sessions emitter should be called with status change to 'ended'
       expect(emitToSessionMock).toHaveBeenCalledWith(sessionId, 'session:status_changed', expect.objectContaining({ sessionId, status: 'ended', traceId: 'trace-end-123' }));
 
@@ -744,7 +909,7 @@ describe('Session Controller', () => {
         status: 'ended',
       };
 
-      (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(mockSession);
+      mockSessionRepository.getOwnedSessionLifecycle.mockResolvedValueOnce(mockSession);
 
       await endSession(mockReq as AuthRequest, mockRes as Response);
 
@@ -759,8 +924,13 @@ describe('Session Controller', () => {
       (mockRes as any) = createMockResponse();
       (mockRes as any).locals = { traceId: 'trace-pause-xyz' };
 
-      (databricksService.queryOne as jest.Mock)
-        .mockResolvedValueOnce({ id: sessionId, teacher_id: mockTeacher.id, school_id: mockTeacher.school_id, status: 'active' });
+      mockSessionRepository.getOwnedSessionBasic.mockResolvedValueOnce({
+        id: sessionId,
+        teacher_id: mockTeacher.id,
+        school_id: mockTeacher.school_id,
+        status: 'active',
+      });
+      mockSessionRepository.updateStatus.mockResolvedValueOnce(undefined);
 
       const { pauseSession } = await import('../../../controllers/session.controller');
       await pauseSession(mockReq as AuthRequest, mockRes as Response);
@@ -783,16 +953,13 @@ describe('Session Controller', () => {
       };
 
       const mockAnalytics = {
-        total_students: 25,
-        active_students: 20,
-        total_recordings: 150,
-        avg_participation_rate: 0.85,
-        total_transcriptions: 145,
+        planned_members: 25,
+        ready_groups_at_start: 20,
+        adherence_members_ratio: 0.85,
       };
 
-      (databricksService.queryOne as jest.Mock)
-        .mockResolvedValueOnce(mockSession)
-        .mockResolvedValueOnce(mockAnalytics);
+      mockSessionRepository.getOwnedSessionBasic.mockResolvedValueOnce(mockSession);
+      mockAnalyticsRepository.getPlannedVsActual.mockResolvedValueOnce(mockAnalytics);
 
       await getSessionAnalytics(mockReq as AuthRequest, mockRes as Response);
 
@@ -803,10 +970,7 @@ describe('Session Controller', () => {
             totalStudents: 25,
             activeStudents: 20,
             participationRate: 85,
-            recordings: {
-              total: 150,
-              transcribed: 145,
-            },
+            recordings: expect.objectContaining({ total: 0, transcribed: 0 }),
           }),
         })
       );

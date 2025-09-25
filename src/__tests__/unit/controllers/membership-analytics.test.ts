@@ -85,17 +85,31 @@ describe('Enhanced Membership Analytics', () => {
 
       // Mock analytics data (no session_metrics for simplified test)
       mockDatabricksService.queryOne
-        .mockResolvedValueOnce({ id: mockSessionId, teacher_id: mockTeacher.id }) // Session verification
-        .mockResolvedValueOnce(null) // No session_metrics data
-        .mockResolvedValueOnce({ // Actual counts with membership data
+        .mockResolvedValueOnce({
+          planned_groups: 2,
+          planned_group_size: 3,
+          planned_duration_minutes: 45,
+          planned_members: 6,
+          planned_leaders: 2,
+          planned_scheduled_start: '2025-01-15T09:55:00Z',
+          configured_at: '2025-01-14T12:00:00Z',
+          started_at: '2025-01-15T10:00:00Z',
+          started_without_ready_groups: 0,
+          ready_groups_at_start: 1,
+          ready_groups_at_5m: 2,
+          ready_groups_at_10m: 2,
+          adherence_members_ratio: 0.85,
+        }) // Planned metrics
+        .mockResolvedValueOnce({
           actual_groups: 2,
           actual_avg_group_size: 3,
           actual_members: 6,
           actual_unique_students: 6,
-          actual_leaders: 1
+          actual_leaders: 1,
         });
 
       mockDatabricksService.query
+        .mockResolvedValueOnce([{ teacher_id: mockTeacher.id, school_id: mockTeacher.school_id }]) // Ownership check
         .mockResolvedValueOnce([]) // No readiness events
         .mockResolvedValueOnce(mockMembershipData); // Membership analytics
 
@@ -186,7 +200,9 @@ describe('Enhanced Membership Analytics', () => {
         }
       ];
 
-      mockDatabricksService.query.mockResolvedValue(mockGroupsWithMembership);
+      mockDatabricksService.query
+        .mockResolvedValueOnce([{ teacher_id: mockTeacher.id, school_id: mockTeacher.school_id }])
+        .mockResolvedValueOnce(mockGroupsWithMembership);
 
       await getSessionGroups(req as Request, res as Response);
 
@@ -267,7 +283,9 @@ describe('Enhanced Membership Analytics', () => {
         }
       ];
 
-      mockDatabricksService.query.mockResolvedValue(mockGroupsNoMembership);
+      mockDatabricksService.query
+        .mockResolvedValueOnce([{ teacher_id: mockTeacher.id, school_id: mockTeacher.school_id }])
+        .mockResolvedValueOnce(mockGroupsNoMembership);
 
       await getSessionGroups(req as Request, res as Response);
 

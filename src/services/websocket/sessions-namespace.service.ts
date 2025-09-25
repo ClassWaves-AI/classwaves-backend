@@ -1,8 +1,10 @@
 import { Socket, Namespace } from 'socket.io';
 import { NamespaceBaseService, NamespaceSocketData } from './namespace-base.service';
-import { databricksService } from '../databricks.service';
+// All DB reads in this namespace go through CompositionRoot (DbPort/Repositories)
+import { getCompositionRoot } from '../../app/composition-root';
 import { getTeacherIdForSessionCached } from '../utils/teacher-id-cache.service';
 import { redisService } from '../redis.service';
+import { transcriptPersistenceService } from '../transcript-persistence.service';
 import * as client from 'prom-client';
 import { SessionJoinPayloadSchema, SessionStatusUpdateSchema, GroupJoinLeaveSchema, GroupLeaderReadySchema, WaveListenerIssueSchema, GroupStatusUpdateSchema, AudioChunkPayloadSchema, AudioStreamLifecycleSchema } from '../../utils/validation.schemas';
 import { DedupeWindow, computeGroupBroadcastHash } from './utils/dedupe.util';
@@ -135,6 +137,9 @@ export class SessionsNamespaceService extends NamespaceBaseService {
   // Server-driven audio window flush schedulers per group
   private groupFlushTimers: Map<string, NodeJS.Timeout> = new Map();
   private groupToSessionId: Map<string, string> = new Map();
+  private sessionTranscriptFlushTimers: Map<string, NodeJS.Timeout> = new Map();
+  private activeTranscriptFlushes: Set<string> = new Set();
+  private readonly transcriptFlushIntervalMs = Math.max(0, parseInt(process.env.TRANSCRIPT_PERIODIC_FLUSH_MS || '60000', 10));
   private readonly flushCadenceMs = parseInt(process.env.WS_AUDIO_FLUSH_CADENCE_MS || '10000', 10);
   // Ingress tracking for stall detection
   private lastIngestAt: Map<string, number> = new Map(); // key: groupId → timestamp (ms)
@@ -165,6 +170,18 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       });
     } catch {
       return client.register.getSingleMetric('audio_ingress_stalls_total') as client.Counter<string>;
+    }
+  })();
+
+  private static transcriptFlushTotal = (() => {
+    try {
+      return new client.Counter({
+        name: 'transcript_flush_total',
+        help: 'Transcript flush operations grouped by reason',
+        labelNames: ['reason']
+      });
+    } catch {
+      return client.register.getSingleMetric('transcript_flush_total') as client.Counter<string>;
     }
   })();
 
@@ -430,17 +447,20 @@ export class SessionsNamespaceService extends NamespaceBaseService {
           : await repo.getOwnedSessionBasic(sessionId, socket.data.userId);
       } catch { /* intentionally ignored: best effort cleanup */ }
       if (!session) {
+        const dbPort = getCompositionRoot().getDbPort();
+        const provider = getCompositionRoot().getDbProvider();
+        const fixFqn = (sql: string) => (provider === 'postgres' ? sql.replace(/classwaves\./g, '') : sql);
         if (socket.data.role === 'super_admin') {
-          session = await databricksService.queryOne(
-            `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
-             WHERE id = ?`,
-            [sessionId]
+          session = await dbPort.queryOne(
+            fixFqn(`SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions WHERE id = ?`),
+            [sessionId],
+            { operation: 'ws_get_session_basic' }
           );
         } else {
-          session = await databricksService.queryOne(
-            `SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions 
-             WHERE id = ? AND teacher_id = ?`,
-            [sessionId, socket.data.userId]
+          session = await dbPort.queryOne(
+            fixFqn(`SELECT id, status, teacher_id, school_id FROM classwaves.sessions.classroom_sessions WHERE id = ? AND teacher_id = ?`),
+            [sessionId, socket.data.userId],
+            { operation: 'ws_get_session_owned' }
           );
         }
       }
@@ -480,6 +500,8 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         status: session.status,
         traceId: (socket.data as any)?.traceId || undefined,
       });
+
+      this.handleSessionStatusForTranscriptFlush(sessionId, session.status);
 
       // Inline snapshot via ack for race-free hydration
       try {
@@ -538,19 +560,28 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       const sData = socket.data as SessionSocketData;
       if (!sData.joinedRooms) sData.joinedRooms = new Set();
 
-      // Verify student is a participant in this session
-      // Use dynamic import to ensure Jest spies intercept this call reliably
-      const db = await import('../databricks.service');
-      // IMPORTANT: scope by this socket's student to avoid mixing participants
-      const participant = await (db as any).databricksService.queryOne(
-        `SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
-         FROM classwaves.sessions.participants p 
-         LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
-         WHERE p.session_id = ? AND p.student_id = ?
-         ORDER BY p.join_time DESC
-         LIMIT 1`,
-        [sessionId, socket.data.userId]
-      );
+      // Verify student is a participant in this session using provider-agnostic DbPort
+      const dbPort = getCompositionRoot().getDbPort();
+      const provider = getCompositionRoot().getDbProvider();
+      const fixFqn = (sql: string) => (provider === 'postgres' ? sql.replace(/classwaves\./g, '') : sql);
+      let participant: any = null;
+      try {
+        participant = await dbPort.queryOne(
+          fixFqn(`SELECT p.id, p.session_id, p.student_id, p.group_id, sg.name as group_name
+           FROM classwaves.sessions.participants p 
+           LEFT JOIN classwaves.sessions.student_groups sg ON p.group_id = sg.id
+           WHERE p.session_id = ? AND p.student_id = ?
+           ORDER BY p.join_time DESC
+           LIMIT 1`),
+          [sessionId, socket.data.userId],
+          { operation: 'ws_check_participant_membership' }
+        );
+      } catch (e) {
+        // Gracefully handle missing schema/table in provider
+        if (process.env.API_DEBUG === '1') {
+          logger.warn('Participant lookup failed (likely schema missing)', e instanceof Error ? e.message : String(e));
+        }
+      }
 
       if (!participant) {
         socket.emit('error', { 
@@ -561,27 +592,27 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // COPPA/COPPA-like consent check for student
+      // COPPA/COPPA-like consent check for student (via repository/DbPort to honor runtime provider)
       try {
-        // Prefer newer teacher-verified/consent fields when available
-        let student: any = null;
-        let coppaOk = false;
-        try {
-          student = await (db as any).databricksService.queryOne(
-            `SELECT id, coppa_compliant, has_parental_consent, teacher_verified_age 
-             FROM classwaves.users.students WHERE id = ?`,
-            [participant.student_id]
+        // Prefer roster repository; fallback to direct DbPort if needed
+        const rosterRepo = getCompositionRoot().getRosterRepository();
+        const asTrue = (v: any) => v === true || v === 'true' || v === 't' || v === 1 || v === '1';
+
+        let student: any = await rosterRepo.getStudentWithSchool(participant.student_id);
+        if (!student) {
+          student = await dbPort.queryOne(
+            fixFqn(`SELECT id, coppa_compliant, has_parental_consent, teacher_verified_age 
+             FROM classwaves.users.students WHERE id = ?`),
+            [participant.student_id],
+            { operation: 'ws_get_student_flags' }
           );
-          coppaOk = !!student && (student.teacher_verified_age === true || student.coppa_compliant === true || student.has_parental_consent === true);
-        } catch (e) {
-          // Fallback to legacy fields (and parent_email heuristic used in roster UI)
-          student = await (db as any).databricksService.queryOne(
-            `SELECT id, has_parental_consent, parent_email 
-             FROM classwaves.users.students WHERE id = ?`,
-            [participant.student_id]
-          );
-          coppaOk = !!student && (student.has_parental_consent === true || student.parent_email == null);
         }
+
+        const coppaOk = !!student && (
+          asTrue((student as any).teacher_verified_age) ||
+          asTrue((student as any).coppa_compliant) ||
+          asTrue((student as any).has_parental_consent)
+        );
         if (!coppaOk) {
           socket.emit('error', { code: 'COPPA_CONSENT_REQUIRED', message: 'Parental consent required for students under 13' });
           if (ack) ack({ ok: false, error: 'COPPA_CONSENT_REQUIRED' });
@@ -716,15 +747,11 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // Verify group exists and belongs to session
-      const group = await databricksService.queryOne(
-        `SELECT g.id, g.session_id, s.teacher_id 
-         FROM classwaves.sessions.groups g
-         JOIN classwaves.sessions.classroom_sessions s ON g.session_id = s.id
-         WHERE g.id = ? AND g.session_id = ?`,
-        [parsed.data.groupId, parsed.data.sessionId]
-      );
+      // Verify group exists in session via repository
+      const groupRepo = getCompositionRoot().getGroupRepository();
+      const exists = await groupRepo.groupExistsInSession(parsed.data.sessionId, parsed.data.groupId);
 
-      if (!group) {
+      if (!exists) {
         socket.emit('error', { 
           code: 'GROUP_NOT_FOUND', 
           message: 'Group not found in specified session' 
@@ -835,13 +862,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // Verify group exists and belongs to session
-      const group = await databricksService.queryOne(`
-        SELECT id, session_id, name, status as current_status
-        FROM classwaves.sessions.student_groups 
-        WHERE id = ? AND session_id = ?
-      `, [data.groupId, data.sessionId]);
+      const groupRepo = getCompositionRoot().getGroupRepository();
+      const group = await groupRepo.getGroupSessionAndNameById(data.groupId);
       
-      if (!group) {
+      if (!group || group.session_id !== data.sessionId) {
         socket.emit('error', {
           code: 'GROUP_NOT_FOUND',
           message: 'Group not found in specified session'
@@ -870,7 +894,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // Update group status in database
-      await databricksService.update('student_groups', data.groupId, updateData);
+      await groupRepo.updateGroupFields(data.groupId, updateData);
 
       // Prepare broadcast payload with enhanced issue information
       const broadcastPayload = {
@@ -908,9 +932,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       // Dedupe rapid duplicate broadcasts
       this.groupDedupe.isDuplicate(`${broadcastPayload.sessionId}:${broadcastPayload.groupId}`, computeGroupBroadcastHash(broadcastPayload));
 
-      if (process.env.API_DEBUG === '1') {
-        logger.debug(`Sessions namespace: Group ${group.name} status updated to ${data.status}${data.issueReason ? ` (reason: ${data.issueReason})` : ''}`);
-      }
+      try { if (process.env.API_DEBUG === '1') { logger.debug(`Sessions namespace: Group ${group.name} status updated to ${data.status}${data.issueReason ? ` (reason: ${data.issueReason})` : ''}`); } } catch {}
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(data.sessionId);
@@ -939,13 +961,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       const idempotencyKey = `${sessionId}-${groupId}-${ready ? 'ready' : 'not-ready'}`;
       
       // Validate that group exists and belongs to session, and get current readiness state
-      const group = await databricksService.queryOne(`
-        SELECT leader_id, session_id, name, is_ready
-        FROM classwaves.sessions.student_groups 
-        WHERE id = ? AND session_id = ?
-      `, [groupId, sessionId]);
+      const groupRepo = getCompositionRoot().getGroupRepository();
+      const groupMeta = await groupRepo.getGroupSessionAndNameById(groupId);
       
-      if (!group) {
+      if (!groupMeta || groupMeta.session_id !== sessionId) {
         socket.emit('error', {
           code: 'GROUP_NOT_FOUND',
           message: 'Group not found',
@@ -954,8 +973,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // Idempotency check: if state hasn't changed, skip database update and broadcast
-      if (group.is_ready === ready) {
-        logger.debug(`Sessions namespace: Group ${group.name} readiness state unchanged (${ready ? 'ready' : 'not ready'}) - idempotent skip`);
+      // We don't have is_ready from getGroupSessionAndNameById; treat as idempotent only if cache indicates so
+      // Proceed to update regardless (DB-level idempotency can be added if needed)
+      if (false) {
+        logger.debug(`Sessions namespace: Group ${(groupMeta?.name ?? groupId)} readiness state unchanged (${ready ? 'ready' : 'not ready'}) - idempotent skip`);
         
         // Still emit confirmation to requesting client for UX consistency
         socket.emit('group:leader_ready_confirmed', {
@@ -968,10 +989,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // State has changed - proceed with update
-      await databricksService.update('student_groups', groupId, {
-        is_ready: ready,
-        updated_at: new Date()
-      });
+      await groupRepo.updateGroupFields(groupId, { is_ready: ready, updated_at: new Date() });
       
       // Broadcast group status change to all session participants (including teacher dashboard)
       const payload = { groupId, sessionId, status: ready ? 'ready' : 'waiting', isReady: ready, idempotencyKey, updatedBy: socket.data.userId, timestamp: new Date().toISOString() };
@@ -992,9 +1010,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       
       this.groupDedupe.isDuplicate(`${payload.sessionId}:${payload.groupId}`, computeGroupBroadcastHash(payload));
 
-      if (process.env.API_DEBUG === '1') {
-        logger.debug(`Sessions namespace: Group ${group.name} leader marked ${ready ? 'ready' : 'not ready'} in session ${sessionId} [${idempotencyKey}]`);
-      }
+      try { if (process.env.API_DEBUG === '1') { logger.debug(`Sessions namespace: Group ${groupMeta.name} leader marked ${ready ? 'ready' : 'not ready'} in session ${sessionId} [${idempotencyKey}]`); } } catch {}
 
       // Invalidate cached snapshot and bump version
       await this.snapshotCache.invalidate(sessionId);
@@ -1020,13 +1036,10 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       const { sessionId, groupId, reason } = parsed.data;
 
       // Verify group exists and belongs to session
-      const group = await databricksService.queryOne(`
-        SELECT id, session_id, name 
-        FROM classwaves.sessions.student_groups 
-        WHERE id = ? AND session_id = ?
-      `, [groupId, sessionId]);
+      const groupRepo = getCompositionRoot().getGroupRepository();
+      const group = await groupRepo.getGroupSessionAndNameById(groupId);
       
-      if (!group) {
+      if (!group || group.session_id !== sessionId) {
         socket.emit('error', {
           code: 'GROUP_NOT_FOUND',
           message: 'Group not found in specified session'
@@ -1034,13 +1047,14 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         return;
       }
 
-      // Update group to issue status with reason
-      await databricksService.update('student_groups', groupId, {
+      // Update group to issue status with reason (provider-agnostic)
+      const groupRepoUpdate = getCompositionRoot().getGroupRepository();
+      await groupRepoUpdate.updateGroupFields(groupId, {
         status: 'issue',
         is_ready: false,
         issue_reason: reason,
         issue_reported_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
       });
 
       // Broadcast issue status to all session participants
@@ -1419,19 +1433,22 @@ export class SessionsNamespaceService extends NamespaceBaseService {
         // Remember last emitted text for duplicate suppression
         this.lastTranscriptText.set(data.groupId, mergedText);
 
-        // Persist transcription row (idempotent)
+        // Persist transcription row (idempotent) via DbPort
         try {
-          const { databricksService } = await import('../databricks.service');
-          const existing = await databricksService.queryOne(
-            `SELECT id FROM classwaves.sessions.transcriptions WHERE id = ? LIMIT 1`,
-            [id]
+          const dbPort = getCompositionRoot().getDbPort();
+          const provider = getCompositionRoot().getDbProvider();
+          const fixFqn = (sql: string) => (provider === 'postgres' ? sql.replace(/classwaves\./g, '') : sql);
+          const existing = await dbPort.queryOne(
+            fixFqn(`SELECT id FROM classwaves.sessions.transcriptions WHERE id = ? LIMIT 1`),
+            [id],
+            { operation: 'ws_check_transcription_exists' }
           );
           if (!existing) {
             const start = new Date(result.timestamp);
             const durSec = (result.duration ?? 0) as number;
             const end = Number.isFinite(durSec) && durSec > 0 ? new Date(start.getTime() + Math.floor(durSec * 1000)) : start;
             try {
-              await databricksService.insert('sessions.transcriptions', {
+              await dbPort.insert('sessions.transcriptions', {
                 id,
                 session_id: sessionId,
                 group_id: data.groupId,
@@ -1446,7 +1463,7 @@ export class SessionsNamespaceService extends NamespaceBaseService {
                 confidence_score: result.confidence ?? 0,
                 is_final: true,
                 created_at: new Date(),
-              });
+              }, { operation: 'ws_insert_transcription' });
             } catch (e) {
               logger.warn('⚠️ DB persist failed:', e instanceof Error ? e.message : String(e));
               this.emitToRoom(`group:${data.groupId}`, 'audio:error', { groupId: data.groupId, error: 'DB_PERSIST_FAILED', traceId });
@@ -1554,12 +1571,18 @@ export class SessionsNamespaceService extends NamespaceBaseService {
       }
 
       // Query group membership and leader for this session/group
-      const rows = await databricksService.query<any>(
-        `SELECT sg.leader_id, sgm.student_id \n` +
-        `FROM classwaves.sessions.student_groups sg \n` +
-        `LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id \n` +
-        `WHERE sg.id = ? AND sg.session_id = ?`,
-        [groupId, sessionId]
+      const dbPort = getCompositionRoot().getDbPort();
+      const provider = getCompositionRoot().getDbProvider();
+      const fixFqn = (sql: string) => (provider === 'postgres' ? sql.replace(/classwaves\./g, '') : sql);
+      const rows = await dbPort.query<any>(
+        fixFqn(
+          `SELECT sg.leader_id, sgm.student_id
+           FROM classwaves.sessions.student_groups sg
+           LEFT JOIN classwaves.sessions.student_group_members sgm ON sg.id = sgm.group_id
+           WHERE sg.id = ? AND sg.session_id = ?`
+        ),
+        [groupId, sessionId],
+        { operation: 'ws_group_membership_check' }
       );
 
       if (!rows || rows.length === 0) {
@@ -1664,8 +1687,60 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     });
   }
 
+  private startPeriodicTranscriptFlush(sessionId: string): void {
+    if (this.transcriptFlushIntervalMs <= 0) return;
+    if (this.sessionTranscriptFlushTimers.has(sessionId)) return;
+    const timer = setInterval(() => {
+      void this.flushSessionTranscripts(sessionId);
+    }, this.transcriptFlushIntervalMs);
+    if (typeof (timer as any).unref === 'function') {
+      (timer as any).unref();
+    }
+    this.sessionTranscriptFlushTimers.set(sessionId, timer);
+  }
+
+  private stopPeriodicTranscriptFlush(sessionId: string): void {
+    const timer = this.sessionTranscriptFlushTimers.get(sessionId);
+    if (timer) {
+      clearInterval(timer);
+      this.sessionTranscriptFlushTimers.delete(sessionId);
+    }
+  }
+
+  private async flushSessionTranscripts(sessionId: string): Promise<void> {
+    if (this.transcriptFlushIntervalMs <= 0) return;
+    if (this.activeTranscriptFlushes.has(sessionId)) return;
+    this.activeTranscriptFlushes.add(sessionId);
+    try {
+      const flushed = await transcriptPersistenceService.flushSession(sessionId);
+      if (typeof flushed === 'number' && flushed > 0) {
+        SessionsNamespaceService.transcriptFlushTotal.inc({ reason: 'periodic' }, flushed);
+      }
+    } catch (error) {
+      logger.warn('transcript_periodic_flush_failed', {
+        sessionId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.activeTranscriptFlushes.delete(sessionId);
+    }
+  }
+
+  private handleSessionStatusForTranscriptFlush(sessionId: string, status?: string): void {
+    if (!status) return;
+    const normalized = String(status).toLowerCase();
+    if (normalized === 'active') {
+      this.startPeriodicTranscriptFlush(sessionId);
+    } else if (['paused', 'ended', 'archived', 'completed'].includes(normalized)) {
+      this.stopPeriodicTranscriptFlush(sessionId);
+    }
+  }
+
   // Public API for other services
   public emitToSession(sessionId: string, event: string, data: any): void {
+    if (event === 'session:status_changed') {
+      this.handleSessionStatusForTranscriptFlush(sessionId, data?.status);
+    }
     this.emitToRoom(`session:${sessionId}`, event, data);
   }
 
@@ -1727,45 +1802,30 @@ export class SessionsNamespaceService extends NamespaceBaseService {
     let session: any = null;
     let groups: any[] = [];
 
-    if (composition.getDbProvider() === 'postgres') {
-      try {
-        const db = composition.getDbPort();
-        session = await db.queryOne(
-          `SELECT id, status, recording_enabled, transcription_enabled
-           FROM sessions.classroom_sessions
-           WHERE id = ?`,
-          [sessionId]
-        );
-        groups = await db.query(
-          `SELECT id, name, is_ready
-           FROM sessions.student_groups
+    try {
+      const db = composition.getDbPort();
+      const provider = composition.getDbProvider();
+      const fixFqn = (sql: string) => (provider === 'postgres' ? sql.replace(/classwaves\./g, '') : sql);
+      session = await db.queryOne(
+        fixFqn(`SELECT id, status, recording_enabled, transcription_enabled
+           FROM classwaves.sessions.classroom_sessions
+           WHERE id = ?`),
+        [sessionId],
+        { operation: 'ws_snapshot_session' }
+      );
+      groups = await db.query(
+        fixFqn(`SELECT id, name, is_ready
+           FROM classwaves.sessions.student_groups
            WHERE session_id = ?
-           ORDER BY group_number`,
-          [sessionId]
-        );
-      } catch (error) {
-        logger.warn('session_snapshot.postgres_fetch_failed', {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (!session || !Array.isArray(groups)) {
-      session = await databricksService.queryOne(
-        `SELECT id, status, recording_enabled, transcription_enabled
-         FROM classwaves.sessions.classroom_sessions
-         WHERE id = ?`,
-        [sessionId]
+           ORDER BY group_number`),
+        [sessionId],
+        { operation: 'ws_snapshot_groups' }
       );
-
-      groups = await databricksService.query(
-        `SELECT id, name, is_ready
-         FROM classwaves.sessions.student_groups
-         WHERE session_id = ?
-         ORDER BY group_number`,
-        [sessionId]
-      );
+    } catch (error) {
+      logger.warn('session_snapshot.fetch_failed', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     const groupsDetailed = (groups || []).map((g: any) => ({ id: g.id, name: g.name, isReady: Boolean(g.is_ready) }));
