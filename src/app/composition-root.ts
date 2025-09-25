@@ -19,6 +19,7 @@ import type { AnalyticsRepositoryPort } from '../services/ports/analytics.reposi
 import { analyticsRepository as databricksAnalyticsRepository } from '../adapters/repositories/databricks-analytics.repository';
 import type { ParticipantRepositoryPort } from '../services/ports/participant.repository.port';
 import { participantRepository as databricksParticipantRepository } from '../adapters/repositories/databricks-participant.repository';
+import { createDbParticipantRepository } from '../adapters/repositories/db-participant.repository';
 import type { ComplianceRepositoryPort } from '../services/ports/compliance.repository.port';
 import { complianceRepository as databricksComplianceRepository } from '../adapters/repositories/databricks-compliance.repository';
 import type { HealthRepositoryPort } from '../services/ports/health.repository.port';
@@ -33,6 +34,7 @@ import type { SummariesRepositoryPort } from '../services/ports/summaries.reposi
 import { summariesRepository as databricksSummariesRepository } from '../adapters/repositories/databricks-summaries.repository';
 import type { GuidanceInsightsRepositoryPort } from '../services/ports/guidance-insights.repository.port';
 import { guidanceInsightsRepository as databricksGuidanceInsightsRepository } from '../adapters/repositories/databricks-guidance-insights.repository';
+import { createDbGuidanceInsightsRepository } from '../adapters/repositories/db-guidance-insights.repository';
 import type { GuidanceEventsRepositoryPort } from '../services/ports/guidance-events.repository.port';
 import { guidanceEventsRepository as databricksGuidanceEventsRepository } from '../adapters/repositories/databricks-guidance-events.repository';
 import type { DbPort } from '../services/ports/db.port';
@@ -142,6 +144,8 @@ class CompositionRoot {
       this._groupRepository = createDbGroupRepository(this._dbPort);
       this._rosterRepository = createDbRosterRepository(this._dbPort);
       this._sessionDetailRepository = createDbSessionDetailRepository(this._dbPort);
+      this._participantRepository = createDbParticipantRepository(this._dbPort);
+      this._guidanceInsightsRepository = createDbGuidanceInsightsRepository(this._dbPort);
     }
   }
 

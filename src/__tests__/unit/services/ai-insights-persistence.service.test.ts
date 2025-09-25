@@ -1,20 +1,33 @@
-import { aiInsightsPersistenceService } from '../../../services/ai-insights-persistence.service';
+const mockDbPort = {
+  query: jest.fn(),
+  queryOne: jest.fn(),
+  insert: jest.fn(),
+  update: jest.fn(),
+  upsert: jest.fn(),
+  tableHasColumns: jest.fn(),
+  connect: jest.fn(),
+  disconnect: jest.fn(),
+  withTransaction: jest.fn(),
+  generateId: jest.fn(),
+};
 
-// Mock databricksService
-jest.mock('../../../services/databricks.service', () => {
+jest.mock('../../../app/composition-root', () => {
   return {
-    databricksService: {
-      queryOne: jest.fn(),
-      insert: jest.fn(),
-    },
+    getCompositionRoot: () => ({
+      getDbPort: () => mockDbPort,
+      getDbProvider: () => 'postgres',
+    }),
   };
 });
 
-import { databricksService } from '../../../services/databricks.service';
+import { aiInsightsPersistenceService } from '../../../services/ai-insights-persistence.service';
 
 describe('AIInsightsPersistenceService (idempotency)', () => {
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
+    mockDbPort.query.mockReset();
+    mockDbPort.queryOne.mockReset();
+    mockDbPort.insert.mockReset();
   });
 
   it('persists Tier1 once and skips duplicates by idempotency key', async () => {
@@ -33,7 +46,7 @@ describe('AIInsightsPersistenceService (idempotency)', () => {
     };
 
     // First call: no existing row
-    (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(null);
+    mockDbPort.queryOne.mockResolvedValueOnce(null);
 
     const persisted1 = await aiInsightsPersistenceService.persistTier1(
       sessionId,
@@ -41,17 +54,27 @@ describe('AIInsightsPersistenceService (idempotency)', () => {
       insights
     );
     expect(persisted1).toBe(true);
-    expect(databricksService.insert).toHaveBeenCalledTimes(1);
+    expect(mockDbPort.insert).toHaveBeenCalledTimes(1);
+    expect(mockDbPort.insert).toHaveBeenCalledWith(
+      'ai_insights.analysis_results',
+      expect.objectContaining({
+        id: expect.any(String),
+        session_id: sessionId,
+        analysis_type: 'tier1',
+        group_id: groupId,
+      }),
+      expect.objectContaining({ operation: 'analysis_results.insert_tier1' })
+    );
 
     // Second call with same params: simulate existing row now
-    (databricksService.queryOne as jest.Mock).mockResolvedValueOnce({ id: 'existing' });
+    mockDbPort.queryOne.mockResolvedValueOnce({ id: 'existing' });
     const persisted2 = await aiInsightsPersistenceService.persistTier1(
       sessionId,
       groupId,
       insights
     );
     expect(persisted2).toBe(false);
-    expect(databricksService.insert).toHaveBeenCalledTimes(1); // still only once
+    expect(mockDbPort.insert).toHaveBeenCalledTimes(1); // still only once
   });
 
   it('persists Tier2 once and skips duplicates by idempotency key (group-scoped)', async () => {
@@ -73,15 +96,23 @@ describe('AIInsightsPersistenceService (idempotency)', () => {
     };
 
     // First call: no existing row
-    (databricksService.queryOne as jest.Mock).mockResolvedValueOnce(null);
+    mockDbPort.queryOne.mockResolvedValueOnce(null);
     const persisted1 = await aiInsightsPersistenceService.persistTier2(sessionId, insights, groupId);
     expect(persisted1).toBe(true);
-    expect(databricksService.insert).toHaveBeenCalledTimes(1);
+    expect(mockDbPort.insert).toHaveBeenCalledTimes(1);
+    expect(mockDbPort.insert).toHaveBeenLastCalledWith(
+      'ai_insights.analysis_results',
+      expect.objectContaining({
+        analysis_type: 'tier2',
+        group_id: groupId,
+      }),
+      expect.objectContaining({ operation: 'analysis_results.insert_tier2' })
+    );
 
     // Second call with same params: simulate existing row
-    (databricksService.queryOne as jest.Mock).mockResolvedValueOnce({ id: 'exists' });
+    mockDbPort.queryOne.mockResolvedValueOnce({ id: 'exists' });
     const persisted2 = await aiInsightsPersistenceService.persistTier2(sessionId, insights, groupId);
     expect(persisted2).toBe(false);
-    expect(databricksService.insert).toHaveBeenCalledTimes(1);
+    expect(mockDbPort.insert).toHaveBeenCalledTimes(1);
   });
 });

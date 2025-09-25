@@ -1,0 +1,148 @@
+{
+  "metadata": {
+    "id": "ecosystem_heavy_drift_tier2",
+    "title": "Energy lesson derails into cafeteria debate",
+    "description": "Conversation abandons science goal and lingers on unrelated cafeteria choices.",
+    "goal": "Students connect producers, consumers, and decomposers in energy pathways.",
+    "subject": "science",
+    "gradeBand": "6-8",
+    "domainTerms": [
+      "producer",
+      "consumer",
+      "decomposer",
+      "energy transfer"
+    ],
+    "driftProfile": "heavy_drift",
+    "driftNotes": "Sustained drift that should trigger Tier1 interventions and Tier2 recommendation.",
+    "tags": [
+      "tier1",
+      "tier2",
+      "drift"
+    ]
+  },
+  "featureFlags": {
+    "cwGuidanceEpisodesEnabled": true
+  },
+  "playback": {
+    "msBetweenLines": 5000
+  },
+  "expectations": {
+    "tier1": {
+      "expectedPromptCount": 2,
+      "expectedCategories": [
+        "redirection",
+        "question"
+      ],
+      "gating": "heavy_drift",
+      "summaryIncludes": [
+        "return"
+      ],
+      "why": {
+        "alignmentDeltaMin": 0.45,
+        "driftSecondsMin": 45
+      }
+    },
+    "tier2": {
+      "expectedInsightCount": 1,
+      "recommendationCategories": [
+        "strategy"
+      ],
+      "summaryIncludes": [
+        "regroup"
+      ]
+    }
+  },
+  "transcript": [
+    {
+      "timestamp": 0,
+      "text": "We mapped producers last time, what completes the energy transfer?",
+      "speakerLabel": "Teacher",
+      "sequence": 1,
+      "sttConfidence": 0.95
+    },
+    {
+      "timestamp": 4700,
+      "text": "Consumers pass the stored energy along the chain.",
+      "speakerLabel": "Student 1",
+      "sequence": 2,
+      "sttConfidence": 0.93
+    },
+    {
+      "timestamp": 9300,
+      "text": "And decomposers recycle what is left into nutrients.",
+      "speakerLabel": "Student 2",
+      "sequence": 3,
+      "sttConfidence": 0.92
+    },
+    {
+      "timestamp": 13800,
+      "text": "Speaking of nutrients, the cafeteria swapped the veggie option again.",
+      "speakerLabel": "Student 3",
+      "sequence": 4,
+      "sttConfidence": 0.87
+    },
+    {
+      "timestamp": 18400,
+      "text": "Yeah, the wraps yesterday had no flavor at all.",
+      "speakerLabel": "Student 4",
+      "sequence": 5,
+      "sttConfidence": 0.86
+    },
+    {
+      "timestamp": 23200,
+      "text": "We should make a petition for better lunch choices.",
+      "speakerLabel": "Student 3",
+      "sequence": 6,
+      "sttConfidence": 0.85
+    },
+    {
+      "timestamp": 27800,
+      "text": "Hold that thought\u2014how does the petition connect to energy transfer?",
+      "speakerLabel": "Teacher",
+      "sequence": 7,
+      "sttConfidence": 0.94
+    },
+    {
+      "timestamp": 32600,
+      "text": "I guess it doesn't, I am just hungry.",
+      "speakerLabel": "Student 4",
+      "sequence": 8,
+      "sttConfidence": 0.84
+    },
+    {
+      "timestamp": 37200,
+      "text": "Maybe the cafeteria is like a producer giving us energy?",
+      "speakerLabel": "Student 5",
+      "sequence": 9,
+      "sttConfidence": 0.83
+    },
+    {
+      "timestamp": 41900,
+      "text": "Except our goal is to analyze natural ecosystems, not menus.",
+      "speakerLabel": "Teacher",
+      "sequence": 10,
+      "sttConfidence": 0.93
+    },
+    {
+      "timestamp": 46500,
+      "text": "So we need to refocus on decomposers and nutrient cycling.",
+      "speakerLabel": "Teacher",
+      "sequence": 11,
+      "sttConfidence": 0.95
+    },
+    {
+      "timestamp": 51300,
+      "text": "Decomposers break down leftovers so producers can grow again.",
+      "speakerLabel": "Student 1",
+      "sequence": 12,
+      "sttConfidence": 0.9
+    },
+    {
+      "timestamp": 55900,
+      "text": "Right, let us keep the examples anchored to ecosystems.",
+      "speakerLabel": "Teacher",
+      "sequence": 13,
+      "sttConfidence": 0.94
+    }
+  ]
+}

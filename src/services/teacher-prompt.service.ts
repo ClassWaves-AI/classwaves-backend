@@ -69,6 +69,11 @@ interface PromptExtras {
   };
   bridgingPrompt?: string;
   onTrackSummary?: string;
+  why?: {
+    alignmentDelta?: number;
+    driftSeconds?: number;
+    inputQuality?: number;
+  };
 }
 
 interface PromptGenerationOptions {
@@ -1026,6 +1031,10 @@ export class TeacherPromptService {
         enriched.onTrackSummary = this.truncateString(extras.onTrackSummary, this.summaryCharLimit);
       }
 
+      if (extras.why) {
+        enriched.why = this.normalizeWhyMetadata(extras.why);
+      }
+
       return enriched;
     });
   }
@@ -1058,6 +1067,26 @@ export class TeacherPromptService {
       supportingLines,
       confidence: typeof context.confidence === 'number' ? this.clamp01(context.confidence) : undefined,
     };
+  }
+
+  private normalizeWhyMetadata(why: NonNullable<PromptExtras['why']>): TeacherPrompt['why'] {
+    const alignmentDelta = typeof why.alignmentDelta === 'number' ? this.clamp01(Math.abs(why.alignmentDelta)) : undefined;
+    const driftSeconds = typeof why.driftSeconds === 'number' && Number.isFinite(why.driftSeconds)
+      ? Math.max(0, why.driftSeconds)
+      : undefined;
+    const inputQuality = typeof why.inputQuality === 'number' ? this.clamp01(why.inputQuality) : undefined;
+
+    const normalized: TeacherPrompt['why'] = {};
+    if (alignmentDelta !== undefined) {
+      normalized.alignmentDelta = Number(alignmentDelta.toFixed(2));
+    }
+    if (driftSeconds !== undefined) {
+      normalized.driftSeconds = Number(driftSeconds.toFixed(1));
+    }
+    if (inputQuality !== undefined) {
+      normalized.inputQuality = Number(inputQuality.toFixed(2));
+    }
+    return normalized;
   }
 
   private normalizeContextQuotes(context: PromptExtras['context']): PromptContextQuote[] | undefined {

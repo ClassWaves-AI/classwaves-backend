@@ -494,7 +494,7 @@ export class DatabricksService {
           const used = Math.min(expected, params.length);
 
           if (expected !== params.length) {
-            const tableMatch = /(insert\s+into|update|from)\s+([a-zA-Z0-9_\.]+)/i.exec(sql);
+            const tableMatch = /(insert\s+into|update|from)\s+([a-zA-Z0-9_.]+)/i.exec(sql);
             const tableRef = tableMatch?.[2] || 'unknown';
             const preview = sql.replace(/\s+/g, ' ').slice(0, 120);
             logger.warn('⚠️ Databricks param count mismatch', {

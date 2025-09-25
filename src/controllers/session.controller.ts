@@ -2515,6 +2515,14 @@ export async function pauseSession(req: Request, res: Response): Promise<Respons
       logger.warn('⚠️ WebSocket broadcast failed during session pause (non-critical):', e instanceof Error ? e.message : String(e));
     }
 
+    // Flush any pending transcripts from Redis to DB on pause to preserve context after refresh
+    try {
+      const { transcriptPersistenceService } = await import('../services/transcript-persistence.service');
+      await transcriptPersistenceService.flushSession(sessionId);
+    } catch (e) {
+      logger.warn('⚠️ Transcript flush on session pause failed (non-blocking):', e instanceof Error ? e.message : String(e));
+    }
+
     // Record audit log (async)
     const { auditLogPort } = await import('../utils/audit.port.instance');
     void auditLogPort.enqueue({

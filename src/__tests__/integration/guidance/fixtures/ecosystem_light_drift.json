@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "id": "ecosystem_light_drift",
+    "title": "Ecosystem discussion with brief drift",
+    "description": "Conversation nudges off topic when students mention weekend plans before returning.",
+    "goal": "Students explain energy flow using producer and consumer roles.",
+    "subject": "science",
+    "gradeBand": "6-8",
+    "domainTerms": [
+      "producer",
+      "consumer",
+      "energy flow"
+    ],
+    "driftProfile": "light_drift",
+    "driftNotes": "Short-lived drift that should trigger a redirection prompt but not Tier2.",
+    "tags": [
+      "tier1",
+      "redirection"
+    ]
+  },
+  "featureFlags": {
+    "cwGuidanceEpisodesEnabled": true
+  },
+  "playback": {
+    "msBetweenLines": 4200
+  },
+  "expectations": {
+    "tier1": {
+      "expectedPromptCount": 1,
+      "expectedCategories": [
+        "redirection"
+      ],
+      "gating": "light_drift",
+      "summaryIncludes": [
+        "drift"
+      ],
+      "why": {
+        "alignmentDeltaMin": 0.25,
+        "driftSecondsMin": 20
+      }
+    },
+    "tier2": {
+      "expectedInsightCount": 0
+    }
+  },
+  "transcript": [
+    {
+      "timestamp": 0,
+      "text": "How does energy first enter this system?",
+      "speakerLabel": "Teacher",
+      "sequence": 1,
+      "sttConfidence": 0.96
+    },
+    {
+      "timestamp": 3800,
+      "text": "Producers take in sunlight and start the transfer.",
+      "speakerLabel": "Student 1",
+      "sequence": 2,
+      "sttConfidence": 0.94
+    },
+    {
+      "timestamp": 7600,
+      "text": "Consumers get that energy when they eat plants.",
+      "speakerLabel": "Student 2",
+      "sequence": 3,
+      "sttConfidence": 0.92
+    },
+    {
+      "timestamp": 11300,
+      "text": "I saw an osprey catch a fish on the lake this weekend!",
+      "speakerLabel": "Student 3",
+      "sequence": 4,
+      "sttConfidence": 0.89
+    },
+    {
+      "timestamp": 15100,
+      "text": "It made me want to go fishing again after class.",
+      "speakerLabel": "Student 3",
+      "sequence": 5,
+      "sttConfidence": 0.88
+    },
+    {
+      "timestamp": 18900,
+      "text": "Remember our focus, how does that osprey fit the energy roles?",
+      "speakerLabel": "Teacher",
+      "sequence": 6,
+      "sttConfidence": 0.95
+    },
+    {
+      "timestamp": 22600,
+      "text": "Oh right, it is a consumer passing energy from the fish.",
+      "speakerLabel": "Student 3",
+      "sequence": 7,
+      "sttConfidence": 0.9
+    },
+    {
+      "timestamp": 26400,
+      "text": "And the fish got energy from smaller producers in the pond.",
+      "speakerLabel": "Student 4",
+      "sequence": 8,
+      "sttConfidence": 0.91
+    },
+    {
+      "timestamp": 30200,
+      "text": "So even with the story we can map the roles back to the goal.",
+      "speakerLabel": "Teacher",
+      "sequence": 9,
+      "sttConfidence": 0.95
+    }
+  ]
+}

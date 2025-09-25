@@ -8,6 +8,9 @@ import { alertPrioritizationService } from '../alert-prioritization.service';
 import * as client from 'prom-client';
 import type { WsGuidanceAnalyticsEvent } from '@classwaves/shared';
 import { logger } from '../../utils/logger';
+import { guidanceInsightsService } from '../guidance-insights.service';
+import { transcriptService } from '../transcript.service';
+import { getCompositionRoot } from '../../app/composition-root';
 import {
   getGuidancePromptActionCounter,
   getGuidanceRedisUnavailableCounter,
@@ -44,6 +47,140 @@ interface PromptInteractionData {
   sessionId?: string;
   userId?: string;
   timestamp?: number | string;
+}
+
+interface Tier1SnapshotEntry {
+  groupId: string;
+  timestamp: string;
+  text: string;
+}
+
+const MAX_TIER1_SNAPSHOT_ITEMS = 40;
+const MAX_TRANSCRIPT_GROUPS = 12;
+
+function isTruthyFlag(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  if (Number.isFinite(parsed)) {
+    return Math.min(Math.max(parsed, min), max);
+  }
+  return Math.min(Math.max(fallback, min), max);
+}
+
+function normalizeTier1FromBuffer(entry: any): Tier1SnapshotEntry | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const groupId = entry.groupId ?? entry.insights?.groupId;
+  if (!groupId) return null;
+  const rawInsight = entry.insights ?? entry;
+  const timestampRaw = rawInsight?.analysisTimestamp ?? rawInsight?.timestamp;
+  const timestamp = timestampRaw ? new Date(timestampRaw) : new Date();
+  const normalizedTimestamp = Number.isNaN(timestamp.getTime()) ? new Date() : timestamp;
+  let text: string | undefined;
+  if (Array.isArray(rawInsight?.insights) && rawInsight.insights.length > 0) {
+    const message = rawInsight.insights[0]?.message;
+    if (typeof message === 'string') {
+      text = message.trim();
+    }
+  }
+  if (!text && Array.isArray(rawInsight?.analysis?.key_insights) && rawInsight.analysis.key_insights.length > 0) {
+    const key = rawInsight.analysis.key_insights[0];
+    if (typeof key === 'string' && key.trim()) text = key.trim();
+  }
+  if (!text && typeof rawInsight?.text === 'string') {
+    text = rawInsight.text.trim();
+  }
+  const safeText = text && text.length > 0 ? text : 'Insight';
+  return {
+    groupId: String(groupId),
+    timestamp: normalizedTimestamp.toISOString(),
+    text: safeText,
+  };
+}
+
+function normalizeTier1FromPersisted(entry: any): Tier1SnapshotEntry | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const groupId = entry.groupId ?? entry.group_id;
+  const timestampRaw = entry.timestamp ?? entry.analysisTimestamp;
+  if (!groupId || !timestampRaw) return null;
+  const ts = new Date(timestampRaw);
+  const normalizedTimestamp = Number.isNaN(ts.getTime()) ? new Date() : ts;
+  const text = typeof entry.text === 'string' && entry.text.trim() ? entry.text.trim() : 'Insight';
+  return {
+    groupId: String(groupId),
+    timestamp: normalizedTimestamp.toISOString(),
+    text,
+  };
+}
+
+function mergeTier1Snippets(primary: Tier1SnapshotEntry[], fallback: Tier1SnapshotEntry[]): Tier1SnapshotEntry[] {
+  const combined = new Map<string, Tier1SnapshotEntry>();
+  for (const snippet of primary) {
+    if (!snippet) continue;
+    combined.set(`${snippet.groupId}:${snippet.timestamp}`, snippet);
+  }
+  for (const snippet of fallback) {
+    if (!snippet) continue;
+    const key = `${snippet.groupId}:${snippet.timestamp}`;
+    if (!combined.has(key)) combined.set(key, snippet);
+  }
+  return Array.from(combined.values())
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, MAX_TIER1_SNAPSHOT_ITEMS);
+}
+
+function normalizeTier2FromBuffer(value: any): any | null {
+  if (!value || typeof value !== 'object') return null;
+  if (value.insights) return value.insights;
+  return value;
+}
+
+function buildTier2MapFromPersisted(tier2: any): Record<string, any> {
+  if (!tier2 || typeof tier2 !== 'object') return {};
+  const map: Record<string, any> = {};
+  const groups = Array.isArray(tier2.groups) ? tier2.groups : [];
+  if (groups.length === 0) {
+    const groupId = tier2.groupId ?? tier2.group_id ?? tier2.metadata?.groupId;
+    if (groupId) {
+      map[String(groupId)] = tier2;
+    }
+    return map;
+  }
+  for (const group of groups) {
+    const groupId = group?.groupId ?? group?.id ?? group?.group_id;
+    if (!groupId) continue;
+    map[String(groupId)] = {
+      ...tier2,
+      groups: [group],
+    };
+  }
+  return map;
+}
+
+function collectTranscriptGroupIds(
+  tier1: Tier1SnapshotEntry[],
+  tier2ByGroup: Record<string, unknown>,
+  prompts: any[],
+  limit: number
+): string[] {
+  const ordered: string[] = [];
+  const pushUnique = (value: unknown) => {
+    if (!value) return;
+    const id = String(value);
+    if (id && !ordered.includes(id)) ordered.push(id);
+  };
+  for (const entry of tier1) pushUnique(entry.groupId);
+  for (const prompt of prompts || []) {
+    pushUnique((prompt && (prompt.groupId ?? prompt.group_id)) || null);
+  }
+  Object.keys(tier2ByGroup || {}).forEach(pushUnique);
+  return ordered.slice(0, limit);
 }
 
 export class GuidanceNamespaceService extends NamespaceBaseService {
@@ -115,6 +252,29 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
       return new client.Counter({ name: 'guidance_teacher_alerts_emits_total', help: 'Teacher alerts emits', labelNames: ['namespace'] });
     } catch {
       return client.register.getSingleMetric('guidance_teacher_alerts_emits_total') as client.Counter<string>;
+    }
+  })();
+  private static snapshotReadsCounter = (() => {
+    try {
+      return new client.Counter({
+        name: 'guidance_snapshot_reads_total',
+        help: 'Guidance snapshot reads grouped by source and status',
+        labelNames: ['source', 'status'],
+      });
+    } catch {
+      return client.register.getSingleMetric('guidance_snapshot_reads_total') as client.Counter<string>;
+    }
+  })();
+  private static snapshotPayloadHistogram = (() => {
+    try {
+      return new client.Histogram({
+        name: 'snapshot_payload_size_bytes',
+        help: 'Size of guidance snapshot payload emitted to clients',
+        labelNames: ['source'],
+        buckets: [256, 512, 1024, 2048, 4096, 8192, 16384, 32768],
+      });
+    } catch {
+      return client.register.getSingleMetric('snapshot_payload_size_bytes') as client.Histogram<string>;
     }
   })();
   private static emitsFailed = (() => {
@@ -446,36 +606,52 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
     }
   }
 
-  private async handleGetCurrentState(socket: Socket, data: { sessionId?: string }) {
+  private async getSessionStatusSafe(sessionId: string): Promise<string | null> {
     try {
+      const repo = getCompositionRoot().getSessionRepository();
+      const basic = await repo.getBasic(sessionId);
+      return basic?.status ?? null;
+    } catch (error) {
+      logger.warn('guidance_snapshot_session_status_lookup_failed', {
+        sessionId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  private async handleGetCurrentState(socket: Socket, data: { sessionId?: string }) {
+    let snapshotSource: 'buffer' | 'persisted' = 'buffer';
+    try {
+      const fallbackEnabled = isTruthyFlag(process.env.GUIDANCE_SNAPSHOT_TIER1_FALLBACK, true);
+      const includeTranscripts = isTruthyFlag(process.env.GUIDANCE_SNAPSHOT_INCLUDE_TRANSCRIPTS, true);
+      const transcriptMaxLines = parsePositiveInt(process.env.TRANSCRIPT_SNAPSHOT_MAX_LINES, 20, 1, 50);
+
       let prompts: any[] = [];
       let insights: any = {};
 
       if (data.sessionId) {
-        // Get session-specific state using implemented methods
         try {
           prompts = await teacherPromptService.getActivePrompts(data.sessionId, {
-            priorityFilter: ['high', 'medium'], // Focus on actionable prompts
-            maxAge: 30 // Last 30 minutes
+            priorityFilter: ['high', 'medium'],
+            maxAge: 30,
           });
         } catch (error) {
           logger.warn(`⚠️ Failed to get active prompts for session ${data.sessionId}:`, error);
-          prompts = []; // Graceful degradation
+          prompts = [];
         }
 
         try {
           insights = await aiAnalysisBufferService.getCurrentInsights(data.sessionId, {
-            maxAge: 10, // Last 10 minutes for real-time relevance
-            includeMetadata: true
+            maxAge: 10,
+            includeMetadata: true,
           });
         } catch (error) {
           logger.warn(`⚠️ Failed to get current insights for session ${data.sessionId}:`, error);
-          insights = {}; // Graceful degradation
+          insights = {};
         }
       } else {
-        // Get all active prompts for this teacher using repository-owned sessions
         try {
-          const { getCompositionRoot } = await import('../../app/composition-root');
           const repo = getCompositionRoot().getSessionRepository();
           const sessionIds = await repo.listOwnedSessionIds(socket.data.userId);
           if (Array.isArray(sessionIds) && sessionIds.length > 0) {
@@ -498,8 +674,7 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
           } else {
             prompts = [];
           }
-        } catch (e) {
-          // Fallback to existing join if repository approach fails
+        } catch (error) {
           prompts = await databricksService.query(
             `SELECT 
                p.id,
@@ -520,9 +695,6 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         }
       }
 
-      // Refactored current_state payload: expose tier1 and tier2ByGroup at top-level
-      const tier1 = Array.isArray((insights as any)?.tier1Insights) ? (insights as any).tier1Insights : undefined;
-      const tier2ByGroup = (insights as any)?.tier2ByGroup || undefined;
       const serializedPrompts = prompts.map((prompt) => {
         if (prompt && typeof prompt === 'object' && 'contextEvidence' in prompt) {
           const { contextEvidence, context, ...rest } = prompt as any;
@@ -536,15 +708,138 @@ export class GuidanceNamespaceService extends NamespaceBaseService {
         return prompt;
       });
 
-      socket.emit('guidance:current_state', {
+      let tier1Snippets: Tier1SnapshotEntry[] = [];
+      let tier2ByGroup: Record<string, any> = {};
+      let transcriptsByGroup: Record<string, Array<{ text: string; ts: number }>> = {};
+      let usedPersisted = false;
+      let sessionStatus: string | null = null;
+
+      if (data.sessionId) {
+        const bufferTier1Raw = Array.isArray((insights as any)?.tier1Insights) ? (insights as any).tier1Insights : [];
+        const bufferTier1 = bufferTier1Raw
+          .map((entry: any) => normalizeTier1FromBuffer(entry))
+          .filter((entry: Tier1SnapshotEntry | null): entry is Tier1SnapshotEntry => Boolean(entry));
+
+        const bufferTier2Raw = (insights as any)?.tier2ByGroup;
+        const bufferTier2: Record<string, any> = {};
+        if (bufferTier2Raw && typeof bufferTier2Raw === 'object') {
+          for (const [groupId, value] of Object.entries(bufferTier2Raw)) {
+            const normalized = normalizeTier2FromBuffer(value);
+            if (normalized) bufferTier2[groupId] = normalized;
+          }
+        }
+
+        let persistedTier1: Tier1SnapshotEntry[] = [];
+        let persistedTier2: Record<string, any> = {};
+
+        if (fallbackEnabled) {
+          sessionStatus = await this.getSessionStatusSafe(data.sessionId);
+          const bufferHasTier1 = bufferTier1.length > 0;
+          const bufferHasTier2 = Object.keys(bufferTier2).length > 0;
+          const sessionInactive = Boolean(sessionStatus && sessionStatus !== 'active');
+
+          if (sessionInactive || !bufferHasTier1 || !bufferHasTier2) {
+            try {
+              const persisted = await guidanceInsightsService.getForSession(data.sessionId);
+              persistedTier1 = Array.isArray(persisted.tier1)
+                ? persisted.tier1
+                    .map((entry: any) => normalizeTier1FromPersisted(entry))
+                    .filter((entry: Tier1SnapshotEntry | null): entry is Tier1SnapshotEntry => Boolean(entry))
+                : [];
+              persistedTier2 = persisted.tier2 ? buildTier2MapFromPersisted(persisted.tier2) : {};
+              if (persistedTier1.length > 0 || Object.keys(persistedTier2).length > 0 || sessionInactive) {
+                usedPersisted = true;
+              }
+            } catch (error) {
+              logger.warn('guidance_snapshot_persisted_fallback_failed', {
+                sessionId: data.sessionId,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+        }
+
+        const sessionInactive = Boolean(sessionStatus && sessionStatus !== 'active');
+
+        if (sessionInactive && persistedTier1.length > 0) {
+          tier1Snippets = mergeTier1Snippets([], persistedTier1);
+        } else {
+          tier1Snippets = mergeTier1Snippets(bufferTier1, persistedTier1);
+        }
+
+        if (sessionInactive && Object.keys(persistedTier2).length > 0) {
+          tier2ByGroup = persistedTier2;
+        } else {
+          tier2ByGroup = { ...bufferTier2 };
+          for (const [groupId, value] of Object.entries(persistedTier2)) {
+            if (!tier2ByGroup[groupId]) {
+              tier2ByGroup[groupId] = value;
+            }
+          }
+        }
+
+        if (includeTranscripts) {
+          const transcriptGroups = collectTranscriptGroupIds(tier1Snippets, tier2ByGroup, serializedPrompts, MAX_TRANSCRIPT_GROUPS);
+          const transcripts: Record<string, Array<{ text: string; ts: number }>> = {};
+          for (const groupId of transcriptGroups) {
+            try {
+              const segments = await transcriptService.read(data.sessionId, groupId);
+              if (!Array.isArray(segments) || segments.length === 0) continue;
+              const limited = segments.slice(Math.max(segments.length - transcriptMaxLines, 0));
+              transcripts[groupId] = limited.map((segment) => ({
+                text: segment.text,
+                ts: Number.isFinite(segment.endTs) ? segment.endTs : Number.isFinite(segment.startTs) ? segment.startTs : Date.now(),
+              }));
+            } catch (error) {
+              logger.warn('guidance_snapshot_transcript_read_failed', {
+                sessionId: data.sessionId,
+                groupId,
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          transcriptsByGroup = transcripts;
+        }
+
+        if (usedPersisted) {
+          snapshotSource = 'persisted';
+        }
+      }
+
+      const payload = {
         sessionId: data.sessionId,
         prompts: serializedPrompts,
-        tier1,
+        tier1: tier1Snippets,
         tier2ByGroup,
+        transcriptsByGroup,
         timestamp: new Date(),
-      });
+      };
+
+      socket.emit('guidance:current_state', payload);
+
+      try {
+        GuidanceNamespaceService.snapshotReadsCounter.inc({ source: snapshotSource, status: 'ok' });
+        const payloadSize = Buffer.byteLength(JSON.stringify(payload));
+        GuidanceNamespaceService.snapshotPayloadHistogram.observe({ source: snapshotSource }, payloadSize);
+        const transcriptLineCount = Object.values(transcriptsByGroup).reduce(
+          (acc, lines) => acc + (Array.isArray(lines) ? lines.length : 0),
+          0
+        );
+        logger.debug('guidance_snapshot_built', {
+          sessionId: data.sessionId ?? null,
+          source: snapshotSource,
+          prompts: serializedPrompts.length,
+          tier1Count: tier1Snippets.length,
+          tier2Groups: Object.keys(tier2ByGroup || {}).length,
+          transcriptGroups: Object.keys(transcriptsByGroup || {}).length,
+          transcriptLines: transcriptLineCount,
+        });
+      } catch { /* intentionally ignored: observability best effort */ }
     } catch (error) {
       logger.error('Get current state error:', error);
+      try {
+        GuidanceNamespaceService.snapshotReadsCounter.inc({ source: snapshotSource, status: 'error' });
+      } catch { /* intentionally ignored */ }
       socket.emit('error', {
         code: 'STATE_FETCH_FAILED',
         message: 'Failed to fetch current guidance state'

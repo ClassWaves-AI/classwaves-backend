@@ -10,6 +10,10 @@ import {
   getGuidanceContextParaphraseCounter,
   getGuidanceContextSummaryLengthHistogram,
   getGuidanceContextQualityHistogram,
+  getGuidanceEpisodeCountHistogram,
+  getGuidanceContextSelectionLatencyHistogram,
+  getGuidanceDriftPersistenceHistogram,
+  getGuidanceContextAlignmentDeltaHistogram,
 } from '../metrics/guidance.metrics';
 
 type GuidanceRedisComponent = 'attention_gate' | 'autoprompt' | 'prompt_timing' | 'ontrack_summary';
@@ -22,6 +26,7 @@ import type {
   EvidenceWindows,
   GuidanceDriftSignal,
 } from '../types/ai-analysis.types';
+import type { GuidanceWindowSelection } from './ports/guidance-context.port';
 import type { WsGuidanceAnalyticsEvent } from '@classwaves/shared';
 import { logger } from '../utils/logger';
 
@@ -69,6 +74,10 @@ class AIAnalysisTriggerService {
   private readonly contextSettings = this.initializeContextSettings();
   private readonly keywordStopWords = this.buildKeywordStopwords();
   private readonly contextQualityHistogram = getGuidanceContextQualityHistogram();
+  private readonly episodeCountHistogram = getGuidanceEpisodeCountHistogram();
+  private readonly episodeSelectionLatency = getGuidanceContextSelectionLatencyHistogram();
+  private readonly driftPersistenceHistogram = getGuidanceDriftPersistenceHistogram();
+  private readonly alignmentDeltaHistogram = getGuidanceContextAlignmentDeltaHistogram();
   private readonly onTrackSummaryLimit = Math.max(60, Math.min(240, parseInt(process.env.AI_ONTRACK_SUMMARY_MAX_CHARS || '160', 10)));
   private readonly onTrackSummaryState = new Map<string, { summary: string; timestamp: number }>();
   private readonly onTrackSummaryEmitted = getGuidanceOnTrackSummaryEmittedCounter();
@@ -373,6 +382,9 @@ class AIAnalysisTriggerService {
       offTopicHeat?: number;
       discussionMomentum?: number;
       confusionRisk?: number;
+      alignmentDelta?: number;
+      driftSeconds?: number;
+      inputQuality?: GuidanceWindowSelection['inputQuality'];
     }
   ): Promise<{ context?: PromptContextPayload }> {
     if (process.env.GUIDANCE_CONTEXT_ENRICHMENT !== '1') {
@@ -554,6 +566,9 @@ class AIAnalysisTriggerService {
       offTopicHeat?: number;
       discussionMomentum?: number;
       confusionRisk?: number;
+      alignmentDelta?: number;
+      driftSeconds?: number;
+      inputQuality?: GuidanceWindowSelection['inputQuality'];
     } | undefined,
     sessionGoal?: string
   ): GuidanceDriftSignal[] {
@@ -593,11 +608,63 @@ class AIAnalysisTriggerService {
       signals.push({ metric: 'confusionRisk', detail, trend });
     }
 
+    if (typeof metrics?.alignmentDelta === 'number') {
+      const delta = clamp(Math.abs(metrics.alignmentDelta));
+      if (delta > 0) {
+        const detail = `alignment gap ${Math.round(delta * 100)}%`;
+        const trend = delta >= 0.3 ? 'diverging' : delta >= 0.18 ? 'drifting' : 'light';
+        signals.push({ metric: 'alignmentDelta', detail, trend });
+      }
+    }
+
+    if (typeof metrics?.driftSeconds === 'number') {
+      const seconds = Math.max(0, metrics.driftSeconds);
+      if (seconds > 0) {
+        const detail = `drift persisted ${Math.round(seconds)}s`;
+        const trend = seconds >= 60 ? 'persistent' : seconds >= 30 ? 'building' : 'brief';
+        signals.push({ metric: 'driftDuration', detail, trend });
+      }
+    }
+
+    if (metrics?.inputQuality) {
+      const score = this.computeInputQualityScore(metrics.inputQuality);
+      const detail = `input quality ${Math.round(score * 100)}%`; 
+      const trend = score >= 0.7 ? 'strong' : score >= 0.5 ? 'fair' : 'weak';
+      signals.push({ metric: 'inputQuality', detail, trend });
+    }
+
     if (sessionGoal) {
       signals.push({ metric: 'goal', detail: this.applyDomainNormalization(sessionGoal) });
     }
 
     return signals.slice(0, 5);
+  }
+
+  private computeInputQualityScore(quality: GuidanceWindowSelection['inputQuality'] | undefined): number {
+    if (!quality) {
+      return 0;
+    }
+    const confidence = this.clamp01(typeof quality.sttConfidence === 'number' ? quality.sttConfidence : 0);
+    const coverage = this.clamp01(typeof quality.coverage === 'number' ? quality.coverage : 0);
+    const alignmentDelta = this.clamp01(typeof quality.alignmentDelta === 'number' ? quality.alignmentDelta : 0);
+    const episodeContribution = Math.max(0, Math.min(quality.episodeCount ?? 0, 4)) / 4;
+    const score = confidence * 0.35 + coverage * 0.35 + alignmentDelta * 0.2 + episodeContribution * 0.1;
+    return this.clamp01(score);
+  }
+
+  private buildWhyMetadata(
+    alignmentDelta: number,
+    driftPersistenceMs: number,
+    inputQuality: GuidanceWindowSelection['inputQuality']
+  ): { alignmentDelta?: number; driftSeconds?: number; inputQuality?: number } {
+    const delta = this.clamp01(Math.abs(alignmentDelta));
+    const driftSeconds = Math.max(0, driftPersistenceMs) / 1000;
+    const qualityScore = this.computeInputQualityScore(inputQuality);
+    return {
+      alignmentDelta: Number(delta.toFixed(2)),
+      driftSeconds: Number(driftSeconds.toFixed(1)),
+      inputQuality: Number(qualityScore.toFixed(2)),
+    };
   }
 
   private buildTitlecaseMap(): Array<{ match: string; replacement: string }> {
@@ -657,6 +724,34 @@ class AIAnalysisTriggerService {
       aligned: filterLines(evidence.aligned),
       tangent: filterLines(evidence.tangent),
     };
+  }
+
+  private buildGuidanceGoal(sessionContext?: { subject?: string; topic?: string; goals?: string[]; description?: string }): string | undefined {
+    if (!sessionContext) {
+      return undefined;
+    }
+    const parts: string[] = [];
+    if (Array.isArray(sessionContext.goals)) {
+      for (const goal of sessionContext.goals) {
+        if (typeof goal === 'string' && goal.trim().length > 0) {
+          parts.push(goal.trim());
+        }
+      }
+    }
+    if (typeof sessionContext.topic === 'string' && sessionContext.topic.trim().length > 0) {
+      parts.push(sessionContext.topic.trim());
+    }
+    if (typeof sessionContext.description === 'string' && sessionContext.description.trim().length > 0) {
+      parts.push(sessionContext.description.trim());
+    }
+    if (typeof sessionContext.subject === 'string' && sessionContext.subject.trim().length > 0) {
+      parts.push(sessionContext.subject.trim());
+    }
+    const combined = parts.join(' ').replace(/\s+/g, ' ').trim();
+    if (combined.length > 0) {
+      return combined;
+    }
+    return this.resolveSessionGoal(sessionContext);
   }
 
   private resolveSessionGoal(sessionContext?: { subject?: string; topic?: string; goals?: string[]; description?: string }): string | undefined {
@@ -1211,14 +1306,41 @@ class AIAnalysisTriggerService {
       .filter(Boolean);
   }
 
-  private buildEvidenceWindowsFromBuffer(raw: {
-    aligned: Array<{ speakerLabel: string; text: string; timestamp: number }>;
-    tangent: Array<{ speakerLabel: string; text: string; timestamp: number }>;
-  }): EvidenceWindows {
+  private buildEvidenceWindowsFromBuffer(
+    raw: ReturnType<typeof aiAnalysisBufferService.getContextWindows>,
+    selectionLatencyMs?: number
+  ): EvidenceWindows {
+    if (raw?.feature === 'episodes') {
+      this.observeEpisodeSelection(raw, selectionLatencyMs);
+    }
+    const alignedQuotes = this.toPromptContextQuotes(raw?.aligned ?? []);
+    const currentSource = raw?.current && raw.current.length > 0 ? raw.current : raw?.tangent ?? [];
     return {
-      aligned: this.toPromptContextQuotes(raw.aligned),
-      tangent: this.toPromptContextQuotes(raw.tangent),
+      aligned: alignedQuotes,
+      tangent: this.toPromptContextQuotes(currentSource),
     };
+  }
+
+  private observeEpisodeSelection(
+    raw: ReturnType<typeof aiAnalysisBufferService.getContextWindows>,
+    selectionLatencyMs?: number
+  ): void {
+    try {
+      if (typeof raw?.inputQuality?.episodeCount === 'number') {
+        this.episodeCountHistogram.observe(raw.inputQuality.episodeCount);
+      }
+      if (typeof selectionLatencyMs === 'number' && selectionLatencyMs >= 0) {
+        this.episodeSelectionLatency.observe(selectionLatencyMs);
+      }
+      if (typeof raw?.drift?.persistentMs === 'number') {
+        this.driftPersistenceHistogram.observe(Math.max(0, raw.drift.persistentMs / 1000));
+      }
+      if (typeof raw?.drift?.alignmentDelta === 'number') {
+        this.alignmentDeltaHistogram.observe(Math.max(0, Math.abs(raw.drift.alignmentDelta)));
+      }
+    } catch {
+      // Metrics are best-effort.
+    }
   }
 
   private toPromptContextQuotes(lines: Array<{ speakerLabel: string; text: string; timestamp: number }>): PromptContextQuote[] {
@@ -1702,8 +1824,31 @@ class AIAnalysisTriggerService {
       })();
       const windowSize = isFirstTier1 ? firstWindowSec : defaultWindowSec;
 
-      const rawContextWindows = aiAnalysisBufferService.getContextWindows(sessionId, groupId);
-      const evidenceWindows = this.buildEvidenceWindowsFromBuffer(rawContextWindows);
+      const guidanceGoal = this.buildGuidanceGoal(sessionContext);
+      const contextStart = Date.now();
+      const rawContextWindows = aiAnalysisBufferService.getContextWindows(sessionId, groupId, {
+        goal: guidanceGoal,
+        domainTerms: this.contextSettings.domainTerms,
+        now: Date.now(),
+      });
+      const selectionLatency = Date.now() - contextStart;
+      const evidenceWindows = this.buildEvidenceWindowsFromBuffer(rawContextWindows, selectionLatency);
+      const driftMetrics = rawContextWindows?.drift ?? {
+        alignmentDelta: 0,
+        persistentMs: 0,
+        priorAlignment: 0,
+        currentAlignment: 0,
+        lastAlignedAt: null,
+      };
+      const inputQuality = rawContextWindows?.inputQuality ?? {
+        sttConfidence: 0,
+        coverage: 0,
+        alignmentDelta: 0,
+        episodeCount: 0,
+      };
+      const alignmentDeltaAbs = Math.abs(driftMetrics.alignmentDelta ?? 0);
+      const driftPersistenceMs = Math.max(0, driftMetrics.persistentMs ?? 0);
+      const episodesFeature = rawContextWindows?.feature === 'episodes';
 
       const insights = await aiAnalysisPort.analyzeTier1(transcripts, {
         groupId,
@@ -1824,10 +1969,18 @@ class AIAnalysisTriggerService {
       const threshold = Number.isFinite(Number(process.env.GUIDANCE_TIER1_ONTRACK_THRESHOLD))
         ? parseFloat(process.env.GUIDANCE_TIER1_ONTRACK_THRESHOLD as string)
         : 0.5;
-      const returnThreshold = process.env.GUIDANCE_TIER1_RETURN_THRESHOLD ? parseFloat(process.env.GUIDANCE_TIER1_RETURN_THRESHOLD) : undefined;
+      const hysteresisBase = this.clamp01(Number.parseFloat(process.env.GUIDANCE_TIER1_ONTRACK_HYSTERESIS ?? '0.05'));
+      const parsedReturnThreshold = Number.parseFloat(process.env.GUIDANCE_TIER1_RETURN_THRESHOLD ?? '');
+      const effectiveReturnThreshold = Number.isFinite(parsedReturnThreshold)
+        ? parsedReturnThreshold
+        : episodesFeature
+          ? Math.min(1, threshold + hysteresisBase)
+          : undefined;
       const confMin = Number.isFinite(Number(process.env.GUIDANCE_TIER1_CONF_MIN))
         ? parseFloat(process.env.GUIDANCE_TIER1_CONF_MIN as string)
         : 0.5;
+      const driftPersistenceThreshold = Math.max(5000, parseInt(process.env.AI_GUIDANCE_DRIFT_PERSISTENCE_MS || '30000', 10));
+      const alignmentMinDelta = this.clamp01(Number.parseFloat(process.env.AI_GUIDANCE_ALIGNMENT_MIN_DELTA ?? '0.15'));
 
       const confidence = typeof insights.confidence === 'number' ? insights.confidence : undefined;
       const hasMetrics = typeof onTrackScore === 'number';
@@ -1835,10 +1988,13 @@ class AIAnalysisTriggerService {
       let onTrack = false;
       if (hasMetrics && typeof topicalCohesion === 'number' && typeof conceptualDensity === 'number') {
         onTrack = topicalCohesion >= threshold && conceptualDensity >= threshold;
-        if (onTrack && typeof returnThreshold === 'number') {
+        if (episodesFeature && alignmentDeltaAbs >= alignmentMinDelta) {
+          onTrack = false;
+        }
+        if (onTrack && typeof effectiveReturnThreshold === 'number') {
           const last = this.lastOnTrackState.get(firstKey);
           if (last === false) {
-            onTrack = topicalCohesion >= returnThreshold && conceptualDensity >= returnThreshold;
+            onTrack = topicalCohesion >= effectiveReturnThreshold && conceptualDensity >= effectiveReturnThreshold;
           }
         }
       }
@@ -1847,7 +2003,27 @@ class AIAnalysisTriggerService {
         this.lastOnTrackState.set(firstKey, onTrack);
       }
 
-      const shouldSuppress = suppressOnTrack && onTrack && meetsConfidence;
+      let shouldSuppress = suppressOnTrack && onTrack && meetsConfidence;
+
+      if (!shouldSuppress && episodesFeature) {
+        const meetsDriftPersistence = driftPersistenceMs >= driftPersistenceThreshold;
+        const meetsAlignmentDelta = alignmentDeltaAbs >= alignmentMinDelta;
+        const recovering = discussionMomentum > 0;
+        if (!meetsDriftPersistence || !meetsAlignmentDelta || recovering) {
+          shouldSuppress = true;
+          if (process.env.API_DEBUG === '1') {
+            logger.debug('Episode gating suppressed Tier1 prompt', {
+              sessionId,
+              groupId,
+              driftPersistenceMs,
+              alignmentDelta: alignmentDeltaAbs,
+              meetsDriftPersistence,
+              meetsAlignmentDelta,
+              recovering,
+            });
+          }
+        }
+      }
 
       const contextExtras = await this.buildPromptContext(
         evidenceWindows,
@@ -1860,6 +2036,9 @@ class AIAnalysisTriggerService {
           offTopicHeat,
           discussionMomentum,
           confusionRisk,
+          alignmentDelta: alignmentDeltaAbs,
+          driftSeconds: driftPersistenceMs / 1000,
+          inputQuality,
         }
       );
       if (contextExtras.context) {
@@ -1924,13 +2103,18 @@ class AIAnalysisTriggerService {
             if (isUuid(sessionId) && isUuid(groupId) && isUuid(teacherId)) {
               const { teacherPromptService } = await import('./teacher-prompt.service');
               const promptStart = Date.now();
-              const extras: { context?: PromptContextPayload; onTrackSummary?: string } = {};
+              const extras: {
+                context?: PromptContextPayload;
+                onTrackSummary?: string;
+                why?: { alignmentDelta?: number; driftSeconds?: number; inputQuality?: number };
+              } = {};
               if (contextExtras.context) {
                 extras.context = contextExtras.context;
               }
               if (onTrackSummary) {
                 extras.onTrackSummary = onTrackSummary;
               }
+              extras.why = this.buildWhyMetadata(alignmentDeltaAbs, driftPersistenceMs, inputQuality);
               const promptOptions = Object.keys(extras).length > 0 ? { extras } : undefined;
               const prompts = await teacherPromptService.generatePrompts(insights, {
                 sessionId,
@@ -2209,9 +2393,28 @@ class AIAnalysisTriggerService {
         } else {
           const isUuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
           if (isUuid(sessionId) && isUuid(teacherId) && isUuid(groupId)) {
-            const tier2Windows = this.buildEvidenceWindowsFromBuffer(
-              aiAnalysisBufferService.getContextWindows(sessionId, groupId)
-            );
+            const tier2Goal = this.buildGuidanceGoal(sessionContext);
+            const tier2ContextStart = Date.now();
+            const tier2RawWindows = aiAnalysisBufferService.getContextWindows(sessionId, groupId, {
+              goal: tier2Goal,
+              domainTerms: this.contextSettings.domainTerms,
+              now: Date.now(),
+            });
+            const tier2SelectionLatency = Date.now() - tier2ContextStart;
+            const tier2Windows = this.buildEvidenceWindowsFromBuffer(tier2RawWindows, tier2SelectionLatency);
+            const tier2Drift = tier2RawWindows?.drift ?? {
+              alignmentDelta: 0,
+              persistentMs: 0,
+              priorAlignment: 0,
+              currentAlignment: 0,
+              lastAlignedAt: null,
+            };
+            const tier2InputQuality = tier2RawWindows?.inputQuality ?? {
+              sttConfidence: 0,
+              coverage: 0,
+              alignmentDelta: 0,
+              episodeCount: 0,
+            };
             const tier2Metrics = {
               topicalCohesion:
                 typeof insights?.collaborationPatterns?.buildingOnIdeas === 'number'
@@ -2225,6 +2428,9 @@ class AIAnalysisTriggerService {
                 typeof insights?.learningSignals?.conceptualGrowth === 'number'
                   ? this.clamp01(1 - insights.learningSignals.conceptualGrowth)
                   : undefined,
+              alignmentDelta: Math.abs(tier2Drift.alignmentDelta ?? 0),
+              driftSeconds: Math.max(0, tier2Drift.persistentMs ?? 0) / 1000,
+              inputQuality: tier2InputQuality,
             };
             const contextExtras = await this.buildPromptContext(
               tier2Windows,
@@ -2235,10 +2441,19 @@ class AIAnalysisTriggerService {
             );
             const { teacherPromptService } = await import('./teacher-prompt.service');
             const promptStart = Date.now();
-            const extras: { context?: PromptContextPayload; onTrackSummary?: string } = {};
+            const extras: {
+              context?: PromptContextPayload;
+              onTrackSummary?: string;
+              why?: { alignmentDelta?: number; driftSeconds?: number; inputQuality?: number };
+            } = {};
             if (contextExtras.context) {
               extras.context = contextExtras.context;
             }
+            extras.why = this.buildWhyMetadata(
+              Math.abs(tier2Drift.alignmentDelta ?? 0),
+              Math.max(0, tier2Drift.persistentMs ?? 0),
+              tier2InputQuality
+            );
             const promptOptions = Object.keys(extras).length > 0 ? { extras } : undefined;
             const prompts = await teacherPromptService.generatePrompts(insights, {
               sessionId,

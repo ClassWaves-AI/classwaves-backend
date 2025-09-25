@@ -1,0 +1,105 @@
+{
+  "metadata": {
+    "id": "ecosystem_on_track",
+    "title": "Ecosystem energy stays on-topic",
+    "description": "Baseline on-track conversation for energy flow lesson.",
+    "goal": "Students describe how energy transfers among producers, consumers, and decomposers.",
+    "subject": "science",
+    "gradeBand": "6-8",
+    "domainTerms": ["energy transfer", "producer", "consumer", "decomposer"],
+    "driftProfile": "on_track",
+    "driftNotes": "Alignment remains above Tier1 gating threshold.",
+    "tags": ["tier1", "baseline"]
+  },
+  "featureFlags": {
+    "cwGuidanceEpisodesEnabled": true
+  },
+  "playback": {
+    "msBetweenLines": 4500
+  },
+  "expectations": {
+    "tier1": {
+      "expectedPromptCount": 0,
+      "gating": "on_track"
+    },
+    "tier2": {
+      "expectedInsightCount": 0
+    },
+    "metrics": {
+      "guidance_context_episode_count": { "type": "min", "value": 1 },
+      "guidance_context_alignment_delta": { "type": "max", "value": 0.35 }
+    }
+  },
+  "transcript": [
+    {
+      "timestamp": 0,
+      "text": "Let's recap how energy moves through an ecosystem.",
+      "speakerLabel": "Teacher",
+      "sequence": 1,
+      "sttConfidence": 0.98
+    },
+    {
+      "timestamp": 4200,
+      "text": "Energy enters when producers capture sunlight.",
+      "speakerLabel": "Student 1",
+      "sequence": 2,
+      "sttConfidence": 0.95
+    },
+    {
+      "timestamp": 8200,
+      "text": "The producers store that energy in sugars that consumers can eat.",
+      "speakerLabel": "Student 2",
+      "sequence": 3,
+      "sttConfidence": 0.94
+    },
+    {
+      "timestamp": 12300,
+      "text": "Primary consumers transfer the energy when they eat the plants.",
+      "speakerLabel": "Student 3",
+      "sequence": 4,
+      "sttConfidence": 0.93
+    },
+    {
+      "timestamp": 16500,
+      "text": "Secondary consumers pass along less energy because some is lost as heat.",
+      "speakerLabel": "Student 2",
+      "sequence": 5,
+      "sttConfidence": 0.91
+    },
+    {
+      "timestamp": 20500,
+      "text": "Decomposers recycle what is left back into the soil.",
+      "speakerLabel": "Student 1",
+      "sequence": 6,
+      "sttConfidence": 0.9
+    },
+    {
+      "timestamp": 24800,
+      "text": "Exactly, the nutrients return so producers can grow again.",
+      "speakerLabel": "Teacher",
+      "sequence": 7,
+      "sttConfidence": 0.97
+    },
+    {
+      "timestamp": 28700,
+      "text": "So energy flows in one direction while matter cycles.",
+      "speakerLabel": "Student 4",
+      "sequence": 8,
+      "sttConfidence": 0.92
+    },
+    {
+      "timestamp": 32900,
+      "text": "That helps ecosystems stay balanced when each role is filled.",
+      "speakerLabel": "Student 3",
+      "sequence": 9,
+      "sttConfidence": 0.91
+    },
+    {
+      "timestamp": 37000,
+      "text": "Great synthesis. Capture that in your notes.",
+      "speakerLabel": "Teacher",
+      "sequence": 10,
+      "sttConfidence": 0.98
+    }
+  ]
+}

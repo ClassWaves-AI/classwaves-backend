@@ -118,10 +118,17 @@ describe('AIAnalysisTriggerService — dual emit to guidance', () => {
         { speakerLabel: 'Participant 1', text: 'We mapped Guidance v2 improvements for the WaveListener engine earlier.', timestamp: now - 60000 },
         { speakerLabel: 'Participant 2', text: 'Tier 2 analysis will confirm the new attention metric.', timestamp: now - 45000 },
       ],
+      current: [
+        { speakerLabel: 'Participant 3', text: 'Now we are chatting about weekend plans instead of the engine upgrades.', timestamp: now - 15000 },
+        { speakerLabel: 'Participant 4', text: 'I am waiting for tier 2 analysis results before doing anything.', timestamp: now - 8000 },
+      ],
       tangent: [
         { speakerLabel: 'Participant 3', text: 'Now we are chatting about weekend plans instead of the engine upgrades.', timestamp: now - 15000 },
         { speakerLabel: 'Participant 4', text: 'I am waiting for tier 2 analysis results before doing anything.', timestamp: now - 8000 },
       ],
+      drift: { alignmentDelta: 0.22, persistentMs: 16000, priorAlignment: 0.65, currentAlignment: 0.43, lastAlignedAt: now - 45000 },
+      inputQuality: { sttConfidence: 0.82, coverage: 0.7, alignmentDelta: 0.22, episodeCount: 2 },
+      feature: 'legacy',
     } as any);
 
     (aiAnalysisPort.analyzeTier1 as jest.Mock).mockResolvedValueOnce({

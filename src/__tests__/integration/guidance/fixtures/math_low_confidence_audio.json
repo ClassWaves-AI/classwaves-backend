@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "id": "math_low_confidence_audio",
+    "title": "Geometry workshop with muffled audio",
+    "description": "Low microphone quality leads to suppressed guidance prompts despite topical discussion.",
+    "goal": "Students justify interior angle sums for polygons.",
+    "subject": "math",
+    "gradeBand": "8",
+    "domainTerms": [
+      "polygon",
+      "interior angle",
+      "triangle"
+    ],
+    "driftProfile": "low_confidence",
+    "driftNotes": "Input quality remains below thresholds; harness should flag confidence gate.",
+    "tags": [
+      "tier1",
+      "input_quality"
+    ]
+  },
+  "featureFlags": {
+    "cwGuidanceEpisodesEnabled": true
+  },
+  "playback": {
+    "msBetweenLines": 4800
+  },
+  "expectations": {
+    "tier1": {
+      "expectedPromptCount": 0,
+      "gating": "low_confidence",
+      "why": {
+        "inputQualityMax": 0.55
+      }
+    },
+    "tier2": {
+      "expectedInsightCount": 0
+    }
+  },
+  "transcript": [
+    {
+      "timestamp": 0,
+      "text": "If each triangle has one hundred eighty degrees, what about a pentagon?",
+      "speakerLabel": "Teacher",
+      "sequence": 1,
+      "sttConfidence": 0.58
+    },
+    {
+      "timestamp": 4300,
+      "text": "I think we split it into triangles again.",
+      "speakerLabel": "Student 1",
+      "sequence": 2,
+      "sttConfidence": 0.52
+    },
+    {
+      "timestamp": 8600,
+      "text": "Three triangles makes five hundred forty degrees total.",
+      "speakerLabel": "Student 2",
+      "sequence": 3,
+      "sttConfidence": 0.5
+    },
+    {
+      "timestamp": 12900,
+      "text": "The recording sounds fuzzy, can you repeat that value?",
+      "speakerLabel": "Teacher",
+      "sequence": 4,
+      "sttConfidence": 0.48
+    },
+    {
+      "timestamp": 17400,
+      "text": "Five hundred forty degrees because three triangles.",
+      "speakerLabel": "Student 2",
+      "sequence": 5,
+      "sttConfidence": 0.46
+    },
+    {
+      "timestamp": 21700,
+      "text": "Check the polygon formula to be sure.",
+      "speakerLabel": "Teacher",
+      "sequence": 6,
+      "sttConfidence": 0.49
+    },
+    {
+      "timestamp": 25900,
+      "text": "It says one hundred eighty times the number of sides minus two.",
+      "speakerLabel": "Student 3",
+      "sequence": 7,
+      "sttConfidence": 0.51
+    },
+    {
+      "timestamp": 30100,
+      "text": "Right, the answer matches even if audio is rough.",
+      "speakerLabel": "Teacher",
+      "sequence": 8,
+      "sttConfidence": 0.53
+    }
+  ]
+}

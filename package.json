@@ -77,7 +77,9 @@
     "ci:guard-sql": "npm run ci:check-sql-stars && npm run ci:check-raw-stars",
     "ci:contracts": "ENABLE_NETWORK_TESTS=1 jest src/__tests__/integration/summaries/summaries.contract.test.ts --runInBand --testPathIgnorePatterns=\"\"",
     "loadtest:sessions": "npx autocannon -d 30 -c 20 -p 10 http://localhost:3000/api/v1/sessions",
-    "loadtest:dashboard": "npx autocannon -d 30 -c 20 -p 10 http://localhost:3000/api/v1/sessions/dashboard-metrics"
+    "loadtest:dashboard": "npx autocannon -d 30 -c 20 -p 10 http://localhost:3000/api/v1/sessions/dashboard-metrics",
+    "guidance:test:fixtures": "ENABLE_NETWORK_TESTS=1 jest --runInBand src/__tests__/integration/guidance/fixture-runner.integration.test.ts",
+    "guidance:replay": "node scripts/replay-transcript.js"
   },
   "keywords": [],
   "author": "",

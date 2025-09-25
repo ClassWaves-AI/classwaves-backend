@@ -76,6 +76,11 @@ export function createDbRosterRepository(db: DbPort): RosterRepositoryPort {
       return db.queryOne(sql, [schoolId, displayName]);
     },
 
+    async findStudentByEmailInSchool(schoolId, email) {
+      const sql = `SELECT id FROM ${STUDENTS_TABLE} WHERE school_id = ? AND email = ?`;
+      return db.queryOne(sql, [schoolId, email]);
+    },
+
     async insertStudent(student) {
       await db.insert(STUDENTS_TABLE, student);
     },
